@@ -1,0 +1,6 @@
+{
+  "port": 8765,
+  "token": "your-token",
+  "auto_close_seconds": 30,
+  "autostart": false
+}

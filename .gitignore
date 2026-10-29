@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+build/
+dist/
+logs/
+config.json
+*.db
+*.db-wal
+*.db-shm
+.idea/
+.vscode/
