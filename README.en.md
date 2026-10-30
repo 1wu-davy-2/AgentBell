@@ -2,7 +2,8 @@
 
 <p align="center">
   <sub>One ring per agent round, right on your desktop.</sub><br>
-  <a href="README.md">简体中文</a> · <strong>English</strong>
+  <a href="README.md">简体中文</a> · <strong>English</strong> ·
+  <a href="https://1wu-davy-2.github.io/agentbell-site/">Website</a>
 </p>
 
 <p align="center">
