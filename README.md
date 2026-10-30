@@ -22,6 +22,8 @@
 
 2.7.0 新增「Agent 启动」页：像 cc-switch 一样在程序内管理本机 Agent，自动检测 Claude Code、Claude Desktop、Codex、Gemini CLI、Grok Build、OpenCode、OpenClaw、Hermes、Pi、MiniMax Code、Antigravity 是否安装；选择项目目录并填写初始提示词后，直接在 PowerShell 新终端里启动对应 Agent 并传入提示词，最近项目与最近使用的 Agent 会保存到配置。终端从 AgentBell 打开时记录精确 PID，可一键切回。同时把「回到终端」入口放到会话卡片、会话详情和启动记录上，不用等通知卡片也能窗口级跳转。
 
+2.8.0 把软件职责收敛为「启动 / 更新 Agent」：Agent 启动页默认使用安装目录下自动创建的 `chat/` 工作区，选择其他项目仍可浏览或从最近项目切换；每个 Agent 卡片可一键打开项目主页 / GitHub 仓库。新增 AgentBell 自身的更新检查：在设置里填 `owner/repo` 后，启动时向 GitHub Releases 查询新版本，发现更新即下载稳定命名的 `AgentBell.exe`，校验大小与 SHA-256 后由独立 PowerShell 脚本等待退出、备份旧文件、替换并重启。下载只接受 GitHub 域名，源码模式只下载不替换。仓库同时附 GitHub Actions 工作流：测试、PyInstaller 打包、上传 artifact，打 `v*` 标签时自动发布 Release。
+
 ## 特性
 
 - 只监听 `127.0.0.1:8765`（可在 `config.json` 改端口），不暴露到局域网。
@@ -46,6 +48,9 @@
 - 卡片动作：回到终端、打开链接、复制文本、重试回调、打开本地文件、打开通知中心。
 - 回到终端：请求带 `origin`（`pid` / `window_title` / `working_dir`）时自动生成按钮，沿父进程链定位宿主终端或编辑器窗口并切到前台；只聚焦窗口，不选中标签页，也不执行任何命令。会话卡片、会话详情与启动记录也有「回到终端 / 回到窗口」入口，最近通知没带 `origin` 时同样可以用。
 - Agent 启动：内置 11 个常见 Agent 的检测规则（Claude Code、Claude Desktop、Codex、Gemini CLI、Grok Build、OpenCode、OpenClaw、Hermes、Pi、MiniMax Code、Antigravity），已安装的排在前面并显示可执行文件路径；选择项目目录、填写初始提示词后，点「打开终端并开始」即打开 PowerShell 新窗口并启动对应 Agent。提示词通过环境变量传入，不拼接进 shell 命令；桌面应用只打开窗口，不会假装能预填提示词。最近 6 个项目与上次使用的 Agent 会写入 `agent_launcher`。
+- 默认 chat 工作区：首次启动在安装目录（源码模式为仓库根目录）自动创建 `chat/`，Agent 启动页默认选中它；要回到「本目录里直接聊」的用法，不用每次浏览文件夹。也可继续选择其他项目，最近项目仍会保留。
+- Agent 项目主页：每张 Agent 卡片都可点右上角「项目主页」打开对应的官网或 GitHub 仓库，方便查安装方式、更新与文档。
+- 自身更新：设置里填写 GitHub 仓库 `owner/repo` 后，启动约 9 秒后检查 Releases；发现新版本会提示并下载 `AgentBell.exe`，校验大小与 SHA-256 后在退出时自动替换、备份旧版并重启。托盘和 Agent 启动页都有「检查更新」入口；源码模式只下载安装包，不会替换正在运行的 Python 程序。
 - 规则引擎：按来源 / 标题 / 状态自动设置优先级、静音、待确认、免打扰例外、弹窗外观、外部渠道。
 - 模板与声音：四种状态的弹窗文案、五类 WAV 提示音均可配置。
 - 外部渠道：企业微信、飞书、Telegram、Bark、ntfy、通用 Webhook；可按“离开电脑”或规则触发，失败只记日志，不影响主流程。
@@ -71,6 +76,7 @@ agentbell/
 │  ├─ presence.py         Windows 空闲时间、前台全屏、会议进程、锁屏/息屏检测
 │  ├─ agent_sessions.py   Claude Code / Qoder 会话扫描、记录解析与 Markdown 导出
 │  ├─ agent_launch.py     Agent 检测、项目内启动终端与提示词传递
+│  ├─ updater.py          GitHub Release 检查、下载校验、替换脚本与重启
 │  ├─ window_focus.py     Win32 窗口解析与聚焦（回到终端）
 │  ├─ channels.py         外部渠道后台投递线程
 │  ├─ hotkey.py           全局快捷键（RegisterHotKey）
@@ -93,15 +99,18 @@ agentbell/
 │     ├─ overlay_editor.py 全屏拖拽定位编辑器（真实背景预览、拖动、保存位置）
 │     ├─ toast.py         置顶弹窗、皮肤/模式、倒计时、堆叠调度、聚合摘要
 │     └─ tray.py          托盘菜单、未读、最近通知与「关于」
-├─ tests/                 API、策略、存储、配置、会话扫描、窗口/弹窗、启动与标志测试
+├─ tests/                 API、策略、存储、配置、会话扫描、启动、更新与标志测试
 ├─ assets/agentbell.ico   打包用多尺寸图标（16–256）
 ├─ assets/agentbell.svg   标志 SVG 源文件
 ├─ config.json            当前配置
 ├─ config.example.json    配置示例
+├─ chat/                  运行后自动创建：Agent 启动的默认工作目录（不提交）
+├─ updates/               运行后自动创建：更新包与替换脚本（不提交）
+├─ .github/workflows/build.yml  测试、打包、artifact 与 Release 发布
 ├─ requirements.txt       运行依赖
 ├─ requirements-dev.txt   测试/打包依赖
 ├─ run.py                 源码启动入口
-├─ AgentBell10.spec       PyInstaller 配置（AgentBell-10.exe）
+├─ AgentBell11.spec       PyInstaller 配置（AgentBell-11.exe）
 └─ README.md
 ```
 
@@ -184,6 +193,11 @@ AgentBell 已就绪：http://127.0.0.1:8765（X-Token 鉴权已开启）
   "agent_launcher": {
     "recent_projects": [],
     "last_agent": ""
+  },
+  "update": {
+    "enabled": true,
+    "repo": "",
+    "check_on_start": true
   },
   "digest": { "enabled": true, "threshold": 4, "window_seconds": 60 },
   "escalation": {
@@ -310,12 +324,60 @@ AgentBell 已就绪：http://127.0.0.1:8765（X-Token 鉴权已开启）
 - 再查桌面应用固定安装位置：Claude Desktop（`%LOCALAPPDATA%\AnthropicClaude\claude.exe`、`%LOCALAPPDATA%\Programs\Claude\Claude.exe`）与 Antigravity（`%LOCALAPPDATA%\Programs\Antigravity\Antigravity.exe`、`%LOCALAPPDATA%\Antigravity\Antigravity.exe`）。
 - 已安装的卡片排在前两列，显示可执行文件路径；未安装的显示安装命令或提示，点右上角「重新检测」刷新。
 
+默认工作目录：
+
+- 启动时在安装目录（打包版为 exe 所在目录，源码模式为仓库根目录）自动创建 `chat/`，Agent 启动页把「项目目录」预填为该路径。
+- `chat/` 与更新用的 `updates/` 都只在本机创建，已加入 `.gitignore`；删除后下次启动会重新创建。若目录不可写，页面回落到安装目录本身并允许手动选择其他路径。
+- 想换项目直接点「浏览…」，或从「最近项目」里切换；最近 6 个项目保存在 `agent_launcher.recent_projects`。
+- 选中任意 Agent 后点右上角「项目主页」，会用系统浏览器打开它的官网或 GitHub 仓库（见下表），方便查安装命令与版本说明。
+
+| Agent | 说明 | 参考链接 |
+| --- | --- | --- |
+| Claude Code | Anthropic 官方终端编码 Agent | [anthropics/claude-code](https://github.com/anthropics/claude-code) |
+| Claude Desktop | Anthropic 桌面客户端 | [claude.ai/download](https://claude.ai/download) |
+| Codex | OpenAI 终端编码 Agent | [openai/codex](https://github.com/openai/codex) |
+| Gemini CLI | Google 开源终端 Agent | [google-gemini/gemini-cli](https://github.com/google-gemini/gemini-cli) |
+| Grok Build | xAI 终端编码 Agent（开源） | [xai-org/grok-build](https://github.com/xai-org/grok-build) |
+| OpenCode | 开源终端编码 Agent | [anomalyco/opencode](https://github.com/anomalyco/opencode) |
+| OpenClaw | 开源 Agent 客户端 | [openclaw/openclaw](https://github.com/openclaw/openclaw) |
+| Hermes | Nous Research 终端 Agent | [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) |
+| Pi | Earendil Works 终端编码 Agent | [earendil-works/pi](https://github.com/earendil-works/pi) |
+| MiniMax Code | MiniMax 编码 Agent | [MiniMax-AI/minimax-code](https://github.com/MiniMax-AI/minimax-code) |
+| Antigravity | Google 的 Agent 开发环境 | [antigravity.google](https://antigravity.google/) |
+
+界面与会话阅读的参考项目：[farion1231/cc-switch](https://github.com/farion1231/cc-switch)（通知中心与会话页的交互参考）、[GitHub Actions](https://docs.github.com/actions)（构建与发布工作流）。
+
 启动行为：
 
 - 终端类 Agent：在所选项目目录打开一个独立 PowerShell 新窗口，设置窗口标题为 `AgentBell · Agent 名 · 项目名`，再启动 Agent；提示词作为 Agent 的第一个参数传入，通过 `AGENTBELL_PROMPT` 环境变量交给 PowerShell，不拼接进命令行文本。
 - 桌面应用（Claude Desktop / Antigravity）：只打开应用并设置工作目录；如果填写了提示词，会先提示桌面应用不支持自动预填，确认后才继续。
 - 提示词上限 8000 字符；项目目录必须存在；启动失败会在按钮右侧显示原因，不弹额外对话框。
 - 从 AgentBell 打开的终端会记录 PID，「本次打开的终端」里可点「回到终端 / 回到窗口」精确切回；关闭终端后按钮会失效。
+
+### 程序更新
+
+| 字段 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `update.enabled` | 布尔 | `true` | 是否允许检查与下载 AgentBell 自身更新；关闭后完全离线 |
+| `update.repo` | 字符串 | `""` | GitHub 仓库，格式 `owner/repo`；也可填完整仓库 URL，读取时会自动归一化。留空表示不联网 |
+| `update.check_on_start` | 布尔 | `true` | 启动约 9 秒后自动检查；打包版发现新版本会自动下载并在退出时替换重启 |
+
+行为：
+
+- 仓库为空时不会发出任何网络请求；手动点「检查更新」会提示去「偏好设置 → 常规 → 程序更新」填写。
+- 只更新 AgentBell 自身，不会执行 npm / pip 等 Agent 安装或升级命令。
+- 版本来自 `GET https://api.github.com/repos/{owner}/{repo}/releases/latest` 的 `tag_name`，去掉 `v` 后按数字比较；`2.8.0-beta` 低于 `2.8.0`。
+- 安装包优先选稳定命名 `AgentBell.exe`，否则选名称含 `agentbell` 的 `.exe`；Release 没有 `.exe` 时只能打开 Release 页面。
+- 下载只接受 `github.com` 与 GitHub 发布资源域名（`objects.githubusercontent.com`、`release-assets.githubusercontent.com`、`github-releases.githubusercontent.com`），并要求 HTTPS；下载上限 300 MB，完成后校验 API 给出的 `size` 与 `digest`（`sha256:`）后才算成功。
+- 打包版：下载到 `updates/` 后启动独立 PowerShell 更新脚本，等待当前进程退出，把旧 exe 备份为 `AgentBell.exe.bak`，再替换并按原命令行参数重启；替换失败会回滚并重新打开旧版。脚本只读取环境变量，不把路径或参数拼进脚本文本。
+- 源码模式：只下载安装包并提示文件位置，不会替换、不会退出；避免误改开发环境。
+- 托盘菜单「检查更新…」和「Agent 启动」页右上角「检查更新」都可手动触发；自动检查在启动过渡和首次介绍结束后才进行，避免打断首次使用。
+
+发布约定：
+
+- Release 资产必须包含稳定命名的 `AgentBell.exe`；工作流在打包后从 `AgentBell-11.exe` 复制一份，并生成 `SHA256SUMS.txt`。
+- 打 tag 前先把 `agentbell/__init__.py` 的 `__version__` 改成同一版本；工作流会校验 `v2.8.0` 与 `2.8.0` 一致，不一致时拒绝发布。
+- 发布使用 GitHub Actions 的 `contents: write` 权限；fork 或 PR 构建只上传 artifact，不会发 Release。
 
 ### 历史
 
@@ -765,20 +827,41 @@ PyInstaller 不能跨平台交叉编译，请在目标系统上分别打包。
 ```bash
 pip install -r requirements-dev.txt
 
-# 产物：dist\AgentBell-10.exe
-python -m PyInstaller --noconfirm --clean AgentBell10.spec
+# 产物：dist\AgentBell-11.exe
+python -m PyInstaller --noconfirm --clean AgentBell11.spec
 ```
 
 把 `config.json` 复制到 exe 旁边再运行：
 
 ```bash
 copy config.json dist\config.json
-dist\AgentBell-10.exe
+dist\AgentBell-11.exe
 ```
 
-> 新旧版本默认共用单实例锁：若托盘中已有 AgentBell（1.x / 2.x）在运行，双击 AgentBell-10 只会唤醒旧实例。切换版本前先从托盘退出旧版，再启动新 exe。
+> 新旧版本默认共用单实例锁：若托盘中已有 AgentBell（1.x / 2.x）在运行，双击 AgentBell-11 只会唤醒旧实例。切换版本前先从托盘退出旧版，再启动新 exe。
 
-打包后 `config.json`、`logs/` 与 `agentbell.db` 都位于 exe 所在目录。单文件模式首次启动需要解压到临时目录，通常会有 1–3 秒延迟。
+打包后 `config.json`、`logs/`、`agentbell.db`、`chat/` 与 `updates/` 都位于 exe 所在目录。单文件模式首次启动需要解压到临时目录，通常会有 1–3 秒延迟。
+
+### GitHub Actions
+
+`.github/workflows/build.yml` 在 Windows runner 上执行三个阶段：
+
+1. **Tests**：安装 `requirements-dev.txt`，以 `QT_QPA_PLATFORM=offscreen` 跑完整 pytest。
+2. **Package**：用 `AgentBell11.spec` 打包，复制 `dist/AgentBell-11.exe` 为稳定更新资产 `dist/AgentBell.exe`，生成 `SHA256SUMS.txt`，再上传 `AgentBell-windows` artifact（保留 30 天）。
+3. **Release**：仅当推送 `v*` 标签时运行，先校验标签与 `__version__` 一致，再下载 artifact，用 `softprops/action-gh-release` 发布 `AgentBell.exe`、`AgentBell-11.exe` 与 `SHA256SUMS.txt`。
+
+发布新版本：
+
+```bash
+# 1. 修改 agentbell/__init__.py 的 __version__，例如 2.8.1
+# 2. 提交并打同版本 tag（tag 去掉 v 后必须与 __version__ 完全一致）
+git add -A
+git commit -m "feat: 升级 AgentBell 2.8.1 ..."
+git tag v2.8.1
+git push origin develop --tags
+```
+
+工作流的 artifact 可直接从 Actions 页面下载；标签构建会自动生成 Release。PR 和普通分支只跑测试与打包，不会发布。AgentBell 的更新器只认 Release 里的 `AgentBell.exe`，因此资产名不要随意改。
 
 ### macOS / Linux
 
@@ -786,7 +869,7 @@ dist\AgentBell-10.exe
 
 ```bash
 pyinstaller --noconfirm --clean --onefile --windowed \
-  --name AgentBell-10 \
+  --name AgentBell-11 \
   --hidden-import uvicorn.logging \
   --hidden-import uvicorn.loops.asyncio \
   --hidden-import uvicorn.protocols.http.h11_impl \
@@ -808,7 +891,7 @@ $env:QT_QPA_PLATFORM="offscreen"; python -m pytest -q
 QT_QPA_PLATFORM=offscreen python -m pytest -q
 ```
 
-覆盖：鉴权与 401、字段默认值/空值/长度、非法状态、危险链接、GB18030 请求体、疑似编码丢失告警、`origin` 动作生成与上限、仅 `working_dir` 的目录名兜底、`focus` 参数校验、窗口选择排序与去重、`FocusRequest` 往返、`overlay_area` 配置校验与卡片摆放、全屏拖拽编辑器的锚点换算与保存、空/坏 JSON、超大请求体、队列满、去重合并、待确认与动作、规则匹配、免打扰/全屏/会议/锁屏决策、优先级弹窗策略、弹窗模式与皮肤、全屏自定义背景图与失效回落、渠道选择、配置校验、Agent 启动的检测排序、CLI 参数与环境变量、提示词不进入命令行、桌面应用不支持提示词、启动失败与项目校验、最近项目持久化、启动记录与回到终端、SQLite 存取/搜索/统计/裁剪、通知中心筛选/搜索/统计/设置、Agent 会话扫描与标题提取、会话记录解析/搜索/大纲/复制与导出/缺失文件兜底、设置效果预览与清理、弹窗文案/按钮/去重更新/聚合、居中与全屏弹窗互斥、锁屏暂停、单实例唤醒、自动关闭与悬停暂停、启动自动打开与会话动画收尾、标志 SVG/像素/单色与图标尺寸、启动三行时间线与收起、首次介绍的四步导航/键盘/暂停/跳过与 `onboarding_seen` 持久化、关于窗口的尺寸变体与 SVG 导出。
+覆盖：鉴权与 401、字段默认值/空值/长度、非法状态、危险链接、GB18030 请求体、疑似编码丢失告警、`origin` 动作生成与上限、仅 `working_dir` 的目录名兜底、`focus` 参数校验、窗口选择排序与去重、`FocusRequest` 往返、`overlay_area` 配置校验与卡片摆放、全屏拖拽编辑器的锚点换算与保存、空/坏 JSON、超大请求体、队列满、去重合并、待确认与动作、规则匹配、免打扰/全屏/会议/锁屏决策、优先级弹窗策略、弹窗模式与皮肤、全屏自定义背景图与失效回落、渠道选择、配置校验、Agent 启动的检测排序、CLI 参数与环境变量、提示词不进入命令行、桌面应用不支持提示词、启动失败与项目校验、最近项目持久化、启动记录与回到终端、SQLite 存取/搜索/统计/裁剪、通知中心筛选/搜索/统计/设置、Agent 会话扫描与标题提取、会话记录解析/搜索/大纲/复制与导出/缺失文件兜底、设置效果预览与清理、弹窗文案/按钮/去重更新/聚合、居中与全屏弹窗互斥、锁屏暂停、单实例唤醒、自动关闭与悬停暂停、启动自动打开与会话动画收尾、标志 SVG/像素/单色与图标尺寸、启动三行时间线与收起、首次介绍的四步导航/键盘/暂停/跳过与 `onboarding_seen` 持久化、关于窗口的尺寸变体与 SVG 导出、更新仓库归一化与版本比较、Release 解析与稳定资产选择、404/网络错误映射、下载域名白名单/大小/SHA-256 校验与残留清理、源码模式拒绝替换、更新脚本环境变量与不插值路径、`chat/` 自动创建与默认项目回落、Agent 项目主页按钮。
 
 ## 常见问题
 
@@ -916,6 +999,22 @@ netstat -ano | findstr :8765
 
 PyInstaller 单文件包常见现象。可将 exe 加入信任目录，或改用 `--onedir` 打包。请从本机源码自行构建，不要运行来路不明的同名程序。
 
+**点「检查更新」提示没有配置仓库 / 一直检查不到新版本**
+
+2.8.0 起更新依赖你自己的 GitHub Release：在「偏好设置 → 常规 → 程序更新」填写 `owner/repo`（也可粘贴 `https://github.com/owner/repo`），保存后再检查。首次发布可参考 `.github/workflows/build.yml`：推送 `v*` 标签后自动生成带 `AgentBell.exe` 的 Release。若仓库是私有的，API 需要令牌，当前版本未做私有仓库鉴权，请使用公开仓库；GitHub 接口受限时日志会记录 403/429。
+
+**自动更新下载成功但没有替换 / 重启后还是旧版**
+
+自动替换只在打包版（`sys.frozen`）生效，源码模式只下载到 `updates/`。打包版替换前会等待当前 PID 退出，需要 `updates/` 可写；若安装在 `Program Files` 等受保护目录，普通权限无法覆盖 exe，请安装到可写目录或手动替换。替换失败会在 `updates/update.log` 记录原因，并把旧版 `AgentBell.exe.bak` 回滚。更新脚本由当前程序启动，若杀毒软件拦截 PowerShell 脚本，需要放行。
+
+**chat 目录在哪里 / 能不用吗？**
+
+默认位于安装目录（源码模式为仓库根目录）下的 `chat/`，启动时自动创建，Agent 启动页默认选中。它只是普通文件夹，不参与 git；可随时改名、删除（下次启动重建）或在页面上改选其他项目。若安装目录不可写，启动日志会记录「无法创建 chat 目录」，此时项目目录回落到安装目录本身，仍可手动浏览其他路径。
+
+**「项目主页」打开的是哪里？**
+
+打开当前选中 Agent 的官方页面：CLI Agent 多为 GitHub 仓库，Claude Desktop 与 Antigravity 为官网下载页，表格见上文「Agent 启动」。只作为普通 https 链接交给系统浏览器，不会自动下载或安装。
+
 ## 安全说明
 
 - HTTP 服务只绑定环回地址，不对局域网开放；仍建议设置随机 `X-Token`，防止本机其他程序随意弹窗。
@@ -925,5 +1024,7 @@ PyInstaller 单文件包常见现象。可将 exe 加入信任目录，或改用
 - 通知动作有白名单：链接仅 `http/https`；`retry` 只允许回环地址；`path` 默认关闭，开启后也只打开指定文件；`copy` 只写入剪贴板，不执行命令；`focus` 只校验参数并置前窗口，不执行命令、不打开新终端。
 - 外部渠道由你自己配置 URL/token，通知内容会发送到对应服务；启用前请确认接收方可信。
 - 单实例通道只接受「打开通知中心」请求，不执行任意命令；通道使用当前用户的本地套接字 / 命名管道。
+- 更新下载只接受 HTTPS 的 GitHub 域名与 GitHub 发布资源域名，拒绝非 GitHub 重定向；安装包受 300 MB 上限、Release 记录的 `size` 与 `sha256:` digest 校验。替换脚本从环境变量读取路径与参数，不把外部文本拼接进 PowerShell 代码；旧版会备份，替换失败自动回滚。
+- 更新仓库由你手动填写，程序不会内置或猜测下载地址，也不会执行 Release 中的任何脚本；源码模式不自动替换。
 - 请求体限制 1 MB，字段有长度上限，队列和历史都有界，避免异常调用拖垮程序。
 - 本项目没有远程访问、文件上传、命令执行等能力。

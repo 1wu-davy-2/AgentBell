@@ -11,3 +11,5 @@ config.json
 *.db-shm
 .idea/
 .vscode/
+chat/
+updates/

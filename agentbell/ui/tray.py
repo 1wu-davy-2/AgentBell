@@ -23,6 +23,7 @@ def _clip(text: str, limit: int) -> str:
 class TrayIcon(QSystemTrayIcon):
     recent_selected = Signal(object)
     open_center_requested = Signal()
+    check_updates_requested = Signal()
     about_requested = Signal()
     quit_requested = Signal()
 
@@ -70,7 +71,8 @@ class TrayIcon(QSystemTrayIcon):
         self._recent_menu = menu.addMenu("显示最近通知")
         self._recent_menu.aboutToShow.connect(self._rebuild_recent_menu)
         menu.addSeparator()
-
+        self._update_action = menu.addAction("检查更新…")
+        self._update_action.triggered.connect(self.check_updates_requested.emit)
         about_action = menu.addAction("关于 AgentBell…")
         about_action.triggered.connect(self.about_requested.emit)
         menu.addSeparator()
@@ -88,6 +90,17 @@ class TrayIcon(QSystemTrayIcon):
         self._unread_action.setVisible(self._unread > 0)
         suffix = f" · {self._unread} 条未读" if self._unread else ""
         self.setToolTip(self._base_tooltip + suffix)
+
+    def set_update_available(self, version: str = "") -> None:
+        if version:
+            self._update_action.setText(f"发现新版本 {version}…")
+        else:
+            self._update_action.setText("检查更新…")
+
+    def set_update_busy(self, busy: bool) -> None:
+        self._update_action.setEnabled(not busy)
+        if busy:
+            self._update_action.setText("正在检查/下载更新…")
 
     def flash(self, times: int = 6) -> None:
         self._flash_remaining = max(1, times)

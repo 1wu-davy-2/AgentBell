@@ -83,6 +83,7 @@ from ..config import (
 )
 from ..integration import build_agent_instructions
 from ..models import STATUS_LABELS, Notification, safe_http_url
+from ..paths import default_project_dir
 from ..store import NotificationStore
 from ..window_focus import FocusRequest
 from .icons import make_app_icon
@@ -1366,6 +1367,7 @@ class NotificationWindow(QMainWindow):
     onboarding_finished = Signal()
     session_refresh_requested = Signal()
     focus_requested = Signal(object)
+    update_check_requested = Signal()
 
     def __init__(
         self,
@@ -2009,6 +2011,21 @@ class NotificationWindow(QMainWindow):
         heading_text.addWidget(subtitle)
         heading.addLayout(heading_text)
         heading.addStretch(1)
+        self._update_button = QPushButton("检查更新", page)
+        self._update_button.setObjectName("toolButton")
+        self._update_button.setFixedSize(84, 32)
+        self._update_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._update_button.setToolTip("检查 AgentBell 自身的新版本")
+        self._update_button.clicked.connect(self.update_check_requested.emit)
+        heading.addWidget(self._update_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        self._agent_link = QPushButton("项目主页", page)
+        self._agent_link.setObjectName("toolButton")
+        self._agent_link.setFixedSize(84, 32)
+        self._agent_link.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._agent_link.setToolTip("打开当前选中 Agent 的官网或 GitHub 仓库")
+        self._agent_link.setEnabled(False)
+        self._agent_link.clicked.connect(self._open_selected_agent_page)
+        heading.addWidget(self._agent_link, 0, Qt.AlignmentFlag.AlignVCenter)
         refresh = QPushButton("重新检测", page)
         refresh.setObjectName("toolButton")
         refresh.setFixedSize(84, 32)
@@ -2056,7 +2073,7 @@ class NotificationWindow(QMainWindow):
             self._launcher_section(
                 host,
                 "项目目录",
-                "终端会在这个目录启动，Agent 会把它当作当前项目。",
+                "默认在安装目录的 chat/ 子目录启动（首次启动自动创建），也可以换成本机其他项目。",
             )
         )
         project_panel = QFrame(host)
@@ -2074,6 +2091,7 @@ class NotificationWindow(QMainWindow):
             "选择或粘贴项目目录，例如 E:\\work\\demo"
         )
         self._launcher_project.setClearButtonEnabled(True)
+        self._launcher_project.setText(str(default_project_dir()))
         project_row.addWidget(self._launcher_project, 1)
         browse = QPushButton("浏览…", project_panel)
         browse.setObjectName("toolButton")
@@ -2184,6 +2202,14 @@ class NotificationWindow(QMainWindow):
                 return availability
         return None
 
+    def _open_selected_agent_page(self) -> None:
+        availability = self._current_agent()
+        if availability is None:
+            return
+        url = safe_http_url(availability.spec.project_url)
+        if url:
+            QDesktopServices.openUrl(QUrl(url))
+
     def _refresh_agents(self, choose: str = "") -> None:
         if not hasattr(self, "_agent_grid"):
             return
@@ -2233,6 +2259,12 @@ class NotificationWindow(QMainWindow):
                 card.availability.spec.id == self._selected_agent_id
             )
         self._sync_launcher_start()
+        if hasattr(self, "_agent_link"):
+            url = safe_http_url(availability.spec.project_url)
+            self._agent_link.setEnabled(bool(url))
+            self._agent_link.setToolTip(
+                url or "该 Agent 没有配置项目主页"
+            )
         if availability.installed:
             self._set_launcher_status(
                 f"已选择 {availability.spec.name} · {availability.executable}"

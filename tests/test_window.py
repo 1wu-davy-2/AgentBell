@@ -876,3 +876,77 @@ def test_session_terminal_button_and_focus_request(window_factory):
     window._session_detail_session = session
     window._focus_detail_session()
     assert len(focused) == 2
+
+
+def test_launcher_prefills_chat_workspace_and_opens_project_page(
+    qapp, window_factory, monkeypatch, tmp_path
+):
+    import agentbell.ui.window as window_module
+
+    chat = tmp_path / "chat"
+    chat.mkdir()
+    monkeypatch.setattr(window_module, "default_project_dir", lambda: chat)
+    agents = [
+        AgentAvailability(
+            spec=AgentSpec(
+                id="alpha",
+                name="Alpha",
+                kind="cli",
+                summary="Alpha 的说明",
+                project_url="https://github.com/acme/alpha",
+            ),
+            executable=r"C:\bin\alpha.exe",
+        )
+    ]
+    monkeypatch.setattr(window_module, "discover_agents", lambda: agents)
+
+    window = window_factory()
+
+    assert window._launcher_project.text() == str(chat)
+    assert window._agent_link.isEnabled() is True
+    assert window._agent_link.toolTip() == "https://github.com/acme/alpha"
+
+    opened = []
+
+    class FakeDesktop:
+        @staticmethod
+        def openUrl(url):
+            opened.append(url.toString())
+            return True
+
+    monkeypatch.setattr(window_module, "QDesktopServices", FakeDesktop)
+    window._agent_link.click()
+
+    assert opened == ["https://github.com/acme/alpha"]
+
+
+def test_launcher_update_button_emits_request(qapp, window_factory, monkeypatch):
+    import agentbell.ui.window as window_module
+
+    monkeypatch.setattr(
+        window_module,
+        "discover_agents",
+        lambda: [_availability("alpha", "Alpha")],
+    )
+    window = window_factory()
+    requested = []
+    window.update_check_requested.connect(lambda: requested.append(True))
+
+    window._update_button.click()
+
+    assert requested == [True]
+
+
+def test_agent_link_disabled_without_project_url(
+    qapp, window_factory, monkeypatch
+):
+    import agentbell.ui.window as window_module
+
+    monkeypatch.setattr(
+        window_module,
+        "discover_agents",
+        lambda: [_availability("alpha", "Alpha")],
+    )
+    window = window_factory()
+
+    assert window._agent_link.isEnabled() is False

@@ -75,5 +75,10 @@
   "channels": [],
   "away_idle_seconds": 300,
   "allow_local_paths": false,
-  "presence_poll_seconds": 5
+  "presence_poll_seconds": 5,
+  "update": {
+    "enabled": true,
+    "repo": "",
+    "check_on_start": true
+  }
 }

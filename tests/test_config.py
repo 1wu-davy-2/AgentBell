@@ -318,3 +318,60 @@ def test_agent_launcher_config_is_validated(tmp_path, payload, message):
     path.write_text(payload, encoding="utf-8")
     with pytest.raises(ConfigError, match=message):
         load_config(path)
+
+
+def test_update_defaults_repo_normalization_and_round_trip(tmp_path):
+    from dataclasses import replace
+
+    from agentbell.config import UpdateConfig, config_from_dict, config_to_dict
+
+    path = tmp_path / "config.json"
+    config, _ = load_config(path)
+    assert config.update.enabled is True
+    assert config.update.repo == ""
+    assert config.update.check_on_start is True
+
+    updated = replace(
+        config,
+        update=UpdateConfig(
+            enabled=False,
+            repo="acme/AgentBell",
+            check_on_start=False,
+        ),
+    )
+    save_config(path, updated)
+    loaded, _ = load_config(path)
+    assert loaded.update.enabled is False
+    assert loaded.update.repo == "acme/AgentBell"
+    assert loaded.update.check_on_start is False
+    assert json.loads(path.read_text(encoding="utf-8"))["update"] == {
+        "enabled": False,
+        "repo": "acme/AgentBell",
+        "check_on_start": False,
+    }
+
+    payload = config_to_dict(config)
+    payload["update"] = {
+        "enabled": True,
+        "repo": "https://github.com/acme/AgentBell.git",
+        "check_on_start": True,
+    }
+    restored = config_from_dict(payload)
+    assert restored.update.repo == "acme/AgentBell"
+
+
+@pytest.mark.parametrize(
+    "payload,message",
+    [
+        (json.dumps({"update": {"repo": "acme"}}), "update.repo"),
+        (json.dumps({"update": {"repo": "acme/agent bell"}}), "update.repo"),
+        (json.dumps({"update": {"enabled": "yes"}}), "enabled"),
+        (json.dumps({"update": {"check_on_start": 1}}), "check_on_start"),
+        (json.dumps({"update": "on"}), "update"),
+    ],
+)
+def test_update_section_validation(tmp_path, payload, message):
+    from agentbell.config import config_from_dict
+
+    with pytest.raises(ConfigError, match=message):
+        config_from_dict(json.loads(payload))

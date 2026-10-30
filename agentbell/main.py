@@ -19,13 +19,14 @@ from .autostart import configure_autostart
 from .config import ConfigError, load_config
 from .log import install_exception_hooks, setup_logging
 from .models import Notification
-from .paths import config_file
+from .paths import config_file, ensure_chat_dir
 from .server import ListenerError, bind_listener
 from .single_instance import SingleInstanceError, SingleInstanceGuard, default_server_name
 from .storage import NotificationStorage, StorageError
 from .store import NotificationStore
 from .ui.icons import make_app_icon
 from .ui.splash import SplashWindow
+from .updater import normalize_repo
 
 
 def _pick_ui_font() -> str:
@@ -138,6 +139,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     logger.info("单实例锁已获取：%s", guard.name)
 
+    try:
+        logger.info("Agent 默认工作目录：%s", ensure_chat_dir())
+    except OSError as exc:
+        logger.warning("无法创建 chat 目录：%s", exc)
+
     if not config.auth_enabled:
         logger.warning(
             "X-Token 鉴权未开启：本机任何进程都可以调用 /notify。"
@@ -246,6 +252,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         _present_splash(first_run, first_run or config.open_center_on_start)
         controller.start(schedule_center=False)
+        if (
+            config.update.enabled
+            and config.update.check_on_start
+            and normalize_repo(config.update.repo)
+        ):
+            QTimer.singleShot(9000, controller.check_updates)
         guard.open_requested.connect(_on_open_requested)
     except Exception as exc:
         logger.exception("AgentBell 启动异常")

@@ -321,3 +321,26 @@ def test_fullscreen_drag_editor_updates_controls_and_saves(qapp, tmp_path, monke
     finally:
         dialog.deleteLater()
         QTest.qWait(20)
+
+
+def test_update_settings_are_saved_and_normalized(qapp, tmp_path):
+    path = tmp_path / "config.json"
+    dialog = make_dialog(qapp, path)
+    try:
+        dialog._update_enabled_check.setChecked(True)
+        dialog._update_repo_edit.setText(
+            "https://github.com/acme/AgentBell.git"
+        )
+        dialog._update_start_check.setChecked(False)
+
+        dialog._save()
+
+        assert dialog.result_config is not None
+        assert dialog.result_config.update.enabled is True
+        assert dialog.result_config.update.repo == "acme/AgentBell"
+        assert dialog.result_config.update.check_on_start is False
+        loaded, _ = load_config(path)
+        assert loaded.update.repo == "acme/AgentBell"
+    finally:
+        dialog.deleteLater()
+        QTest.qWait(20)

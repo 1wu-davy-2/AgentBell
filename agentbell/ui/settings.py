@@ -402,6 +402,38 @@ class SettingsDialog(QDialog):
         popup_form.addRow("全局快捷键", self._hotkey_edit)
         layout.addWidget(popup)
 
+        update_group = QGroupBox("程序更新", page)
+        update_form = QFormLayout(update_group)
+        update_form.setContentsMargins(12, 14, 12, 10)
+        update_form.setSpacing(9)
+
+        self._update_enabled_check = QCheckBox(
+            "启用更新检查（只更新 AgentBell 自身，不改 Agent 安装）", update_group
+        )
+        self._update_enabled_check.setChecked(self.config.update.enabled)
+        update_form.addRow("", self._update_enabled_check)
+
+        self._update_repo_edit = QLineEdit(self.config.update.repo, update_group)
+        self._update_repo_edit.setPlaceholderText(
+            "GitHub 仓库 owner/repo，例如 your-name/AgentBell"
+        )
+        update_form.addRow("更新仓库", self._update_repo_edit)
+        update_hint = QLabel(
+            "留空表示不联网检查。Release 需要附带稳定命名的 AgentBell.exe；"
+            "下载只接受 github.com 及 GitHub 的发布资源域名。",
+            update_group,
+        )
+        update_hint.setObjectName("editorHint")
+        update_hint.setWordWrap(True)
+        update_form.addRow("", update_hint)
+
+        self._update_start_check = QCheckBox(
+            "启动时自动检查；打包版下载完成后自动替换并重启", update_group
+        )
+        self._update_start_check.setChecked(self.config.update.check_on_start)
+        update_form.addRow("", self._update_start_check)
+        layout.addWidget(update_group)
+
         about = QGroupBox("关于", page)
         about_layout = QHBoxLayout(about)
         about_layout.setContentsMargins(12, 12, 12, 12)
@@ -1034,6 +1066,11 @@ class SettingsDialog(QDialog):
                     "enabled": self._agent_enabled_check.isChecked(),
                     "scan_interval_seconds": self._agent_interval_spin.value(),
                     "max_sessions": self._agent_max_spin.value(),
+                },
+                "update": {
+                    "enabled": self._update_enabled_check.isChecked(),
+                    "repo": self._update_repo_edit.text().strip(),
+                    "check_on_start": self._update_start_check.isChecked(),
                 },
                 "meeting_processes": [
                     item.strip()

@@ -24,6 +24,7 @@ class AgentSpec:
     desktop_paths: tuple[str, ...] = ()
     install_hint: str = "安装后重新检测"
     prompt_supported: bool = True
+    project_url: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +76,7 @@ AGENT_SPECS: tuple[AgentSpec, ...] = (
         summary="Anthropic 官方终端编码 Agent",
         commands=("claude",),
         install_hint="npm install -g @anthropic-ai/claude-code",
+        project_url="https://github.com/anthropics/claude-code",
     ),
     AgentSpec(
         id="claude-desktop",
@@ -87,6 +89,7 @@ AGENT_SPECS: tuple[AgentSpec, ...] = (
         ),
         install_hint="从 claude.ai/download 安装桌面版",
         prompt_supported=False,
+        project_url="https://claude.ai/download",
     ),
     AgentSpec(
         id="codex",
@@ -95,6 +98,7 @@ AGENT_SPECS: tuple[AgentSpec, ...] = (
         summary="OpenAI 终端编码 Agent",
         commands=("codex",),
         install_hint="npm install -g @openai/codex",
+        project_url="https://github.com/openai/codex",
     ),
     AgentSpec(
         id="gemini-cli",
@@ -103,6 +107,7 @@ AGENT_SPECS: tuple[AgentSpec, ...] = (
         summary="Google 终端 Agent",
         commands=("gemini",),
         install_hint="npm install -g @google/gemini-cli",
+        project_url="https://github.com/google-gemini/gemini-cli",
     ),
     AgentSpec(
         id="grok",
@@ -111,6 +116,7 @@ AGENT_SPECS: tuple[AgentSpec, ...] = (
         summary="xAI 终端 Agent",
         commands=("grok",),
         install_hint="安装 Grok CLI 并加入 PATH",
+        project_url="https://github.com/xai-org/grok-build",
     ),
     AgentSpec(
         id="opencode",
@@ -119,6 +125,7 @@ AGENT_SPECS: tuple[AgentSpec, ...] = (
         summary="开源终端编码 Agent",
         commands=("opencode",),
         install_hint="安装 OpenCode CLI 并加入 PATH",
+        project_url="https://github.com/anomalyco/opencode",
     ),
     AgentSpec(
         id="openclaw",
@@ -127,6 +134,7 @@ AGENT_SPECS: tuple[AgentSpec, ...] = (
         summary="开源 Agent 客户端",
         commands=("openclaw",),
         install_hint="安装 OpenClaw 并加入 PATH",
+        project_url="https://github.com/openclaw/openclaw",
     ),
     AgentSpec(
         id="hermes",
@@ -135,6 +143,7 @@ AGENT_SPECS: tuple[AgentSpec, ...] = (
         summary="Nous Research 终端 Agent",
         commands=("hermes",),
         install_hint="安装 Hermes CLI 并加入 PATH",
+        project_url="https://github.com/NousResearch/hermes-agent",
     ),
     AgentSpec(
         id="pi",
@@ -143,6 +152,7 @@ AGENT_SPECS: tuple[AgentSpec, ...] = (
         summary="Earendil Works 终端 Agent",
         commands=("pi",),
         install_hint="npm install -g @earendil-works/pi-coding-agent",
+        project_url="https://github.com/earendil-works/pi",
     ),
     AgentSpec(
         id="minimax-code",
@@ -151,6 +161,7 @@ AGENT_SPECS: tuple[AgentSpec, ...] = (
         summary="MiniMax 编码 Agent",
         commands=("minimax",),
         install_hint="安装 MiniMax Code CLI 并加入 PATH",
+        project_url="https://github.com/MiniMax-AI/minimax-code",
     ),
     AgentSpec(
         id="antigravity",
@@ -163,6 +174,7 @@ AGENT_SPECS: tuple[AgentSpec, ...] = (
         ),
         install_hint="安装 Antigravity 后重新检测",
         prompt_supported=False,
+        project_url="https://antigravity.google/",
     ),
 )
 

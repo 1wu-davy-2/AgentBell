@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import logging
+import os
 import queue
 import socket
+import sys
 import threading
 import time
 import urllib.error
@@ -13,10 +15,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QObject, QTimer, QUrl, Signal
+from PySide6.QtCore import QObject, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QCursor, QDesktopServices, QGuiApplication
-from PySide6.QtWidgets import QApplication, QMenu, QMessageBox
+from PySide6.QtWidgets import (
+    QApplication,
+    QMenu,
+    QMessageBox,
+    QProgressDialog,
+    QSystemTrayIcon,
+    QWidget,
+)
 
+from . import __version__
 from .agent_sessions import AgentSessionScanner
 from .channels import ChannelDispatcher
 from .config import AppConfig, ConfigError, save_config
@@ -30,6 +40,14 @@ from .ui.icons import make_app_icon
 from .ui.toast import ToastManager
 from .ui.tray import TrayIcon
 from .ui.window import NotificationWindow
+from .updater import (
+    ReleaseInfo,
+    UpdateCheck,
+    check_for_update,
+    download_release_asset,
+    install_update,
+    normalize_repo,
+)
 from .window_focus import (
     FocusChoice,
     FocusRequest,
@@ -45,6 +63,9 @@ DIGEST_MIN_DELAY_MS = 1500
 
 class AgentBellApp(QObject):
     server_failed = Signal(str)
+    update_checked = Signal(object)
+    update_downloaded = Signal(object)
+    update_failed = Signal(str)
 
     def __init__(
         self,
@@ -76,6 +97,10 @@ class AgentBellApp(QObject):
         self._escalation_timers: dict[str, QTimer] = {}
         self._snooze_timers: dict[str, QTimer] = {}
         self._about_dialog: Any | None = None
+        self._update_busy = False
+        self._update_manual = False
+        self._update_result: UpdateCheck | None = None
+        self._update_dialog: QProgressDialog | None = None
 
         self.toasts = ToastManager(
             config.auto_close_seconds,
@@ -111,6 +136,9 @@ class AgentBellApp(QObject):
 
         self.tray.recent_selected.connect(self._show_recent)
         self.tray.open_center_requested.connect(self.open_notification_center)
+        self.tray.check_updates_requested.connect(
+            lambda: self.check_updates(manual=True)
+        )
         self.tray.about_requested.connect(self.open_about)
         self.tray.quit_requested.connect(self.quit)
         self.center.replay_requested.connect(self._show_recent)
@@ -119,6 +147,9 @@ class AgentBellApp(QObject):
         self.center.snooze_requested.connect(self._snooze)
         self.center.action_requested.connect(self._run_action)
         self.center.focus_requested.connect(self._focus_requested)
+        self.center.update_check_requested.connect(
+            lambda: self.check_updates(manual=True)
+        )
         self.center.settings_saved.connect(self._apply_config)
         self.center.center_shown.connect(self._mark_read)
         self.center.onboarding_finished.connect(self._finish_onboarding)
@@ -130,6 +161,9 @@ class AgentBellApp(QObject):
         self.toasts.action_requested.connect(self._run_action)
         self.toasts.center_requested.connect(self.open_notification_center)
         self.server_failed.connect(self._on_server_failed)
+        self.update_checked.connect(self._on_update_checked)
+        self.update_downloaded.connect(self._on_update_downloaded)
+        self.update_failed.connect(self._on_update_failed)
         self.hotkey.activated.connect(self.open_notification_center)
         self.presence_monitor.changed.connect(self._on_presence_changed)
 
@@ -712,6 +746,234 @@ class AgentBellApp(QObject):
 
     def _on_session_scan_failed(self, message: str) -> None:
         self.logger.warning("Agent 会话扫描失败：%s", message)
+
+    # ---------- updates ----------
+
+    def _update_parent(self) -> QWidget | None:
+        return self.center if self.center.isVisible() else None
+
+    def _set_update_busy(self, busy: bool) -> None:
+        self._update_busy = busy
+        self.tray.set_update_busy(busy)
+
+    def check_updates(self, manual: bool = False) -> None:
+        if self._shutting_down:
+            return
+        if self._update_busy:
+            if manual:
+                self.tray.showMessage(
+                    "AgentBell",
+                    "正在检查或下载更新，请稍候。",
+                    QSystemTrayIcon.MessageIcon.Information,
+                    3000,
+                )
+            return
+        settings = self.config.update
+        if not settings.enabled:
+            if manual:
+                QMessageBox.information(
+                    self._update_parent(),
+                    "检查更新",
+                    "自动更新已在「偏好设置 → 常规 → 程序更新」中关闭。",
+                )
+            return
+        repo = normalize_repo(settings.repo)
+        if not repo:
+            if manual:
+                QMessageBox.information(
+                    self._update_parent(),
+                    "检查更新",
+                    "还没有配置更新仓库。\n\n"
+                    "请在「偏好设置 → 常规 → 程序更新」里填写 GitHub 仓库 owner/repo。",
+                )
+            return
+        self._update_manual = manual
+        self._set_update_busy(True)
+        self.logger.info("开始检查更新：%s（手动=%s）", repo, manual)
+
+        def worker() -> None:
+            try:
+                result = check_for_update(repo, __version__)
+            except Exception as exc:  # noqa: BLE001 - surfaced in the UI
+                result = UpdateCheck(
+                    "error", f"检查更新失败：{exc}", __version__, repo
+                )
+            self.update_checked.emit(result)
+
+        threading.Thread(
+            target=worker, name="agentbell-update-check", daemon=True
+        ).start()
+
+    def _on_update_checked(self, result: UpdateCheck) -> None:
+        if self._shutting_down:
+            return
+        self._update_result = result
+        self.logger.info("更新检查结果：%s %s", result.status, result.message)
+        if result.available and result.release is not None:
+            release = result.release
+            self.tray.set_update_available(release.version)
+            if self._update_manual:
+                self._update_manual = False
+                self._set_update_busy(False)
+                self._prompt_update(result)
+                return
+            if not result.can_install:
+                self._set_update_busy(False)
+                return
+            if not bool(getattr(sys, "frozen", False)):
+                self.logger.info("源码模式不自动替换程序，跳过自动下载")
+                self._set_update_busy(False)
+                return
+            self.tray.showMessage(
+                "AgentBell 更新",
+                f"发现新版本 {release.version}，正在后台下载…",
+                QSystemTrayIcon.MessageIcon.Information,
+                4000,
+            )
+            self._start_update_download(release, manual=False)
+            return
+
+        self._set_update_busy(False)
+        self.tray.set_update_available("")
+        if not self._update_manual:
+            return
+        self._update_manual = False
+        if result.status == "up_to_date":
+            QMessageBox.information(
+                self._update_parent(), "检查更新", result.message
+            )
+        elif result.status == "error":
+            QMessageBox.warning(
+                self._update_parent(), "检查更新失败", result.message
+            )
+        else:
+            QMessageBox.information(
+                self._update_parent(), "检查更新", result.message
+            )
+
+    def _prompt_update(self, result: UpdateCheck) -> None:
+        release = result.release
+        if release is None:
+            return
+        frozen = bool(getattr(sys, "frozen", False))
+        box = QMessageBox(self._update_parent())
+        box.setWindowTitle("发现新版本")
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setText(f"AgentBell {release.version} 可以更新")
+        notes = release.notes.strip()
+        detail = f"当前版本：{result.current}\n最新版本：{release.version}"
+        if notes:
+            detail += f"\n\n{notes[:800]}"
+        box.setInformativeText(detail)
+        install_text = "下载并安装" if frozen else "仅下载安装包"
+        install_button = box.addButton(
+            install_text, QMessageBox.ButtonRole.AcceptRole
+        )
+        open_button = None
+        if release.html_url:
+            open_button = box.addButton(
+                "打开 Release 页面", QMessageBox.ButtonRole.ActionRole
+            )
+        box.addButton("稍后", QMessageBox.ButtonRole.RejectRole)
+        if not result.can_install:
+            install_button.setEnabled(False)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is open_button and release.html_url:
+            QDesktopServices.openUrl(QUrl(release.html_url))
+        elif clicked is install_button and result.can_install:
+            self._start_update_download(release, manual=True)
+
+    def _start_update_download(
+        self, release: ReleaseInfo, *, manual: bool
+    ) -> None:
+        self._set_update_busy(True)
+        if manual:
+            dialog = QProgressDialog(
+                f"正在下载 AgentBell {release.version}…",
+                "",
+                0,
+                0,
+                self._update_parent(),
+            )
+            dialog.setWindowTitle("下载更新")
+            dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
+            dialog.setCancelButton(None)
+            dialog.setMinimumDuration(0)
+            dialog.show()
+            self._update_dialog = dialog
+
+        def worker() -> None:
+            try:
+                path = download_release_asset(release)
+            except Exception as exc:  # noqa: BLE001 - reported to the UI
+                self.update_failed.emit(str(exc))
+            else:
+                self.update_downloaded.emit(path)
+
+        threading.Thread(
+            target=worker, name="agentbell-update-download", daemon=True
+        ).start()
+
+    def _close_update_dialog(self) -> None:
+        if self._update_dialog is not None:
+            self._update_dialog.close()
+            self._update_dialog.deleteLater()
+            self._update_dialog = None
+
+    def _on_update_downloaded(self, path: object) -> None:
+        self._close_update_dialog()
+        self._update_manual = False
+        self._set_update_busy(False)
+        if self._shutting_down:
+            return
+        downloaded = Path(str(path))
+        self.logger.info("更新包已下载：%s", downloaded)
+        result = install_update(
+            downloaded,
+            pid=os.getpid(),
+            args=sys.argv[1:],
+        )
+        if result.ok:
+            self.tray.showMessage(
+                "AgentBell 更新",
+                "新版本已下载，正在重启完成更新…",
+                QSystemTrayIcon.MessageIcon.Information,
+                4000,
+            )
+            QTimer.singleShot(900, self.quit)
+            return
+        self.logger.warning("未自动替换程序：%s", result.message)
+        box = QMessageBox(self._update_parent())
+        box.setWindowTitle("更新已下载")
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setText(f"AgentBell {downloaded.stem} 的安装包已下载")
+        box.setInformativeText(
+            f"{result.message}\n\n文件位置：\n{downloaded}"
+        )
+        open_button = box.addButton(
+            "打开所在文件夹", QMessageBox.ButtonRole.ActionRole
+        )
+        box.addButton("关闭", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is open_button:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(downloaded.parent)))
+
+    def _on_update_failed(self, message: str) -> None:
+        self._close_update_dialog()
+        self._set_update_busy(False)
+        if self._shutting_down:
+            return
+        self.logger.warning("更新失败：%s", message)
+        self.tray.showMessage(
+            "AgentBell 更新失败",
+            message[:180],
+            QSystemTrayIcon.MessageIcon.Warning,
+            5000,
+        )
+        if self._update_manual:
+            self._update_manual = False
+            QMessageBox.warning(self._update_parent(), "更新失败", message)
 
     def _apply_config(self, config: AppConfig) -> None:
         self.config = config
