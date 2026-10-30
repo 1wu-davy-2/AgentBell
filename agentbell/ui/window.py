@@ -83,12 +83,13 @@ from ..config import (
 )
 from ..integration import build_agent_instructions
 from ..models import STATUS_LABELS, Notification, safe_http_url
-from ..paths import default_project_dir
+from ..paths import default_project_dir, runtime_dir
 from ..store import NotificationStore
 from ..window_focus import FocusRequest
 from .icons import make_app_icon
 from .motion import motion_enabled
 from .onboarding import OnboardingOverlay
+from .toolchain_page import ToolchainPage
 
 SIDEBAR_WIDTH = 232
 DEFAULT_SIZE = QSize(1120, 760)
@@ -272,6 +273,14 @@ def _paint_icon(kind: str, color: QColor, size: int) -> QIcon:
         painter.drawEllipse(QRectF(3.7, 3.7, 10.6, 10.6))
         painter.setBrush(color)
         painter.drawEllipse(QRectF(7.9, 7.9, 2.2, 2.2))
+    elif kind == "download":
+        painter.drawLine(QPointF(9.0, 3.0), QPointF(9.0, 11.2))
+        path = QPainterPath()
+        path.moveTo(5.9, 8.3)
+        path.lineTo(9.0, 11.4)
+        path.lineTo(12.1, 8.3)
+        painter.drawPath(path)
+        painter.drawLine(QPointF(3.6, 14.2), QPointF(14.4, 14.2))
     elif kind == "folder":
         path = QPainterPath()
         path.moveTo(2.9, 5.0)
@@ -1486,6 +1495,8 @@ class NotificationWindow(QMainWindow):
         self._stack.addWidget(self._build_stats_page())
         self._stack.addWidget(self._build_sessions_page())
         self._stack.addWidget(self._build_launcher_page())
+        self._toolchain_page = self._build_toolchain_page()
+        self._stack.addWidget(self._toolchain_page)
         body_layout.addWidget(self._stack, 1)
         content_layout.addWidget(body, 1)
 
@@ -1578,6 +1589,22 @@ class NotificationWindow(QMainWindow):
         tools_section.setObjectName("sectionLabel")
         layout.addWidget(tools_section)
         layout.addSpacing(7)
+
+        self._toolchain_button = QPushButton("运行环境", sidebar)
+        self._toolchain_button.setObjectName("navButton")
+        self._toolchain_button.setCheckable(True)
+        self._toolchain_button.setAutoExclusive(False)
+        self._toolchain_button.setIcon(
+            _paint_icon("download", QColor("#667085"), 16)
+        )
+        self._toolchain_button.setIconSize(QSize(16, 16))
+        self._toolchain_button.setFixedHeight(38)
+        self._toolchain_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._toolchain_button.setToolTip(
+            "把 Node、常用 Agent CLI 与 cc-switch 安装到安装目录，免管理员权限"
+        )
+        self._toolchain_button.clicked.connect(self._on_toolchain_clicked)
+        layout.addWidget(self._toolchain_button)
 
         self._launcher_button = QPushButton("Agent 启动", sidebar)
         self._launcher_button.setObjectName("navButton")
@@ -2199,6 +2226,45 @@ class NotificationWindow(QMainWindow):
         self._refresh_agents(choose=self.config.agent_launcher.last_agent)
         return page
 
+    def _build_toolchain_page(self) -> QWidget:
+        page = ToolchainPage(runtime_dir(), self.config.toolchain, self.logger)
+        page.changed.connect(self._on_toolchain_changed)
+        page.config_patch_requested.connect(self._on_toolchain_patch)
+        page.provider_launch_requested.connect(self._launch_with_provider)
+        return page
+
+    def _on_toolchain_changed(self) -> None:
+        self._refresh_agents()
+
+    def _on_toolchain_patch(self, patch: object) -> None:
+        if not isinstance(patch, dict):
+            return
+        allowed = {"npm_registry", "deepseek_key"}
+        updates = {key: value for key, value in patch.items() if key in allowed}
+        if not updates:
+            return
+        toolchain = replace(self.config.toolchain, **updates)
+        self.settings_saved.emit(replace(self.config, toolchain=toolchain))
+
+    def _launch_with_provider(self, extra_env: object) -> None:
+        if not isinstance(extra_env, dict):
+            return
+        availability = next(
+            (item for item in discover_agents() if item.spec.id == "claude-code"),
+            None,
+        )
+        if availability is None or not availability.installed:
+            self._toolchain_page.notify(
+                "未检测到 Claude Code，请先在「运行环境」里安装", error=True
+            )
+            return
+        result = launch_agent(
+            availability, str(default_project_dir()), "", extra_env=extra_env
+        )
+        self._toolchain_page.notify(result.message, error=not result.ok)
+        if result.ok:
+            self._refresh_agents()
+
     def _launcher_section(
         self, parent: QWidget, title: str, hint: str
     ) -> QWidget:
@@ -2748,12 +2814,12 @@ class NotificationWindow(QMainWindow):
             self._rebuild_cards()
 
     def set_page(self, page: str) -> None:
-        if page not in {"list", "stats", "sessions", "launcher"}:
+        if page not in {"list", "stats", "sessions", "launcher", "toolchain"}:
             return
         changed = page != self._page
         self._page = page
         self._stack.setCurrentIndex(
-            {"list": 0, "stats": 1, "sessions": 2, "launcher": 3}[page]
+            {"list": 0, "stats": 1, "sessions": 2, "launcher": 3, "toolchain": 4}[page]
         )
         self._stats_button.blockSignals(True)
         self._stats_button.setChecked(page == "stats")
@@ -2764,6 +2830,9 @@ class NotificationWindow(QMainWindow):
         self._launcher_button.blockSignals(True)
         self._launcher_button.setChecked(page == "launcher")
         self._launcher_button.blockSignals(False)
+        self._toolchain_button.blockSignals(True)
+        self._toolchain_button.setChecked(page == "toolchain")
+        self._toolchain_button.blockSignals(False)
         self._update_filter_controls()
         if page == "stats":
             self.refresh_stats()
@@ -2774,6 +2843,8 @@ class NotificationWindow(QMainWindow):
         elif page == "launcher":
             self._sync_launcher_start()
             self._refresh_launch_records()
+        elif page == "toolchain":
+            self._toolchain_page.refresh()
         elif changed:
             self._rebuild_cards()
 
@@ -2785,6 +2856,9 @@ class NotificationWindow(QMainWindow):
 
     def _on_launcher_clicked(self, checked: bool) -> None:
         self.set_page("launcher" if checked else "list")
+
+    def _on_toolchain_clicked(self, checked: bool) -> None:
+        self.set_page("toolchain" if checked else "list")
 
     def _update_filter_controls(self) -> None:
         for key, button in self._nav_buttons.items():
@@ -3333,6 +3407,7 @@ class NotificationWindow(QMainWindow):
         self._update_session_summary()
         self._refresh_recent_projects()
         self._sync_launcher_start()
+        self._toolchain_page.apply_config(config.toolchain)
         if self._page == "stats":
             self.refresh_stats()
         elif self._page == "sessions":

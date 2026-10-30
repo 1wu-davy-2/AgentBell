@@ -28,6 +28,8 @@
 
 2.8.1 让 Agent 启动更直接：在「Agent 启动」页双击任意已安装的 Agent 卡片，就会用当前项目目录（默认 `chat/`）和初始提示词立即打开终端，不用再点「打开终端并开始」；双击未安装的卡片只选中并显示安装提示。通知中心标题栏的双击最大化/还原行为不变。
 
+2.9.0 新增「运行环境」页：普通用户不用自己准备 Node。点「一键安装全部」即把官方 Node LTS 便携包、7 个官方 Agent CLI（Claude Code、Codex、Gemini CLI、OpenCode、OpenClaw、Hermes、Pi）和 cc-switch 便携版装进安装目录的 `runtime/`，全程免管理员权限、不改系统 PATH；下载只走 HTTPS 白名单并校验 SHA-256（Node 用官方 `SHASUMS256.txt`，cc-switch 用 GitHub 资产 digest），支持单个卸载与重新检测。Agent 启动页会自动识别 `runtime/` 里的 CLI；DeepSeek 没有官方 CLI，改为供应商预设，用 DPAPI 加密保存的 API Key 直接以 DeepSeek 端点启动 Claude Code。
+
 ## 特性
 
 - 只监听 `127.0.0.1:8765`（可在 `config.json` 改端口），不暴露到局域网。
@@ -53,6 +55,7 @@
 - 回到终端：请求带 `origin`（`pid` / `window_title` / `working_dir`）时自动生成按钮，沿父进程链定位宿主终端或编辑器窗口并切到前台；只聚焦窗口，不选中标签页，也不执行任何命令。会话卡片、会话详情与启动记录也有「回到终端 / 回到窗口」入口，最近通知没带 `origin` 时同样可以用。
 - Agent 启动：内置 11 个常见 Agent 的检测规则（Claude Code、Claude Desktop、Codex、Gemini CLI、Grok Build、OpenCode、OpenClaw、Hermes、Pi、MiniMax Code、Antigravity），已安装的排在前面并显示可执行文件路径；选择项目目录、填写初始提示词后，点「打开终端并开始」或直接双击卡片，即打开 PowerShell 新窗口并启动对应 Agent。提示词通过环境变量传入，不拼接进 shell 命令；桌面应用只打开窗口，不会假装能预填提示词。最近 6 个项目与上次使用的 Agent 会写入 `agent_launcher`。
 - 默认 chat 工作区：首次启动在安装目录（源码模式为仓库根目录）自动创建 `chat/`，Agent 启动页默认选中它；要回到「本目录里直接聊」的用法，不用每次浏览文件夹。也可继续选择其他项目，最近项目仍会保留。
+- 便携运行环境：内置「运行环境」页把 Node LTS、7 个官方 npm Agent CLI 与 cc-switch 便携版装到安装目录 `runtime/`；下载只接受 HTTPS 白名单域名并校验 SHA-256，免管理员权限、不改系统 PATH，安装后可卸载与重新检测；DeepSeek 作为供应商预设注入 Claude Code 启动环境。
 - Agent 项目主页：每张 Agent 卡片都可点右上角「项目主页」打开对应的官网或 GitHub 仓库，方便查安装方式、更新与文档。
 - 自身更新：设置里填写 GitHub 仓库 `owner/repo` 后，启动约 9 秒后检查 Releases；发现新版本会提示并下载 `AgentBell.exe`，校验大小与 SHA-256 后在退出时自动替换、备份旧版并重启。托盘和 Agent 启动页都有「检查更新」入口；源码模式只下载安装包，不会替换正在运行的 Python 程序。
 - 规则引擎：按来源 / 标题 / 状态自动设置优先级、静音、待确认、免打扰例外、弹窗外观、外部渠道。
@@ -80,6 +83,7 @@ agentbell/
 │  ├─ presence.py         Windows 空闲时间、前台全屏、会议进程、锁屏/息屏检测
 │  ├─ agent_sessions.py   Claude Code / Qoder 会话扫描、记录解析与 Markdown 导出
 │  ├─ agent_launch.py     Agent 检测、项目内启动终端与提示词传递
+│  ├─ toolchain.py        便携 Node / Agent CLI / cc-switch 安装、校验与清单
 │  ├─ updater.py          GitHub Release 检查、下载校验、替换脚本与重启
 │  ├─ window_focus.py     Win32 窗口解析与聚焦（回到终端）
 │  ├─ channels.py         外部渠道后台投递线程
@@ -99,6 +103,7 @@ agentbell/
 │     ├─ onboarding.py    四步首次启动介绍覆盖层（自动播放、暂停、跳过）
 │     ├─ about.py         「关于 AgentBell」标志展示、尺寸/变体与 SVG 导出
 │     ├─ window.py        cc-switch 风格通知中心、搜索、统计、Agent 会话、Agent 启动与阅读视图
+│     ├─ toolchain_page.py 「运行环境」页面（安装、卸载、进度、DeepSeek 预设）
 │     ├─ settings.py      偏好设置对话框
 │     ├─ overlay_editor.py 全屏拖拽定位编辑器（真实背景预览、拖动、保存位置）
 │     ├─ toast.py         置顶弹窗、皮肤/模式、倒计时、堆叠调度、聚合摘要
@@ -110,6 +115,7 @@ agentbell/
 ├─ config.json            当前配置
 ├─ config.example.json    配置示例
 ├─ chat/                  运行后自动创建：Agent 启动的默认工作目录（不提交）
+├─ runtime/               运行后自动创建：便携 Node、Agent CLI、cc-switch 与 tools.json（不提交）
 ├─ updates/               运行后自动创建：更新包与替换脚本（不提交）
 ├─ .github/workflows/build.yml  测试、打包、artifact 与 Release 发布
 ├─ requirements.txt       运行依赖
@@ -360,6 +366,41 @@ AgentBell 已就绪：http://127.0.0.1:8765（X-Token 鉴权已开启）
 - 桌面应用（Claude Desktop / Antigravity）：只打开应用并设置工作目录；如果填写了提示词，会先提示桌面应用不支持自动预填，确认后才继续。
 - 提示词上限 8000 字符；项目目录必须存在；启动失败会在按钮右侧显示原因，不弹额外对话框。
 - 从 AgentBell 打开的终端会记录 PID，「本次打开的终端」里可点「回到终端 / 回到窗口」精确切回；关闭终端后按钮会失效。
+
+### 运行环境
+
+| 字段 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `toolchain.npm_registry` | 字符串 | `https://registry.npmjs.org` | npm 下载源；可切换为 `https://registry.npmmirror.com`，必须是 HTTPS 地址 |
+| `toolchain.deepseek_key` | 字符串 | `""` | DeepSeek API Key，保存时用 Windows DPAPI 加密为 `dpapi:` 前缀；留空表示未配置 |
+
+目录布局（`runtime/` 位于 exe 或仓库根目录旁，已加入 `.gitignore`）：
+
+```text
+runtime/
+├─ node/        官方 Node LTS 便携包（node.exe 与自带的 npm）
+├─ agents/      npm 全局前缀：7 个 Agent CLI 与其 bin 启动器
+├─ cc-switch/   cc-switch 便携版解压目录
+├─ cache/       npm 缓存
+├─ npmrc        AgentBell 专用的 npm 配置（不读写用户 .npmrc）
+└─ tools.json   组件版本、来源、SHA-256 与安装时间
+```
+
+安装源与校验：
+
+- Node：读 `https://nodejs.org/dist/index.json`，取最新的 LTS 版本与 `win-x64` / `win-arm64` zip，下载后按官方 `SHASUMS256.txt` 校验 SHA-256，解压出的唯一根目录整体移动到 `runtime/node`。
+- Agent CLI：全部是官方 npm 包，使用 `runtime/node/node.exe` 执行自带 npm，`--prefix runtime/agents`，不写系统全局目录。
+- cc-switch：从 `farion1231/cc-switch` 的最新 Release 里选 `Windows-Portable.zip`，GitHub 提供资产 `digest` 时校验 SHA-256，解压到 `runtime/cc-switch`；zip 条目会拒绝 `..` 与绝对路径。
+- 所有下载只允许 HTTPS 与白名单域名（nodejs.org、npm 官方源 / 镜像、api.github.com、github.com 与 GitHub 资源域名），并限制大小（单文件 200 MB、解压 900 MB）；重定向后重新校验域名。
+
+行为：
+
+- 「一键安装全部」按 Node → 7 个 CLI → cc-switch 顺序执行，页面显示阶段与进度；也可单独安装、卸载或重新检测。
+- 列表状态来自 `tools.json` 与磁盘实际文件，两者不一致时以磁盘为准。
+- 安装、卸载与探测都在后台线程执行，不阻塞窗口；失败会在底部状态区显示原因（含 npm 退出码）。
+- 检测与启动 Agent 时，`runtime/node` 与 `runtime/agents` 会临时加入子进程 `PATH`，不修改系统或用户环境变量。
+- 便携 Node 只支持 Windows；其他平台可在「Agent 启动」页使用系统已安装的 Agent。
+- DeepSeek 没有官方 CLI：在页面底部保存 API Key 后，「用 DeepSeek 启动 Claude Code」会把 `ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic`、`ANTHROPIC_AUTH_TOKEN`、`ANTHROPIC_MODEL=deepseek-chat` 注入 Claude Code 的启动环境；「复制 Codex 配置片段」给出对应的 TOML。
 
 ### 程序更新
 

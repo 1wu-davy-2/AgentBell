@@ -40,6 +40,10 @@ AgentBell does one thing well: **tell you the moment a round ends, and let you g
 | **Agent launcher** | **Program update settings** |
 | ![Agent launcher](docs/screenshots/agent-launcher.png) | ![Settings](docs/screenshots/settings-update.png) |
 
+**Runtime**: install portable Node, the official agent CLIs, and cc-switch into the program directory with one click.
+
+![Runtime](docs/screenshots/toolchain.png)
+
 ## Install
 
 **Requirements**: Windows 10/11 for the full feature set (tray, hotkey, fullscreen/meeting detection, focus-terminal). macOS/Linux can run the basic popup and notification center from source.
@@ -48,7 +52,7 @@ AgentBell does one thing well: **tell you the moment a round ends, and let you g
 
 1. Open [Releases](https://github.com/1wu-davy-2/AgentBell/releases/latest) and download `AgentBell.exe`.
 2. Put it in a **writable directory**, such as `D:\Tools\AgentBell`, and double-click it.
-3. On first launch, `config.json`, `logs/`, `agentbell.db`, and `chat/` are created in the same directory.
+3. On first launch, `config.json`, `logs/`, `agentbell.db`, and `chat/` are created in the same directory; installing components from the **Runtime** page creates `runtime/`.
 4. If SmartScreen warns about an unknown publisher, choose **More info → Run anyway**. The build is not code-signed.
 5. Closing the window hides it to the tray. Use the tray menu or **退出 AgentBell** in the sidebar to quit.
 
@@ -98,7 +102,17 @@ Filter by status in the sidebar, search by title, summary, or source, and double
 
 Ask the agent to include `origin.pid` so notification cards can offer a **back to terminal** button.
 
-### 4. Launch agents (optional)
+### 4. Install the agent runtime
+
+Open the **Runtime** page and click **Install all**, or install only what you need:
+
+- **Node**: the official LTS portable zip is verified against the official `SHASUMS256.txt` and extracted to `runtime/node`.
+- **Agent CLIs**: Claude Code, Codex, Gemini CLI, OpenCode, OpenClaw, Hermes, and Pi from their official npm packages, installed under `runtime/agents`, never into the system global directory.
+- **cc-switch**: the portable zip from GitHub Releases, extracted to `runtime/cc-switch`.
+
+No administrator rights are required, and the system `PATH` is left untouched; AgentBell only prepends these folders for agent detection and spawned terminals. Afterwards, click **Refresh** on the launcher page to pick up the new CLIs. DeepSeek has no official CLI, so save an API key at the bottom of the page and use **Launch Claude Code with DeepSeek** to start it with that provider.
+
+### 5. Launch agents (optional)
 
 The **Agent 启动** page detects Claude Code, Claude Desktop, Codex, Gemini CLI, Grok Build, OpenCode, OpenClaw, Hermes, Pi, MiniMax Code, and Antigravity.
 
@@ -107,7 +121,7 @@ The **Agent 启动** page detects Claude Code, Claude Desktop, Codex, Gemini CLI
 - Prompts are passed through an environment variable, never concatenated into a shell command. Desktop apps can only be opened, not pre-filled.
 - **项目主页** opens the agent's official site or GitHub repository.
 
-### 5. Return to the terminal
+### 6. Return to the terminal
 
 Include the source process in the request:
 
@@ -121,11 +135,11 @@ Include the source process in the request:
 
 The card gets a **回到终端** button that brings the host terminal or editor window to the foreground. It focuses the window only — no tab selection, no command execution. If no window is found, the working directory is copied to the clipboard.
 
-### 6. Tune appearance and interruptions
+### 7. Tune appearance and interruptions
 
 Preferences cover skins, popup modes, fullscreen background and card placement, quiet hours, fullscreen/meeting suppression, lock-screen holding, digest, acknowledgements, and snooze. The **测试** button previews the current configuration without writing history.
 
-### 7. Build and release
+### 8. Build and release
 
 ```powershell
 pip install -r requirements-dev.txt

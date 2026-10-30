@@ -37,6 +37,7 @@ AgentBell 是一个只做提醒的 Windows 桌面工具。AI Agent 每轮任务�
 - 待确认、5/15/30 分钟稍后提醒，以及回到终端、打开链接、复制、重试等动作。
 - 通知中心搜索、筛选、成功率 / 耗时统计与 7 天趋势。
 - 内置 11 种 Agent 的检测与启动，默认使用安装目录下的 `chat/` 工作区。
+- 便携运行环境：一键把 Node LTS、7 个官方 Agent CLI（Claude Code、Codex、Gemini CLI、OpenCode、OpenClaw、Hermes、Pi）和 cc-switch 装进安装目录的 `runtime/`，免管理员权限、不改系统 PATH；DeepSeek 作为供应商预设直接注入 Claude Code。
 - 基于 GitHub Releases 的自身更新。
 
 ### 设计初衷
@@ -67,6 +68,10 @@ AgentBell 是一个只做提醒的 Windows 桌面工具。AI Agent 每轮任务�
 
 ![Agent 启动](docs/screenshots/agent-launcher.png)
 
+**运行环境**：Node、Agent CLI 与 cc-switch 一键装进安装目录，卸载与重新检测都在这一页。
+
+![运行环境](docs/screenshots/toolchain.png)
+
 **偏好设置**：外观、打扰策略、程序更新、规则与外部渠道。
 
 ![偏好设置](docs/screenshots/settings-update.png)
@@ -79,7 +84,7 @@ AgentBell 是一个只做提醒的 Windows 桌面工具。AI Agent 每轮任务�
 
 1. 打开 [Releases](https://github.com/1wu-davy-2/AgentBell/releases/latest)，下载 `AgentBell.exe`。
 2. 放到一个**可写目录**，例如 `D:\Tools\AgentBell`，双击运行。
-3. 首次运行会在 exe 旁边生成 `config.json`、`logs/`、`agentbell.db` 和 `chat/`。
+3. 首次运行会在 exe 旁边生成 `config.json`、`logs/`、`agentbell.db` 和 `chat/`；在「运行环境」页安装组件时生成 `runtime/`。
 4. 如果 Windows SmartScreen 提示“未知发布者”，点「更多信息 → 仍要运行」。程序没有代码签名，这是正常提示。
 5. 关闭窗口只是隐藏到托盘；要彻底退出，用托盘菜单或左侧栏的「退出 AgentBell」。
 
@@ -148,7 +153,17 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8765/notify" -Method Post `
 
 如果希望通知卡片带「回到终端」按钮，让 Agent 在请求里带上 `origin.pid`；`window_title` 和 `working_dir` 可作为兜底。
 
-#### 4. 启动 Agent（可选）
+#### 4. 一键装好 Agent 运行环境
+
+打开「运行环境」页，点「一键安装全部」，或只安装需要的组件：
+
+- **Node**：官方 LTS 便携包，解压到 `runtime/node`，用官方 `SHASUMS256.txt` 校验 SHA-256。
+- **Agent CLI**：Claude Code、Codex、Gemini CLI、OpenCode、OpenClaw、Hermes、Pi 七个官方 npm 包，装到 `runtime/agents`，不写系统全局目录。
+- **cc-switch**：GitHub Release 的便携版 zip，解压到 `runtime/cc-switch`。
+
+全程不需要管理员权限，也不修改系统 `PATH`；AgentBell 只在检测和启动 Agent 时临时把这些目录加进子进程环境。装完到「Agent 启动」页点「重新检测」，新装的 CLI 会出现在已安装列表里。DeepSeek 没有官方 CLI，可在页面底部保存 API Key，用「用 DeepSeek 启动 Claude Code」以该供应商打开终端。
+
+#### 5. 启动 Agent（可选）
 
 打开「Agent 启动」页，AgentBell 会检测本机安装的 Claude Code、Claude Desktop、Codex、Gemini CLI、Grok Build、OpenCode、OpenClaw、Hermes、Pi、MiniMax Code、Antigravity。
 
@@ -157,7 +172,7 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8765/notify" -Method Post `
 - 提示词通过环境变量传入，不拼接进 shell 命令。桌面应用只能打开窗口，无法预填提示词。
 - 每张卡片右上角的「项目主页」可打开对应官网或 GitHub 仓库。
 
-#### 5. 回到终端
+#### 6. 回到终端
 
 通知请求带上来源进程信息：
 
@@ -171,11 +186,11 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8765/notify" -Method Post `
 
 通知卡片会出现「回到终端」按钮，点击后把宿主终端或编辑器窗口切到前台。它只做窗口级聚焦，不会选中具体标签页，也不执行命令；找不到窗口时会提示并把项目路径复制到剪贴板。
 
-#### 6. 外观与打扰控制
+#### 7. 外观与打扰控制
 
 在偏好设置里可以调整弹窗皮肤、弹窗模式、全屏背景与卡片位置，配置免打扰时段、全屏 / 会议抑制、锁屏保留、聚合摘要、待确认和稍后提醒。设置页底部的「测试」按钮会按当前配置弹出一条预览，不写入历史。
 
-#### 7. 构建与发布
+#### 8. 构建与发布
 
 ```powershell
 pip install -r requirements-dev.txt
@@ -186,7 +201,7 @@ python -m PyInstaller --noconfirm --clean AgentBell12.spec
 推送到 `develop` 会触发测试与打包；推送 `v*` 标签会校验标签与 `agentbell/__init__.py` 的 `__version__` 一致，然后自动发布 Release。
 
 ```bash
-git tag v2.8.2
+git tag v2.9.0
 git push origin develop --tags
 ```
 

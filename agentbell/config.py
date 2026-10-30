@@ -92,6 +92,12 @@ class AgentLauncherConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class ToolchainConfig:
+    npm_registry: str = "https://registry.npmjs.org"
+    deepseek_key: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class UpdateConfig:
     enabled: bool = True
     repo: str = ""
@@ -184,6 +190,7 @@ class AppConfig:
     agent_launcher: AgentLauncherConfig = field(
         default_factory=AgentLauncherConfig
     )
+    toolchain: ToolchainConfig = field(default_factory=ToolchainConfig)
     update: UpdateConfig = field(default_factory=UpdateConfig)
 
     @property
@@ -431,6 +438,19 @@ def _read_agent_launcher(data: dict[str, Any]) -> AgentLauncherConfig:
             maximum_length=260,
         ),
         last_agent=_read_str(section, "last_agent", "", 60),
+    )
+
+
+def _read_toolchain(data: dict[str, Any]) -> ToolchainConfig:
+    section = _section(data, "toolchain")
+    registry = _read_str(
+        section, "npm_registry", "https://registry.npmjs.org", 200
+    ).rstrip("/")
+    if registry and not registry.startswith("https://"):
+        raise ConfigError('"toolchain.npm_registry" 必须是 HTTPS 地址')
+    return ToolchainConfig(
+        npm_registry=registry or "https://registry.npmjs.org",
+        deepseek_key=_read_str(section, "deepseek_key", "", 2048),
     )
 
 
@@ -714,6 +734,7 @@ def _parse_config(data: dict[str, Any]) -> AppConfig:
         hold_when_locked=_read_bool(data, "hold_when_locked", True),
         agent_sessions=_read_agent_sessions(data),
         agent_launcher=_read_agent_launcher(data),
+        toolchain=_read_toolchain(data),
         update=_read_update(data),
     )
 

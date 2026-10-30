@@ -8,10 +8,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
+from .paths import runtime_dir
 from .window_focus import FocusRequest
 
 MAX_PROMPT_CHARS = 8000
 MAX_TITLE_CHARS = 120
+
+
+def _runtime_bin_dirs() -> list[str]:
+    root = runtime_dir()
+    return [str(path) for path in (root / "agents", root / "node") if path.is_dir()]
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,6 +213,9 @@ def discover_agents(
 ) -> list[AgentAvailability]:
     environment = os.environ if env is None else env
     path = environment.get("PATH", "")
+    bins = _runtime_bin_dirs()
+    if bins:
+        path = os.pathsep.join(bins + ([path] if path else []))
     found: list[AgentAvailability] = []
     for spec in AGENT_SPECS:
         executable = ""
@@ -249,6 +258,7 @@ def launch_agent(
     prompt: str = "",
     *,
     env: Mapping[str, str] | None = None,
+    extra_env: Mapping[str, str] | None = None,
     popen: Callable[..., object] = subprocess.Popen,
 ) -> LaunchResult:
     spec = availability.spec
@@ -284,6 +294,14 @@ def launch_agent(
         )
 
     environment = dict(os.environ if env is None else env)
+    if extra_env:
+        environment.update({key: str(value) for key, value in extra_env.items()})
+    bins = _runtime_bin_dirs()
+    if bins:
+        inherited = environment.get("PATH", "")
+        environment["PATH"] = os.pathsep.join(
+            bins + ([inherited] if inherited else [])
+        )
     if spec.kind == "desktop":
         try:
             process = popen(

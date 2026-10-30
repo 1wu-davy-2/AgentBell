@@ -46,6 +46,10 @@
     "recent_projects": [],
     "last_agent": ""
   },
+  "toolchain": {
+    "npm_registry": "https://registry.npmjs.org",
+    "deepseek_key": ""
+  },
   "digest": {
     "enabled": true,
     "threshold": 4,
