@@ -7,6 +7,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from PySide6.QtCore import QPoint, Qt
+from PySide6.QtGui import QColor, QPixmap
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLabel
 
@@ -204,6 +205,57 @@ def test_overlay_update_keeps_fullscreen_geometry(qapp):
         QTest.qWait(40)
         if screen is not None:
             assert toast.geometry() == screen.geometry()
+    finally:
+        toast.close_now()
+        toast.deleteLater()
+        QTest.qWait(20)
+
+
+def test_overlay_custom_image_is_cropped_with_scrim(qapp, tmp_path):
+    screen = QApplication.primaryScreen()
+    image_path = tmp_path / "background.png"
+    image = QPixmap(80, 40)
+    image.fill(QColor("#FF7A00"))
+    assert image.save(str(image_path))
+
+    toast = ToastWindow(
+        make_notification(53),
+        30,
+        logging.getLogger("agentbell.tests"),
+        popup_mode="overlay",
+        popup_skin="amber",
+        overlay_image=str(image_path),
+    )
+    try:
+        toast.show_at(QPoint(0, 0))
+        QTest.qWait(60)
+        backdrop = toast._overlay_backdrop
+        assert backdrop is not None
+        assert backdrop.has_image is True
+        if screen is not None:
+            assert toast.geometry() == screen.geometry()
+        pixel = toast.grab().toImage().pixelColor(8, 8)
+        assert pixel.red() < 170
+        assert pixel.green() < 130
+    finally:
+        toast.close_now()
+        toast.deleteLater()
+        QTest.qWait(20)
+
+
+def test_overlay_missing_image_falls_back_to_gradient(qapp, tmp_path):
+    toast = ToastWindow(
+        make_notification(54),
+        30,
+        logging.getLogger("agentbell.tests"),
+        popup_mode="overlay",
+        overlay_image=str(tmp_path / "missing.png"),
+    )
+    try:
+        toast.show_at(QPoint(0, 0))
+        QTest.qWait(40)
+        assert toast._overlay_backdrop is not None
+        assert toast._overlay_backdrop.has_image is False
     finally:
         toast.close_now()
         toast.deleteLater()

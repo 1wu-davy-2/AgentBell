@@ -41,6 +41,8 @@ def test_save_validates_and_writes_config(qapp, tmp_path):
         dialog._token_edit.setText("new-token")
         dialog._auto_close_spin.setValue(12)
         dialog._success_popup_check.setChecked(False)
+        dialog._open_center_check.setChecked(False)
+        dialog._overlay_image_edit.setText(str(tmp_path / "bg.png"))
         dialog._quiet_enabled_check.setChecked(True)
         dialog._quiet_start_edit.setTime(QTime.fromString("21:30", "HH:mm"))
         dialog._quiet_end_edit.setTime(QTime.fromString("07:15", "HH:mm"))
@@ -92,6 +94,8 @@ def test_save_validates_and_writes_config(qapp, tmp_path):
         assert loaded.token == "new-token"
         assert loaded.auto_close_seconds == 12
         assert loaded.success_popup is False
+        assert loaded.open_center_on_start is False
+        assert loaded.overlay_image == str(tmp_path / "bg.png")
         assert loaded.quiet_hours.enabled is True
         assert loaded.quiet_hours.start == "21:30"
         assert loaded.quiet_hours.end == "07:15"
@@ -167,5 +171,35 @@ def test_empty_rules_and_channels_are_valid(qapp):
         assert dialog.result_config is not None
         assert dialog.result_config.rules == ()
     finally:
+        dialog.deleteLater()
+        QTest.qWait(20)
+
+
+def test_preview_uses_selected_appearance_and_cleans_up(qapp, tmp_path):
+    dialog = make_dialog(qapp)
+    try:
+        image_path = tmp_path / "bg.png"
+        dialog._popup_mode_combo.setCurrentIndex(
+            dialog._popup_mode_combo.findData("overlay")
+        )
+        dialog._popup_skin_combo.setCurrentIndex(
+            dialog._popup_skin_combo.findData("amber")
+        )
+        dialog._overlay_image_edit.setText(str(image_path))
+        dialog._preview_popup()
+
+        preview = dialog._preview
+        assert preview is not None
+        assert preview.popup_mode == "overlay"
+        assert preview.popup_skin == "amber"
+        assert preview._overlay_backdrop is not None
+        assert preview._overlay_backdrop.has_image is False
+
+        preview.dismiss("ack")
+        QTest.qWait(260)
+        assert dialog._preview is None
+    finally:
+        if dialog._preview is not None:
+            dialog._preview.close_now()
         dialog.deleteLater()
         QTest.qWait(20)

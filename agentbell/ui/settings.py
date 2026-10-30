@@ -5,7 +5,7 @@ import logging
 from dataclasses import replace
 from pathlib import Path
 
-from PySide6.QtCore import QTime, Qt
+from PySide6.QtCore import QPoint, QTime, Qt
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -41,8 +41,10 @@ from ..models import (
     POPUP_MODES,
     POPUP_SKIN_LABELS,
     POPUP_SKINS,
+    Notification,
 )
 from .icons import make_app_icon
+from .toast import ToastWindow
 
 _SOUND_KEYS = ("succeeded", "failed", "canceled", "running", "critical")
 _SOUND_LABELS = {
@@ -211,6 +213,17 @@ QPushButton#ghostButton {
 QPushButton#ghostButton:hover {
     background-color: #EAF1FF;
 }
+QPushButton#testButton {
+    background-color: #FFFFFF;
+    border: 1px solid #2F6FF0;
+    border-radius: 8px;
+    color: #2F6FF0;
+    font-size: 12px;
+    padding: 0px 16px;
+}
+QPushButton#testButton:hover {
+    background-color: #EAF1FF;
+}
 """
 
 
@@ -227,6 +240,7 @@ class SettingsDialog(QDialog):
         self._config_path = Path(config_path) if config_path else None
         self.logger = logger or logging.getLogger("agentbell.settings")
         self.result_config: AppConfig | None = None
+        self._preview: ToastWindow | None = None
 
         self.setWindowTitle("AgentBell 偏好设置")
         self.setWindowIcon(make_app_icon())
@@ -267,6 +281,14 @@ class SettingsDialog(QDialog):
         )
         self._status_hint.setObjectName("dialogHint")
         buttons.addWidget(self._status_hint, 1)
+
+        self._test_button = QPushButton("测试", self)
+        self._test_button.setObjectName("testButton")
+        self._test_button.setFixedSize(76, 34)
+        self._test_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._test_button.setToolTip("用当前选择的模式、皮肤和背景图预览弹窗")
+        self._test_button.clicked.connect(self._preview_popup)
+        buttons.addWidget(self._test_button)
 
         self._cancel_button = QPushButton("取消", self)
         self._cancel_button.setObjectName("secondaryButton")
@@ -328,6 +350,12 @@ class SettingsDialog(QDialog):
         self._autostart_check = QCheckBox("登录 Windows 后自动启动", group)
         self._autostart_check.setChecked(self.config.autostart)
         form.addRow("", self._autostart_check)
+
+        self._open_center_check = QCheckBox(
+            "启动后自动打开通知中心（带淡入动画）", group
+        )
+        self._open_center_check.setChecked(self.config.open_center_on_start)
+        form.addRow("", self._open_center_check)
         layout.addWidget(group)
 
         popup = QGroupBox("弹窗行为", page)
@@ -417,8 +445,58 @@ class SettingsDialog(QDialog):
         skin_form.addRow("", skin_hint)
         layout.addWidget(skin_group)
 
+        image_group = QGroupBox("全屏背景图", page)
+        image_form = QFormLayout(image_group)
+        image_form.setContentsMargins(12, 14, 12, 10)
+        image_form.setSpacing(9)
+
+        image_row = QWidget(image_group)
+        image_layout = QHBoxLayout(image_row)
+        image_layout.setContentsMargins(0, 0, 0, 0)
+        image_layout.setSpacing(6)
+        self._overlay_image_edit = QLineEdit(self.config.overlay_image, image_row)
+        self._overlay_image_edit.setPlaceholderText(
+            "留空使用内置渐变；支持 PNG / JPG / BMP / WebP"
+        )
+        image_layout.addWidget(self._overlay_image_edit, 1)
+        self._choose_image_button = QPushButton("选择图片", image_row)
+        self._choose_image_button.setObjectName("ghostButton")
+        self._choose_image_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._choose_image_button.clicked.connect(self._choose_overlay_image)
+        image_layout.addWidget(self._choose_image_button)
+        self._clear_image_button = QPushButton("清除", image_row)
+        self._clear_image_button.setObjectName("ghostButton")
+        self._clear_image_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._clear_image_button.clicked.connect(
+            lambda: self._overlay_image_edit.clear()
+        )
+        image_layout.addWidget(self._clear_image_button)
+        image_form.addRow("背景图片", image_row)
+
+        image_hint = QLabel(
+            "图片会按比例铺满整个屏幕并自动裁切，叠加暗色遮罩保证文字可读；"
+            "仅在「全屏遮挡」模式下生效。",
+            image_group,
+        )
+        image_hint.setObjectName("editorHint")
+        image_hint.setWordWrap(True)
+        image_form.addRow("", image_hint)
+        layout.addWidget(image_group)
+
         layout.addStretch(1)
         return page
+
+    def _choose_overlay_image(self) -> None:
+        current = self._overlay_image_edit.text().strip()
+        start = current or str(Path.home())
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择全屏背景图片",
+            start,
+            "图片 (*.png *.jpg *.jpeg *.bmp *.webp);;所有文件 (*)",
+        )
+        if path:
+            self._overlay_image_edit.setText(path)
 
     def _build_policy_tab(self) -> QWidget:
         page = QWidget(self)
@@ -725,6 +803,46 @@ class SettingsDialog(QDialog):
     def _fill_example(editor: QPlainTextEdit, payload: list[dict]) -> None:
         editor.setPlainText(json.dumps(payload, ensure_ascii=False, indent=2))
 
+    def _preview_popup(self) -> None:
+        if self._preview is not None:
+            self._preview.close_now()
+            self._preview.deleteLater()
+            self._preview = None
+        notification = Notification(
+            id="settings-preview",
+            title="弹窗效果预览",
+            status="succeeded",
+            summary="这是当前选择的模式、皮肤与背景图效果；点击「知道了」关闭预览。",
+            source="偏好设置",
+            require_ack=True,
+        )
+        image = self._overlay_image_edit.text().strip()
+        preview = ToastWindow(
+            notification,
+            10,
+            self.logger,
+            templates=self.config.templates,
+            popup_mode=self._popup_mode_combo.currentData(),
+            popup_skin=self._popup_skin_combo.currentData(),
+            overlay_image=image,
+            parent=self,
+        )
+        preview.dismissed.connect(self._on_preview_dismissed)
+        self._preview = preview
+        preview.show_at(QPoint(0, 0))
+        self.logger.info(
+            "设置预览：模式=%s 皮肤=%s 背景图=%s",
+            preview.popup_mode,
+            preview.popup_skin,
+            image or "-",
+        )
+
+    def _on_preview_dismissed(self, notification: Notification, reason: str) -> None:
+        preview = self._preview
+        self._preview = None
+        if preview is not None:
+            preview.deleteLater()
+
     def _read_list(self, editor: QPlainTextEdit, label: str) -> list:
         text = editor.toPlainText().strip() or "[]"
         try:
@@ -745,6 +863,7 @@ class SettingsDialog(QDialog):
                 "token": self._token_edit.text(),
                 "auto_close_seconds": self._auto_close_spin.value(),
                 "autostart": self._autostart_check.isChecked(),
+                "open_center_on_start": self._open_center_check.isChecked(),
                 "success_popup": self._success_popup_check.isChecked(),
                 "require_ack_by_default": self._require_ack_check.isChecked(),
                 "popup_cooldown_seconds": self._cooldown_spin.value(),
@@ -754,6 +873,7 @@ class SettingsDialog(QDialog):
                 "away_idle_seconds": self._away_spin.value(),
                 "popup_mode": self._popup_mode_combo.currentData(),
                 "popup_skin": self._popup_skin_combo.currentData(),
+                "overlay_image": self._overlay_image_edit.text().strip(),
                 "agent_sessions": {
                     "enabled": self._agent_enabled_check.isChecked(),
                     "scan_interval_seconds": self._agent_interval_spin.value(),
@@ -820,6 +940,8 @@ class SettingsDialog(QDialog):
             self._tabs.setCurrentIndex(3)
         elif "agent_sessions" in message:
             self._tabs.setCurrentIndex(4)
+        elif "overlay_image" in message:
+            self._tabs.setCurrentIndex(1)
         else:
             self._tabs.setCurrentIndex(0)
         QMessageBox.warning(self, "配置无效", message)

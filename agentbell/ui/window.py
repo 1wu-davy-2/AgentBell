@@ -4,7 +4,20 @@ import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import (
+    QEasingCurve,
+    QEvent,
+    QParallelAnimationGroup,
+    QPoint,
+    QPointF,
+    QPropertyAnimation,
+    QRectF,
+    QSize,
+    Qt,
+    QTimer,
+    QUrl,
+    Signal,
+)
 from PySide6.QtGui import (
     QColor,
     QDesktopServices,
@@ -895,6 +908,7 @@ class NotificationWindow(QMainWindow):
         self._session_scanned_at: datetime | None = None
         self._shutting_down = False
         self._placed = False
+        self._show_animation: QParallelAnimationGroup | None = None
         self._cards: list[NotificationCard] = []
 
         self.setWindowTitle("AgentBell 通知中心")
@@ -1967,20 +1981,56 @@ class NotificationWindow(QMainWindow):
         elif self._page == "sessions":
             self._rebuild_session_cards()
 
-    def show_center(self) -> None:
+    def show_center(self, animate: bool = False) -> None:
         if self._shutting_down:
             return
         self.refresh_items(self._store.snapshot())
+        was_visible = self.isVisible()
         if self.isMinimized():
             self.showNormal()
         self._center_if_needed()
+        if not was_visible:
+            self.setWindowOpacity(0.0 if animate else 1.0)
         self.show()
         self.raise_()
         self.activateWindow()
+        if animate and not was_visible:
+            self._play_show_animation()
+        elif not animate:
+            self.setWindowOpacity(1.0)
         self.center_shown.emit()
         self.logger.info("打开通知中心")
 
+    def _play_show_animation(self) -> None:
+        if self._show_animation is not None:
+            self._show_animation.stop()
+        target = self.pos()
+        self.move(target + QPoint(0, 16))
+
+        fade = QPropertyAnimation(self, b"windowOpacity", self)
+        fade.setDuration(260)
+        fade.setEasingCurve(QEasingCurve.Type.OutCubic)
+        fade.setStartValue(0.0)
+        fade.setEndValue(1.0)
+
+        rise = QPropertyAnimation(self, b"pos", self)
+        rise.setDuration(260)
+        rise.setEasingCurve(QEasingCurve.Type.OutCubic)
+        rise.setStartValue(target + QPoint(0, 16))
+        rise.setEndValue(target)
+
+        group = QParallelAnimationGroup(self)
+        group.addAnimation(fade)
+        group.addAnimation(rise)
+        group.finished.connect(lambda: self.setWindowOpacity(1.0))
+        self._show_animation = group
+        group.start()
+
     def hide_center(self) -> None:
+        if self._show_animation is not None:
+            self._show_animation.stop()
+            self._show_animation = None
+            self.setWindowOpacity(1.0)
         if self.isVisible():
             self.hide()
             self.logger.info("通知中心已隐藏到托盘")

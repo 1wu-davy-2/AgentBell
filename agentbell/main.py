@@ -202,7 +202,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             config_path=config_path,
         )
         controller.start()
-        guard.open_requested.connect(controller.open_notification_center)
+        guard.open_requested.connect(
+            lambda: controller.open_notification_center(animate=True)
+        )
     except Exception as exc:
         logger.exception("AgentBell 启动异常")
         if controller is not None:

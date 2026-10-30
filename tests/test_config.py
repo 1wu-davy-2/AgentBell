@@ -106,6 +106,8 @@ def test_new_popup_and_session_defaults(tmp_path):
     config, _ = load_config(path)
     assert config.popup_mode == "corner"
     assert config.popup_skin == "midnight"
+    assert config.overlay_image == ""
+    assert config.open_center_on_start is True
     assert config.hold_when_locked is True
     assert config.agent_sessions.enabled is True
     assert config.agent_sessions.scan_interval_seconds == 120
@@ -113,6 +115,8 @@ def test_new_popup_and_session_defaults(tmp_path):
     data = json.loads(path.read_text(encoding="utf-8"))
     assert data["popup_mode"] == "corner"
     assert data["popup_skin"] == "midnight"
+    assert data["overlay_image"] == ""
+    assert data["open_center_on_start"] is True
     assert data["hold_when_locked"] is True
     assert data["agent_sessions"] == {
         "enabled": True,
@@ -128,6 +132,8 @@ def test_popup_and_session_values_are_case_insensitive(tmp_path):
             {
                 "popup_mode": "CENTER",
                 "popup_skin": "Light",
+                "overlay_image": r"C:\images\bg.png",
+                "open_center_on_start": False,
                 "hold_when_locked": False,
                 "agent_sessions": {
                     "enabled": False,
@@ -141,6 +147,8 @@ def test_popup_and_session_values_are_case_insensitive(tmp_path):
     config, _ = load_config(path)
     assert config.popup_mode == "center"
     assert config.popup_skin == "light"
+    assert config.overlay_image == r"C:\images\bg.png"
+    assert config.open_center_on_start is False
     assert config.hold_when_locked is False
     assert config.agent_sessions.enabled is False
     assert config.agent_sessions.scan_interval_seconds == 45
@@ -152,6 +160,8 @@ def test_popup_and_session_values_are_case_insensitive(tmp_path):
     [
         ('{"popup_mode": "bogus"}', "popup_mode"),
         ('{"popup_skin": "bogus"}', "popup_skin"),
+        ('{"open_center_on_start": "sometimes"}', "open_center_on_start"),
+        ('{"overlay_image": 12}', "overlay_image"),
         ('{"agent_sessions": {"scan_interval_seconds": 5}}', "scan_interval_seconds"),
         ('{"agent_sessions": {"max_sessions": 0}}', "max_sessions"),
     ],

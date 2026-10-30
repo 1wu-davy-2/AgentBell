@@ -3,6 +3,7 @@
   "token": "your-token",
   "auto_close_seconds": 30,
   "autostart": false,
+  "open_center_on_start": true,
   "instance_name": "",
   "history": {
     "enabled": true,
@@ -27,6 +28,7 @@
   "popup_cooldown_seconds": 15,
   "popup_mode": "corner",
   "popup_skin": "midnight",
+  "overlay_image": "",
   "hold_when_locked": true,
   "agent_sessions": {
     "enabled": true,

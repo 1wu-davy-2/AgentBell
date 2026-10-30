@@ -5,6 +5,7 @@ import logging
 import time
 import uuid
 from collections import deque
+from pathlib import Path
 from typing import Mapping
 
 from PySide6.QtCore import (
@@ -20,7 +21,15 @@ from PySide6.QtCore import (
     QUrl,
     Signal,
 )
-from PySide6.QtGui import QCursor, QDesktopServices, QGuiApplication
+from PySide6.QtGui import (
+    QColor,
+    QCursor,
+    QDesktopServices,
+    QGuiApplication,
+    QLinearGradient,
+    QPainter,
+    QPixmap,
+)
 from PySide6.QtWidgets import (
     QFrame,
     QGraphicsDropShadowEffect,
@@ -65,7 +74,8 @@ _SKIN_PALETTES: dict[str, dict[str, str]] = {
         "button_border": "#343C49",
         "button_hover": "#2C3543",
         "button_hover_border": "#4A566A",
-        "backdrop": "rgba(9, 12, 18, 165)",
+        "overlay_start": "#0B1019",
+        "overlay_end": "#172033",
         "error": "",
     },
     "light": {
@@ -79,7 +89,8 @@ _SKIN_PALETTES: dict[str, dict[str, str]] = {
         "button_border": "#DDE1E8",
         "button_hover": "#EAF1FF",
         "button_hover_border": "#C9DBFF",
-        "backdrop": "rgba(20, 28, 40, 110)",
+        "overlay_start": "#141C29",
+        "overlay_end": "#26364D",
         "error": "#C24141",
     },
     "ocean": {
@@ -93,7 +104,8 @@ _SKIN_PALETTES: dict[str, dict[str, str]] = {
         "button_border": "#24505F",
         "button_hover": "#1C4250",
         "button_hover_border": "#2E6475",
-        "backdrop": "rgba(4, 18, 24, 170)",
+        "overlay_start": "#062028",
+        "overlay_end": "#0E3C48",
         "error": "",
     },
     "amber": {
@@ -107,7 +119,8 @@ _SKIN_PALETTES: dict[str, dict[str, str]] = {
         "button_border": "#4E3C26",
         "button_hover": "#3E2F1E",
         "button_hover_border": "#67512F",
-        "backdrop": "rgba(16, 11, 6, 170)",
+        "overlay_start": "#241A10",
+        "overlay_end": "#46301B",
         "error": "",
     },
 }
@@ -119,6 +132,55 @@ def _normalized_mode(mode: str | None) -> str:
 
 def _normalized_skin(skin: str | None) -> str:
     return skin if skin in POPUP_SKINS else "midnight"
+
+
+class _OverlayBackdrop(QWidget):
+    def __init__(
+        self,
+        image_path: str,
+        palette: Mapping[str, str],
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._palette = palette
+        self.image_path = image_path.strip()
+        self._pixmap = QPixmap()
+        if self.image_path:
+            self._pixmap = QPixmap(str(Path(self.image_path).expanduser()))
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
+
+    @property
+    def has_image(self) -> bool:
+        return not self._pixmap.isNull()
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        rect = self.rect()
+        if self.has_image:
+            scaled = self._pixmap.scaled(
+                rect.size(),
+                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            source = QRect(
+                max(0, (scaled.width() - rect.width()) // 2),
+                max(0, (scaled.height() - rect.height()) // 2),
+                rect.width(),
+                rect.height(),
+            )
+            painter.drawPixmap(rect, scaled, source)
+            painter.fillRect(rect, QColor(0, 0, 0, 148))
+        else:
+            gradient = QLinearGradient(0, 0, rect.width(), rect.height())
+            gradient.setColorAt(0.0, QColor(self._palette["overlay_start"]))
+            gradient.setColorAt(1.0, QColor(self._palette["overlay_end"]))
+            painter.fillRect(rect, gradient)
+            glow = QLinearGradient(0, 0, 0, rect.height())
+            glow.setColorAt(0.0, QColor(255, 255, 255, 16))
+            glow.setColorAt(0.45, QColor(255, 255, 255, 0))
+            painter.fillRect(rect, glow)
+        painter.end()
 
 _TITLE_LIMIT = 30
 _SUMMARY_LIMIT = 56
@@ -154,6 +216,8 @@ class ToastWindow(QWidget):
         digest_titles: tuple[str, ...] | None = None,
         popup_mode: str | None = None,
         popup_skin: str | None = None,
+        overlay_image: str = "",
+        parent: QWidget | None = None,
     ) -> None:
         flags = (
             Qt.WindowType.Tool
@@ -162,7 +226,7 @@ class ToastWindow(QWidget):
             | Qt.WindowType.WindowDoesNotAcceptFocus
             | Qt.WindowType.NoDropShadowWindowHint
         )
-        super().__init__(None, flags)
+        super().__init__(parent, flags)
         self.notification = notification
         self._logger = logger
         self._templates = templates
@@ -170,6 +234,7 @@ class ToastWindow(QWidget):
         self._is_digest = digest_titles is not None
         self.popup_mode = _normalized_mode(popup_mode or notification.popup_mode)
         self.popup_skin = _normalized_skin(popup_skin or notification.popup_skin)
+        self._overlay_image = overlay_image
         self._card_width = {
             "corner": CARD_WIDTH,
             "center": CENTER_CARD_WIDTH,
@@ -288,7 +353,8 @@ class ToastWindow(QWidget):
 
         if self.popup_mode == "overlay":
             outer.setContentsMargins(0, 0, 0, 0)
-            backdrop = QWidget(self)
+            palette = _SKIN_PALETTES[self.popup_skin]
+            backdrop = _OverlayBackdrop(self._overlay_image, palette, self)
             backdrop.setObjectName("overlayBackdrop")
             backdrop_layout = QVBoxLayout(backdrop)
             backdrop_layout.setContentsMargins(24, 24, 24, 24)
@@ -503,7 +569,7 @@ class ToastWindow(QWidget):
                 background: transparent;
             }}
             QWidget#overlayBackdrop {{
-                background-color: {palette['backdrop']};
+                background-color: transparent;
             }}
             QFrame#card {{
                 background-color: {palette['card']};
@@ -753,11 +819,12 @@ class ToastWindow(QWidget):
             self._tick_timer.start()
 
     def show_overlay(self) -> None:
+        # 显式落到主屏，避免 showFullScreen 在多显示器下选中窗口管理器默认的那块屏幕
         screen = QGuiApplication.primaryScreen()
         if screen is not None:
             self.setGeometry(screen.geometry())
         self.setWindowOpacity(0.0)
-        self.show()
+        self.showFullScreen()
         self.raise_()
 
         fade = QPropertyAnimation(self, b"windowOpacity", self)
@@ -912,6 +979,7 @@ class ToastManager(QObject):
         templates: Mapping[str, str] | None = None,
         popup_mode: str = "corner",
         popup_skin: str = "midnight",
+        overlay_image: str = "",
     ) -> None:
         super().__init__()
         self._auto_close_seconds = auto_close_seconds
@@ -920,6 +988,7 @@ class ToastManager(QObject):
         self._templates = templates
         self._popup_mode = _normalized_mode(popup_mode)
         self._popup_skin = _normalized_skin(popup_skin)
+        self._overlay_image = overlay_image
         self._paused = False
         self._active: list[ToastWindow] = []
         self._pending: deque[tuple[Notification, tuple[str, ...] | None]] = deque()
@@ -931,9 +1000,16 @@ class ToastManager(QObject):
     def set_templates(self, templates: Mapping[str, str]) -> None:
         self._templates = dict(templates)
 
-    def set_appearance(self, popup_mode: str, popup_skin: str) -> None:
+    def set_appearance(
+        self,
+        popup_mode: str,
+        popup_skin: str,
+        overlay_image: str | None = None,
+    ) -> None:
         self._popup_mode = _normalized_mode(popup_mode)
         self._popup_skin = _normalized_skin(popup_skin)
+        if overlay_image is not None:
+            self._overlay_image = overlay_image
 
     def set_paused(self, paused: bool) -> None:
         self._paused = bool(paused)
@@ -1058,6 +1134,7 @@ class ToastManager(QObject):
             digest_titles=digest_titles,
             popup_mode=mode,
             popup_skin=skin,
+            overlay_image=self._overlay_image,
         )
         toast.dismissed.connect(self._on_dismissed)
         toast.acknowledged.connect(self.acknowledged)

@@ -74,6 +74,7 @@ class AgentBellApp(QObject):
             templates=config.templates,
             popup_mode=config.popup_mode,
             popup_skin=config.popup_skin,
+            overlay_image=config.overlay_image,
         )
         self.tray = TrayIcon(
             make_app_icon(),
@@ -145,6 +146,10 @@ class AgentBellApp(QObject):
             self.config.port,
             auth_state,
         )
+        if self.config.open_center_on_start:
+            QTimer.singleShot(
+                220, lambda: self.open_notification_center(animate=True)
+            )
 
     # ---------- inbox ----------
 
@@ -563,10 +568,10 @@ class AgentBellApp(QObject):
         self.logger.info("从托盘重新显示通知 id=%s", notification.id)
         self.toasts.enqueue(notification)
 
-    def open_notification_center(self) -> None:
+    def open_notification_center(self, animate: bool = False) -> None:
         if self._shutting_down:
             return
-        self.center.show_center()
+        self.center.show_center(animate=animate)
 
     def _mark_read(self) -> None:
         if self._unread:
@@ -580,7 +585,9 @@ class AgentBellApp(QObject):
         self.config = config
         self.toasts.set_auto_close(config.auto_close_seconds)
         self.toasts.set_templates(config.templates)
-        self.toasts.set_appearance(config.popup_mode, config.popup_skin)
+        self.toasts.set_appearance(
+            config.popup_mode, config.popup_skin, config.overlay_image
+        )
         self.toasts.set_paused(config.hold_when_locked and self._presence.locked)
         self.presence_monitor.apply_config(config)
         self.session_scanner.apply_config(config.agent_sessions)

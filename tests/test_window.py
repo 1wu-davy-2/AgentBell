@@ -182,6 +182,16 @@ def test_close_hides_to_tray_instead_of_quitting(window_factory, qapp):
     assert QApplication.instance() is qapp
 
 
+def test_startup_animation_ends_at_full_opacity(window_factory):
+    window = window_factory()
+    window.show_center(animate=True)
+    assert window.isVisible()
+    QTest.qWait(400)
+    assert window.windowOpacity() == pytest.approx(1.0)
+    window.hide_center()
+    assert window.windowOpacity() == pytest.approx(1.0)
+
+
 def test_refresh_is_idempotent_and_ignores_unchanged_snapshot(window_factory):
     store = NotificationStore()
     store.add(make_notification(1))

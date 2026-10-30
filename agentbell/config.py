@@ -113,6 +113,7 @@ class AppConfig:
     token: str = ""
     auto_close_seconds: int = DEFAULT_AUTO_CLOSE_SECONDS
     autostart: bool = False
+    open_center_on_start: bool = True
     instance_name: str = ""
     history: HistoryConfig = field(default_factory=HistoryConfig)
     quiet_hours: QuietHoursConfig = field(default_factory=QuietHoursConfig)
@@ -143,6 +144,7 @@ class AppConfig:
     presence_poll_seconds: int = 5
     popup_mode: PopupMode = "corner"
     popup_skin: PopupSkin = "midnight"
+    overlay_image: str = ""
     hold_when_locked: bool = True
     agent_sessions: AgentSessionsConfig = field(
         default_factory=AgentSessionsConfig
@@ -570,6 +572,7 @@ def _parse_config(data: dict[str, Any]) -> AppConfig:
             MAX_AUTO_CLOSE_SECONDS,
         ),
         autostart=_read_bool(data, "autostart", False),
+        open_center_on_start=_read_bool(data, "open_center_on_start", True),
         instance_name=_read_instance_name(data),
         history=_read_history(data),
         quiet_hours=_read_quiet_hours(data),
@@ -600,6 +603,7 @@ def _parse_config(data: dict[str, Any]) -> AppConfig:
         ),
         popup_mode=_read_popup_mode(data, "popup_mode", "corner"),
         popup_skin=_read_popup_skin(data, "popup_skin", "midnight"),
+        overlay_image=_read_str(data, "overlay_image", "", 1024),
         hold_when_locked=_read_bool(data, "hold_when_locked", True),
         agent_sessions=_read_agent_sessions(data),
     )
