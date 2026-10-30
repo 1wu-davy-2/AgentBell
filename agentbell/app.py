@@ -29,6 +29,7 @@ from .ui.icons import make_app_icon
 from .ui.toast import ToastManager
 from .ui.tray import TrayIcon
 from .ui.window import NotificationWindow
+from .window_focus import focus_terminal
 
 RECENT_LIMIT = 20
 MAX_INBOX_BATCH = 50
@@ -475,6 +476,25 @@ class AgentBellApp(QObject):
             self.center.refresh_items(self.store.snapshot())
 
     def _run_action(self, notification: Notification, action: NotificationAction) -> None:
+        if action.kind == "focus":
+            result = focus_terminal(action.value)
+            if result.ok:
+                window_title = " ".join(result.message.split())[:80]
+                self.logger.info(
+                    "回到终端 id=%s window=%s", notification.id, window_title
+                )
+                if self.center.isVisible():
+                    QTimer.singleShot(0, self.center.hide_center)
+            else:
+                message = result.message
+                if result.working_dir and not result.raised:
+                    QGuiApplication.clipboard().setText(result.working_dir)
+                    message += "，项目路径已复制"
+                self.tray.showMessage("AgentBell", message, make_app_icon(), 3500)
+                self.logger.warning(
+                    "回到终端失败 id=%s：%s", notification.id, result.message
+                )
+            return
         if action.kind == "open":
             url = safe_http_url(action.value or notification.link)
             if url:

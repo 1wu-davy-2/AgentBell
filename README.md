@@ -12,6 +12,8 @@
 
 2.2.1 修复接入指令导致的乱码隐患：要求所有字段按 UTF-8 发送，补充 Python、PowerShell 5.1 与 curl 的正确写法；服务端收到连续问号时会记录「疑似编码丢失」告警。已经被发送端转成 `?` 的文本无法还原。
 
+2.3.0 新增「回到终端」：Agent 只要在请求里带上 `origin.pid`（推荐）或窗口标题，通知卡片就会多一个按钮，点击后把宿主终端窗口切到前台。只做窗口级聚焦，不选中具体标签页；找不到窗口时会提示并把项目路径复制到剪贴板。
+
 ## 特性
 
 - 只监听 `127.0.0.1:8765`（可在 `config.json` 改端口），不暴露到局域网。
@@ -28,7 +30,8 @@
 - 冷却与聚合：短时间连续弹窗会自动合并成一条摘要，避免刷屏。
 - 去重更新：相同 `dedupe_key` 原地更新同一张卡片，适合长任务的进度推送。
 - 闭环处理：`require_ack` 待确认、5/15/30 分钟稍后提醒、未读升级（重新弹出 + 托盘闪烁 + 提示音）。
-- 卡片动作：打开链接、复制文本、重试回调、打开本地文件、打开通知中心。
+- 卡片动作：回到终端、打开链接、复制文本、重试回调、打开本地文件、打开通知中心。
+- 回到终端：请求带 `origin`（`pid` / `window_title` / `working_dir`）时自动生成按钮，沿父进程链定位宿主终端或编辑器窗口并切到前台；只聚焦窗口，不选中标签页，也不执行任何命令。
 - 规则引擎：按来源 / 标题 / 状态自动设置优先级、静音、待确认、免打扰例外、弹窗外观、外部渠道。
 - 模板与声音：四种状态的弹窗文案、五类 WAV 提示音均可配置。
 - 外部渠道：企业微信、飞书、Telegram、Bark、ntfy、通用 Webhook；可按“离开电脑”或规则触发，失败只记日志，不影响主流程。
@@ -53,6 +56,7 @@ agentbell/
 │  ├─ policy.py           优先级、免打扰、全屏/会议/锁屏、规则与渠道决策
 │  ├─ presence.py         Windows 空闲时间、前台全屏、会议进程、锁屏/息屏检测
 │  ├─ agent_sessions.py   Claude Code / Qoder 会话元数据只读扫描
+│  ├─ window_focus.py     Win32 窗口解析与聚焦（回到终端）
 │  ├─ channels.py         外部渠道后台投递线程
 │  ├─ hotkey.py           全局快捷键（RegisterHotKey）
 │  ├─ storage.py          SQLite 历史、搜索与统计
@@ -80,6 +84,7 @@ agentbell/
 ├─ AgentBell3.spec        PyInstaller 配置（AgentBell-3.exe，2.1 功能）
 ├─ AgentBell4.spec        PyInstaller 配置（AgentBell-4.exe，2.2 功能）
 ├─ AgentBell5.spec        PyInstaller 配置（AgentBell-5.exe，2.2.1 编码修复）
+├─ AgentBell6.spec        PyInstaller 配置（AgentBell-6.exe，2.3.0 回到终端）
 └─ README.md
 ```
 
@@ -358,7 +363,7 @@ curl http://127.0.0.1:8765/health
 ```
 
 ```json
-{"ok":true,"app":"AgentBell","version":"2.2.1","auth":true}
+{"ok":true,"app":"AgentBell","version":"2.3.0","auth":true}
 ```
 
 AgentBell 只提供 `GET /health` 和 `POST /notify` 两个接口，不提供 Web 页面或 HTTP 通知列表；记录显示在应用内的原生通知中心里。
@@ -395,14 +400,27 @@ X-Token: your-token        # 仅当 config.token 非空时必需
 | `auto_close_seconds` | 整数 | `null` | 覆盖本条自动关闭秒数（0–3600）；待确认/进行中仍强制不自动关闭 |
 | `expires_in` | 整数 | `null` | 有效秒数（1–604800），过期后不再弹出或补发 |
 | `channel_types` | 字符串数组 | `[]` | 限定只投递到这些外部渠道类型，最多 10 个 |
+| `origin` | 对象 | `null` | 来源位置，用于生成「回到终端」按钮，见下表 |
+
+`origin` 每项：
+
+| 字段 | 说明 |
+| --- | --- |
+| `pid` | 发送方进程 PID，推荐填写；AgentBell 沿父进程链向上找宿主终端 / 编辑器窗口 |
+| `window_title` | 可选，窗口标题；用于在候选窗口中精确或模糊匹配，最长 200 字符 |
+| `working_dir` | 可选，项目目录；聚焦失败时复制到剪贴板，最长 1024 字符 |
+
+`pid` 与 `window_title` 至少填一个，否则忽略。服务端自动把 `origin` 转成 `focus` 动作并放在按钮首位；外部直接提交的 `focus` 动作会被忽略，以免伪造路径。窗口匹配优先使用进程血缘，其次才是标题；标题匹配会限制在可见、非工具窗口范围内。
 
 `actions` 每项：
 
 | 字段 | 说明 |
 | --- | --- |
-| `kind` | `open` / `copy` / `retry` / `path` / `center` |
+| `kind` | `open` / `copy` / `retry` / `path` / `center`；`focus` 由 `origin` 自动生成，不接受外部提交 |
 | `label` | 按钮文字，最长 40 字符；为空时用默认文案 |
 | `value` | `open` 为 http(s) 链接（为空时用通知的 `link`）；`copy` 为文本；`retry` 仅接受本机 http 回调地址（`127.0.0.1` / `localhost` / `::1`）；`path` 为本地绝对路径，且需 `allow_local_paths=true` |
+
+`origin` 生成的 `focus` 动作占用第一个按钮位；其余动作按原顺序保留，总数仍以 4 个为上限。
 
 未知字段会被忽略；`null` 会回落到默认值；字符串首尾及连续空白会被压缩。
 
@@ -435,6 +453,26 @@ X-Token: your-token        # 仅当 config.token 非空时必需
 | `503` | 通知队列已满（200 条），历史仍会记录该通知 |
 
 请求体会先按 UTF-8（含 BOM）解码，失败后兼容按 GB18030 解码，以适配 Windows 命令行下 curl 发送中文的情况。
+
+### 回到终端（origin）
+
+推荐所有 Agent 都带上当前进程信息：
+
+```json
+{
+  "title": "生成竞品分析报告",
+  "status": "succeeded",
+  "summary": "已完成 12 页报告",
+  "origin": {"pid": 12345, "window_title": "Qoder", "working_dir": "E:\\proj\\report"}
+}
+```
+
+- 服务端生成「回到终端」按钮，放在所有动作之前；请求里的 `actions` 仍按原样追加。
+- 点击后沿 `pid` 的父进程链查找可见窗口，也会识别 conhost / OpenConsole 子进程；找不到血缘窗口时再用 `window_title` 兜底。
+- 只做窗口级聚焦：还原最小化、置前并尝试获取前台焦点；Windows 禁止强抢焦点时会退化为仅置前，并提示「已置前，但系统未授予键盘焦点」。
+- 不会选中具体标签页，也不会执行命令或打开新终端。
+- 找不到窗口时提示「未找到对应的终端窗口」，并把 `working_dir` 复制到剪贴板，便于手动定位；仅“置前未获焦点”时不覆盖剪贴板。
+- 仅 Windows 可用；macOS / Linux 上会返回「仅支持 Windows」。
 
 ## 提醒行为说明
 
@@ -580,7 +618,7 @@ Python 的 `requests.post(..., json=...)` 会自动按 UTF-8 编码，是最省�
 2. 点击窗口右上角的「复制 Agent 接入指令」按钮，按钮会变为「已复制接入指令」。
 3. 把剪贴板内容直接粘贴给 Agent（Claude Code、Codex、Qoder 等），发送一次即可。
 
-复制内容包含当前端口、当前 `X-Token`、请求头、全部字段说明、**UTF-8 编码要求与 PowerShell 5.1 注意事项**、Python / PowerShell / curl 三种示例，以及规则：**每一轮任务结束都必须推送一次通知，无论成功、失败还是取消**。同时说明了 `dedupe_key`、`progress`、`require_ack` 和 `actions` 的推荐用法。
+复制内容包含当前端口、当前 `X-Token`、请求头、全部字段说明、**UTF-8 编码要求与 PowerShell 5.1 注意事项**、Python / PowerShell / curl 三种示例，以及规则：**每一轮任务结束都必须推送一次通知，无论成功、失败还是取消**。同时说明了 `dedupe_key`、`progress`、`require_ack`、`actions` 与 `origin` 的推荐用法。示例默认带上 `origin.pid`，Agent 粘贴后即可生成「回到终端」按钮。
 
 > 修改 `config.json` 的端口或 token 后需要重启 AgentBell，并重新点击复制。复制动作会把 token 写入系统剪贴板，请勿在不受信任的环境粘贴。
 
@@ -671,16 +709,19 @@ python -m PyInstaller --noconfirm --clean AgentBell4.spec
 
 # 2.2.1 名称：dist\AgentBell-5.exe（编码安全的接入指令、疑似乱码告警）
 python -m PyInstaller --noconfirm --clean AgentBell5.spec
+
+# 2.3.0 名称：dist\AgentBell-6.exe（origin 字段、回到终端窗口）
+python -m PyInstaller --noconfirm --clean AgentBell6.spec
 ```
 
 把 `config.json` 复制到 exe 旁边再运行：
 
 ```bash
 copy config.json dist\config.json
-dist\AgentBell-5.exe
+dist\AgentBell-6.exe
 ```
 
-> 新旧版本默认共用单实例锁：若托盘中已有 AgentBell（1.x / 2.x）在运行，双击 AgentBell-5 只会唤醒旧实例。切换版本前先从托盘退出旧版，再启动新 exe。
+> 新旧版本默认共用单实例锁：若托盘中已有 AgentBell（1.x / 2.x）在运行，双击 AgentBell-6 只会唤醒旧实例。切换版本前先从托盘退出旧版，再启动新 exe。
 
 打包后 `config.json`、`logs/` 与 `agentbell.db` 都位于 exe 所在目录。单文件模式首次启动需要解压到临时目录，通常会有 1–3 秒延迟。
 
@@ -690,7 +731,7 @@ dist\AgentBell-5.exe
 
 ```bash
 pyinstaller --noconfirm --clean --onefile --windowed \
-  --name AgentBell-5 \
+  --name AgentBell-6 \
   --hidden-import uvicorn.logging \
   --hidden-import uvicorn.loops.asyncio \
   --hidden-import uvicorn.protocols.http.h11_impl \
@@ -712,7 +753,7 @@ $env:QT_QPA_PLATFORM="offscreen"; python -m pytest -q
 QT_QPA_PLATFORM=offscreen python -m pytest -q
 ```
 
-覆盖：鉴权与 401、字段默认值/空值/长度、非法状态、危险链接、GB18030 请求体、疑似编码丢失告警、空/坏 JSON、超大请求体、队列满、去重合并、待确认与动作、规则匹配、免打扰/全屏/会议/锁屏决策、优先级弹窗策略、弹窗模式与皮肤、全屏自定义背景图与失效回落、渠道选择、配置校验、SQLite 存取/搜索/统计/裁剪、通知中心筛选/搜索/统计/设置/Agent 会话页、设置效果预览与清理、弹窗文案/按钮/去重更新/聚合、居中与全屏弹窗互斥、锁屏暂停、单实例唤醒、自动关闭与悬停暂停、启动自动打开与会话动画收尾。
+覆盖：鉴权与 401、字段默认值/空值/长度、非法状态、危险链接、GB18030 请求体、疑似编码丢失告警、`origin` 动作生成与上限、`focus` 参数校验、空/坏 JSON、超大请求体、队列满、去重合并、待确认与动作、规则匹配、免打扰/全屏/会议/锁屏决策、优先级弹窗策略、弹窗模式与皮肤、全屏自定义背景图与失效回落、渠道选择、配置校验、SQLite 存取/搜索/统计/裁剪、通知中心筛选/搜索/统计/设置/Agent 会话页、设置效果预览与清理、弹窗文案/按钮/去重更新/聚合、居中与全屏弹窗互斥、锁屏暂停、单实例唤醒、自动关闭与悬停暂停、启动自动打开与会话动画收尾。
 
 ## 常见问题
 
@@ -791,6 +832,14 @@ netstat -ano | findstr :8765
 
 可能被其他程序占用，日志会记录「注册全局快捷键失败」。在设置里换一个组合，或把 `hotkey` 设为空字符串关闭。
 
+**点「回到终端」没有反应 / 提示未找到窗口**
+
+1. 确认通知是由 2.3.0 及以上版本接收，且 Agent 发送时带了 `origin.pid` 或 `window_title`；
+2. 宿主终端必须仍在运行，窗口被关闭后无法定位；
+3. 只支持窗口级跳转，不会选中具体标签页；多标签请手动切换；
+4. Windows 可能禁止后台程序强抢焦点，此时窗口会置前但键盘焦点仍在原处，点一下窗口即可；
+5. 失败时 `working_dir` 会自动复制到剪贴板，可直接粘贴到终端。
+
 **重复双击会启动多个 AgentBell 吗？**
 
 不会。第一个实例在系统临时目录持有单实例锁（`AgentBell-single-<用户摘要>.lock`）并监听同名本地通道；后续启动会让已有实例打开通知中心，然后以退出码 `0` 结束。若提示「已有实例持有单实例锁，但无法连接」，先确认托盘里是否已有 AgentBell；确认没有后，可删除提示中的锁文件再启动。
@@ -805,7 +854,7 @@ PyInstaller 单文件包常见现象。可将 exe 加入信任目录，或改用
 - 通知内容只在本机进程内显示；SQLite 历史保存在本地文件，不会上传。请不要在 `summary`、`error`、`title` 中放入 token、密码等敏感信息。
 - Agent 会话扫描只读取本机 Claude Code / Qoder 的会话元数据（路径、时间、大小、记录数），不解析对话正文，也不会发送到任何外部服务；可在偏好设置中完全关闭。
 - 「复制 Agent 接入指令」会把当前 `X-Token` 写入系统剪贴板；剪贴板可能被本机其他程序读取，请在可信环境中使用。
-- 通知动作有白名单：链接仅 `http/https`；`retry` 只允许回环地址；`path` 默认关闭，开启后也只打开指定文件；`copy` 只写入剪贴板，不执行命令。
+- 通知动作有白名单：链接仅 `http/https`；`retry` 只允许回环地址；`path` 默认关闭，开启后也只打开指定文件；`copy` 只写入剪贴板，不执行命令；`focus` 只校验参数并置前窗口，不执行命令、不打开新终端。
 - 外部渠道由你自己配置 URL/token，通知内容会发送到对应服务；启用前请确认接收方可信。
 - 单实例通道只接受「打开通知中心」请求，不执行任意命令；通道使用当前用户的本地套接字 / 命名管道。
 - 请求体限制 1 MB，字段有长度上限，队列和历史都有界，避免异常调用拖垮程序。

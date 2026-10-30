@@ -47,6 +47,11 @@ def test_round_trip_preserves_all_fields(tmp_path):
             actions=(
                 NotificationAction(kind="open", label="日志", value="https://x.test/a"),
                 NotificationAction(kind="retry", label="重试", value="http://127.0.0.1:9/r"),
+                NotificationAction(
+                    kind="focus",
+                    label="回到终端",
+                    value='{"pid":4321,"working_dir":"E:\\\\work"}',
+                ),
             ),
             bypass_quiet_hours=True,
             auto_close_seconds=0,
@@ -70,7 +75,7 @@ def test_round_trip_preserves_all_fields(tmp_path):
         assert item.acknowledged is True
         assert item.occurrence_count == 3
         assert item.progress == 80
-        assert [action.kind for action in item.actions] == ["open", "retry"]
+        assert [action.kind for action in item.actions] == ["open", "retry", "focus"]
         assert item.bypass_quiet_hours is True
         assert item.auto_close_seconds == 0
         assert item.expires_at is not None

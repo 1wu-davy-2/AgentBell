@@ -769,6 +769,7 @@ def _default_action_label(kind: str) -> str:
         "retry": "重试",
         "path": "打开文件",
         "center": "查看详情",
+        "focus": "回到终端",
     }.get(kind, "执行")
 
 

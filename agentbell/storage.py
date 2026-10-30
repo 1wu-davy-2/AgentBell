@@ -124,7 +124,7 @@ def _actions_from_json(raw: str | None) -> tuple[NotificationAction, ...]:
         kind = item.get("kind")
         label = item.get("label")
         value = item.get("value", "")
-        if kind not in {"open", "copy", "retry", "path", "center"}:
+        if kind not in {"open", "copy", "retry", "path", "center", "focus"}:
             continue
         if not isinstance(label, str) or not label:
             continue

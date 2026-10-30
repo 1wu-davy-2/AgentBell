@@ -48,6 +48,7 @@ _ACTION_LABELS: dict[str, str] = {
     "retry": "重试",
     "path": "打开文件",
     "center": "通知中心",
+    "focus": "回到终端",
 }
 
 _SUSPECT_MARKS = re.compile(r"\?{3,}")
@@ -60,6 +61,19 @@ class ActionPayload(BaseModel):
     kind: ActionKind
     label: str = Field(default="", max_length=40)
     value: str = Field(default="", max_length=2048)
+
+
+class OriginPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
+
+    pid: int | None = Field(default=None, ge=0, le=0xFFFFFFFF)
+    window_title: str = Field(default="", max_length=200)
+    working_dir: str = Field(default="", max_length=1024)
+
+    @field_validator("window_title", "working_dir")
+    @classmethod
+    def _compact_origin_text(cls, value: str) -> str:
+        return " ".join(value.replace("\x00", " ").split())
 
 
 class NotifyPayload(BaseModel):
@@ -78,6 +92,7 @@ class NotifyPayload(BaseModel):
     silent: bool = False
     progress: int | None = Field(default=None, ge=0, le=100)
     actions: list[ActionPayload] = Field(default_factory=list, max_length=8)
+    origin: OriginPayload | None = None
     bypass_quiet_hours: bool = False
     auto_close_seconds: int | None = Field(default=None, ge=0, le=3600)
     expires_in: int | None = Field(default=None, ge=1, le=604800)
@@ -218,6 +233,25 @@ async def _read_payload(
         )
 
 
+def _build_origin_action(
+    origin: OriginPayload | None, logger: logging.Logger
+) -> NotificationAction | None:
+    if origin is None:
+        return None
+    pid = origin.pid if origin.pid and origin.pid > 0 else None
+    title = origin.window_title.strip()
+    working_dir = safe_local_path(origin.working_dir) or ""
+    if pid is None and not title:
+        logger.warning("origin 缺少 pid 和 window_title，忽略回到终端动作")
+        return None
+    value = json.dumps(
+        {"pid": pid, "window_title": title, "working_dir": working_dir},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return NotificationAction(kind="focus", label="回到终端", value=value)
+
+
 def _build_actions(
     payload: NotifyPayload, config: AppConfig, logger: logging.Logger
 ) -> tuple[NotificationAction, ...]:
@@ -248,6 +282,9 @@ def _build_actions(
             if not value or "\x00" in value:
                 continue
             value = value[:2048]
+        elif item.kind == "focus":
+            logger.warning("忽略外部 focus 动作，请改用 origin 字段")
+            continue
         else:
             value = ""
         label = item.label.strip()[:40] or _ACTION_LABELS[item.kind]
@@ -266,6 +303,10 @@ def _build_notification(
         logger.warning("忽略非 http(s) 链接：%s", _log_text(payload.link, 200))
 
     priority = payload.priority or default_priority(payload.status)
+    actions = _build_actions(payload, config, logger)
+    origin_action = _build_origin_action(payload.origin, logger)
+    if origin_action is not None:
+        actions = (origin_action,) + actions[: MAX_ACTIONS - 1]
     notification = Notification(
         id=uuid.uuid4().hex[:12],
         title=payload.title,
@@ -282,7 +323,7 @@ def _build_notification(
         require_ack=payload.require_ack,
         silent=payload.silent,
         progress=payload.progress if payload.status == "running" else None,
-        actions=_build_actions(payload, config, logger),
+        actions=actions,
         bypass_quiet_hours=payload.bypass_quiet_hours,
         auto_close_seconds=payload.auto_close_seconds,
         expires_at=(

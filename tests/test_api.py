@@ -83,6 +83,92 @@ def test_accepts_full_payload():
     assert notification.headline == "上一轮【生成竞品分析报告】已完成，请查看"
 
 
+def test_origin_adds_focus_action():
+    client, inbox = build()
+    response = client.post(
+        "/notify",
+        json={
+            "title": "带来源的任务",
+            "status": "succeeded",
+            "origin": {
+                "pid": 4321,
+                "window_title": "Windows Terminal",
+                "working_dir": "E:\\work\\demo",
+            },
+        },
+        headers=auth_headers(),
+    )
+    assert response.status_code == 202
+    notification = inbox.get_nowait()
+    assert notification.actions[0].kind == "focus"
+    assert notification.actions[0].label == "回到终端"
+    assert json.loads(notification.actions[0].value) == {
+        "pid": 4321,
+        "window_title": "Windows Terminal",
+        "working_dir": "E:\\work\\demo",
+    }
+
+
+def test_origin_without_pid_or_title_is_ignored(caplog):
+    client, inbox = build()
+    with caplog.at_level(logging.WARNING):
+        response = client.post(
+            "/notify",
+            json={
+                "title": "只有目录",
+                "origin": {"working_dir": "E:\\work\\demo"},
+            },
+            headers=auth_headers(),
+        )
+    assert response.status_code == 202
+    notification = inbox.get_nowait()
+    assert all(action.kind != "focus" for action in notification.actions)
+    assert "origin 缺少 pid 和 window_title" in caplog.text
+
+
+def test_origin_keeps_focus_action_first_and_limits_total_actions():
+    client, inbox = build()
+    response = client.post(
+        "/notify",
+        json={
+            "title": "动作上限",
+            "origin": {"pid": 4321},
+            "actions": [
+                {"kind": "copy", "label": "一", "value": "1"},
+                {"kind": "copy", "label": "二", "value": "2"},
+                {"kind": "copy", "label": "三", "value": "3"},
+                {"kind": "copy", "label": "四", "value": "4"},
+            ],
+        },
+        headers=auth_headers(),
+    )
+    assert response.status_code == 202
+    notification = inbox.get_nowait()
+    assert [action.kind for action in notification.actions] == [
+        "focus",
+        "copy",
+        "copy",
+        "copy",
+    ]
+
+
+def test_sender_supplied_focus_action_is_ignored(caplog):
+    client, inbox = build()
+    with caplog.at_level(logging.WARNING):
+        response = client.post(
+            "/notify",
+            json={
+                "title": "伪造动作",
+                "actions": [{"kind": "focus", "label": "伪造", "value": "{}"}],
+            },
+            headers=auth_headers(),
+        )
+    assert response.status_code == 202
+    notification = inbox.get_nowait()
+    assert all(action.kind != "focus" for action in notification.actions)
+    assert "忽略外部 focus 动作" in caplog.text
+
+
 def test_lossy_question_marks_trigger_encoding_warning(caplog):
     client, inbox = build()
     with caplog.at_level(logging.WARNING):

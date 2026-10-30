@@ -20,6 +20,11 @@ def test_instructions_include_endpoint_auth_and_per_round_rule():
     assert "requests.post(" in text
     assert '--data-binary "@payload.json"' in text
     assert "连续问号" in text
+    assert '"origin"' in text
+    assert "os.getpid()" in text
+    assert "origin = @{ pid = $PID" in text
+    assert "回到终端" in text
+    assert "不会选中具体标签页" in text
     assert "summary" in text
     assert "AgentBell" in text
 

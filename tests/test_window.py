@@ -322,6 +322,34 @@ def test_card_action_button_emits_request(window_factory):
     assert received == [("id0001", "copy", "curl http://x")]
 
 
+def test_card_focus_action_renders_first_and_emits(window_factory):
+    store = NotificationStore()
+    focus_value = '{"pid":1234,"window_title":"Qoder","working_dir":"E:\\\\proj"}'
+    store.add(
+        make_notification(
+            1,
+            status="succeeded",
+            actions=(
+                NotificationAction(kind="focus", label="回到终端", value=focus_value),
+                NotificationAction(kind="copy", label="复制命令", value="curl http://x"),
+            ),
+        )
+    )
+    window = window_factory(store)
+    window.refresh_items(store.snapshot())
+
+    received: list[tuple[str, str, str]] = []
+    window.action_requested.connect(
+        lambda notification, action: received.append(
+            (notification.id, action.kind, action.value)
+        )
+    )
+    card = window._cards[0]
+    assert [button.text() for button in card.action_buttons] == ["回到终端", "复制命令"]
+    card.action_buttons[0].click()
+    assert received == [("id0001", "focus", focus_value)]
+
+
 def test_card_shows_priority_repeat_source_and_ack_chips(window_factory):
     store = NotificationStore()
     store.add(

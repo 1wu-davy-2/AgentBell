@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 
 Status = Literal["succeeded", "failed", "canceled", "running"]
 Priority = Literal["low", "normal", "high", "critical"]
-ActionKind = Literal["open", "copy", "retry", "path", "center"]
+ActionKind = Literal["open", "copy", "retry", "path", "center", "focus"]
 PopupMode = Literal["corner", "center", "overlay"]
 PopupSkin = Literal["midnight", "light", "ocean", "amber"]
 
