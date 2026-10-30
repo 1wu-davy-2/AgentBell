@@ -42,11 +42,11 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements-dev.txt
       - name: Build with PyInstaller
-        run: python -m PyInstaller --noconfirm AgentBell11.spec
+        run: python -m PyInstaller --noconfirm AgentBell12.spec
       - name: Add stable update asset name
         shell: pwsh
         run: |
-          Copy-Item dist/AgentBell-11.exe dist/AgentBell.exe -Force
+          Copy-Item dist/AgentBell-12.exe dist/AgentBell.exe -Force
           Get-ChildItem dist/*.exe | ForEach-Object {
             $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
             "$hash  $($_.Name)" | Out-File -Append -Encoding ascii dist/SHA256SUMS.txt
@@ -58,7 +58,7 @@ jobs:
           name: AgentBell-windows
           path: |
             dist/AgentBell.exe
-            dist/AgentBell-11.exe
+            dist/AgentBell-12.exe
             dist/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 30
@@ -90,7 +90,7 @@ jobs:
         with:
           files: |
             release/AgentBell.exe
-            release/AgentBell-11.exe
+            release/AgentBell-12.exe
             release/SHA256SUMS.txt
           generate_release_notes: true
           fail_on_unmatched_files: true

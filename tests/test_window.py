@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLabel
@@ -853,6 +854,79 @@ def test_launcher_rejects_missing_project(
     assert calls == []
     assert "项目目录不存在" in window._launcher_status.text()
     assert window._launcher_status.property("state") == "error"
+
+
+def test_launcher_double_click_starts_agent(
+    qapp, window_factory, monkeypatch, tmp_path
+):
+    import agentbell.ui.window as window_module
+
+    agents = [
+        _availability("alpha", "Alpha", executable=r"C:\bin\alpha.exe"),
+        _availability("beta", "Beta", executable=r"C:\bin\beta.exe"),
+    ]
+    monkeypatch.setattr(window_module, "discover_agents", lambda: agents)
+    calls: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(
+        window_module,
+        "launch_agent",
+        lambda availability, project, prompt="": calls.append(
+            (availability.spec.id, project, prompt)
+        )
+        or LaunchResult(
+            ok=True,
+            message=f"已启动 {availability.spec.name}",
+            working_dir=project,
+        ),
+    )
+
+    window = window_factory()
+    window._launcher_project.setText(str(tmp_path))
+    beta_card = next(
+        card
+        for card in window._agent_cards
+        if card.availability.spec.id == "beta"
+    )
+    target = beta_card.findChild(QLabel)
+
+    QTest.mouseDClick(
+        target,
+        Qt.MouseButton.LeftButton,
+        pos=target.rect().center(),
+    )
+    QTest.qWait(20)
+
+    assert calls == [("beta", str(tmp_path), "")]
+    assert window._selected_agent_id == "beta"
+    assert window._launcher_status.text() == "已启动 Beta"
+
+
+def test_launcher_double_click_ignores_missing_project(
+    qapp, window_factory, monkeypatch, tmp_path
+):
+    import agentbell.ui.window as window_module
+
+    monkeypatch.setattr(
+        window_module,
+        "discover_agents",
+        lambda: [_availability("alpha", "Alpha")],
+    )
+    calls = []
+    monkeypatch.setattr(
+        window_module,
+        "launch_agent",
+        lambda *args, **kwargs: calls.append(args) or LaunchResult(True, "ok"),
+    )
+
+    window = window_factory()
+    window._launcher_project.setText(str(tmp_path / "missing"))
+    card = window._agent_cards[0]
+
+    QTest.mouseDClick(card, Qt.MouseButton.LeftButton, pos=card.rect().center())
+    QTest.qWait(20)
+
+    assert calls == []
+    assert "项目目录不存在" in window._launcher_status.text()
 
 
 def test_session_terminal_button_and_focus_request(window_factory):

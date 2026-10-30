@@ -849,12 +849,14 @@ class AgentSessionCard(QFrame):
 
 class AgentPickCard(QFrame):
     picked = Signal(object)
+    activated = Signal(object)
 
     def __init__(
         self, availability: AgentAvailability, parent: QWidget | None = None
     ) -> None:
         super().__init__(parent)
         self.availability = availability
+        self._suppress_release = False
         self.setObjectName("agentPickCard")
         self.setProperty("selected", "false")
         self.setProperty("installed", "true" if availability.installed else "false")
@@ -862,7 +864,10 @@ class AgentPickCard(QFrame):
         self.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
         )
-        self.setToolTip(availability.target)
+        tip = availability.target
+        if availability.installed:
+            tip = f"{tip}\n双击直接启动"
+        self.setToolTip(tip)
         self.setAccessibleName(availability.spec.name)
 
         row = QHBoxLayout(self)
@@ -908,9 +913,23 @@ class AgentPickCard(QFrame):
         body.addWidget(summary)
         row.addLayout(body, 1)
 
-    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton and self.rect().contains(
             event.position().toPoint()
+        ):
+            self._suppress_release = True
+            self.activated.emit(self.availability)
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        suppress = self._suppress_release
+        self._suppress_release = False
+        if (
+            not suppress
+            and event.button() == Qt.MouseButton.LeftButton
+            and self.rect().contains(event.position().toPoint())
         ):
             self.picked.emit(self.availability)
         super().mouseReleaseEvent(event)
@@ -2003,7 +2022,7 @@ class NotificationWindow(QMainWindow):
         title = QLabel("Agent 启动", page)
         title.setObjectName("pageTitle")
         subtitle = QLabel(
-            "检测本机 Agent，选择项目后直接打开终端并输入提示词。",
+            "检测本机 Agent；双击卡片可直接启动，也可以选择项目后点「打开终端并开始」。",
             page,
         )
         subtitle.setObjectName("pageSubtitle")
@@ -2225,6 +2244,7 @@ class NotificationWindow(QMainWindow):
         for index, availability in enumerate(self._agent_availabilities):
             card = AgentPickCard(availability, self._agent_grid.parentWidget())
             card.picked.connect(self._select_agent)
+            card.activated.connect(self._activate_agent)
             self._agent_grid.addWidget(card, index // 2, index % 2)
             self._agent_cards.append(card)
 
@@ -2251,6 +2271,11 @@ class NotificationWindow(QMainWindow):
                 "没有检测到已安装的 Agent，请按卡片提示安装后重新检测。",
                 error=True,
             )
+
+    def _activate_agent(self, availability: AgentAvailability) -> None:
+        self._select_agent(availability)
+        if availability.installed:
+            self._launch_selected_agent()
 
     def _select_agent(self, availability: AgentAvailability) -> None:
         self._selected_agent_id = availability.spec.id
