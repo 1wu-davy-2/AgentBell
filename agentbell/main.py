@@ -8,7 +8,7 @@ from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont, QFontDatabase, QGuiApplication
 from PySide6.QtWidgets import QApplication, QMessageBox, QSystemTrayIcon
 
@@ -25,6 +25,7 @@ from .single_instance import SingleInstanceError, SingleInstanceGuard, default_s
 from .storage import NotificationStorage, StorageError
 from .store import NotificationStore
 from .ui.icons import make_app_icon
+from .ui.splash import SplashWindow
 
 
 def _pick_ui_font() -> str:
@@ -190,6 +191,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     asgi_app = create_app(config, inbox, logger, store=store)
     controller: AgentBellApp | None = None
+    splash: SplashWindow | None = None
+    splash_shows_tour = False
+    splash_opens_center = False
+    first_run = created or not config.onboarding_seen
     try:
         controller = AgentBellApp(
             qapp=app,
@@ -201,12 +206,53 @@ def main(argv: Sequence[str] | None = None) -> int:
             listener=listener,
             config_path=config_path,
         )
-        controller.start()
-        guard.open_requested.connect(
-            lambda: controller.open_notification_center(animate=True)
-        )
+
+        def _on_splash_finished() -> None:
+            nonlocal splash, splash_shows_tour, splash_opens_center
+            if splash is not None:
+                splash.deleteLater()
+                splash = None
+            show_tour = splash_shows_tour
+            open_center = splash_opens_center
+            splash_shows_tour = False
+            splash_opens_center = False
+            if show_tour or open_center:
+                controller.open_notification_center(animate=True)
+                if show_tour:
+                    QTimer.singleShot(320, controller.center.start_onboarding)
+            logger.info(
+                "启动过渡完成：%s",
+                "首次启动" if show_tour else "再次打开",
+            )
+
+        def _present_splash(show_tour: bool, open_center: bool) -> None:
+            nonlocal splash, splash_shows_tour, splash_opens_center
+            splash_shows_tour = show_tour
+            splash_opens_center = open_center
+            window = SplashWindow(
+                config.port,
+                first_run=show_tour,
+                open_center=open_center,
+            )
+            window.finished.connect(_on_splash_finished)
+            splash = window
+            window.show()
+
+        def _on_open_requested() -> None:
+            if splash is not None:
+                splash.finish()
+            else:
+                _present_splash(False, True)
+
+        _present_splash(first_run, first_run or config.open_center_on_start)
+        controller.start(schedule_center=False)
+        guard.open_requested.connect(_on_open_requested)
     except Exception as exc:
         logger.exception("AgentBell 启动异常")
+        if splash is not None:
+            splash.close()
+            splash.deleteLater()
+            splash = None
         if controller is not None:
             controller.shutdown()
         else:

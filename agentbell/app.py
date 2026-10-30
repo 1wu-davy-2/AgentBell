@@ -8,6 +8,7 @@ import time
 import urllib.error
 import urllib.request
 from collections import deque
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -18,7 +19,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 
 from .agent_sessions import AgentSessionScanner
 from .channels import ChannelDispatcher
-from .config import AppConfig
+from .config import AppConfig, ConfigError, save_config
 from .hotkey import GlobalHotkey
 from .models import Notification, NotificationAction, safe_callback_url, safe_http_url
 from .policy import Decision, Presence, decide, quiet_hours_end
@@ -68,6 +69,7 @@ class AgentBellApp(QObject):
         self._last_popup_at = 0.0
         self._escalation_timers: dict[str, QTimer] = {}
         self._snooze_timers: dict[str, QTimer] = {}
+        self._about_dialog: Any | None = None
 
         self.toasts = ToastManager(
             config.auto_close_seconds,
@@ -103,6 +105,7 @@ class AgentBellApp(QObject):
 
         self.tray.recent_selected.connect(self._show_recent)
         self.tray.open_center_requested.connect(self.open_notification_center)
+        self.tray.about_requested.connect(self.open_about)
         self.tray.quit_requested.connect(self.quit)
         self.center.replay_requested.connect(self._show_recent)
         self.center.quit_requested.connect(self.quit)
@@ -111,6 +114,7 @@ class AgentBellApp(QObject):
         self.center.action_requested.connect(self._run_action)
         self.center.settings_saved.connect(self._apply_config)
         self.center.center_shown.connect(self._mark_read)
+        self.center.onboarding_finished.connect(self._finish_onboarding)
         self.center.session_refresh_requested.connect(self.session_scanner.refresh)
         self.session_scanner.scanned.connect(self.center.update_sessions)
         self.session_scanner.failed.connect(self._on_session_scan_failed)
@@ -134,7 +138,7 @@ class AgentBellApp(QObject):
         self._deferred_timer.setSingleShot(True)
         self._deferred_timer.timeout.connect(self._flush_deferred)
 
-    def start(self) -> None:
+    def start(self, schedule_center: bool = True) -> None:
         self.tray.show()
         self.server.start()
         self.presence_monitor.start()
@@ -148,7 +152,7 @@ class AgentBellApp(QObject):
             self.config.port,
             auth_state,
         )
-        if self.config.open_center_on_start:
+        if schedule_center and self.config.open_center_on_start:
             QTimer.singleShot(
                 220, lambda: self.open_notification_center(animate=True)
             )
@@ -593,6 +597,35 @@ class AgentBellApp(QObject):
         if self._shutting_down:
             return
         self.center.show_center(animate=animate)
+
+    def open_about(self) -> None:
+        if self._shutting_down:
+            return
+        if self._about_dialog is not None:
+            self._about_dialog.raise_()
+            self._about_dialog.activateWindow()
+            return
+        from .ui.about import AboutDialog
+
+        dialog = AboutDialog(self.center if self.center.isVisible() else None)
+        self._about_dialog = dialog
+        try:
+            dialog.exec()
+        finally:
+            self._about_dialog = None
+            dialog.deleteLater()
+
+    def _finish_onboarding(self) -> None:
+        if self.config.onboarding_seen:
+            return
+        self.config = replace(self.config, onboarding_seen=True)
+        if self.config_path is not None:
+            try:
+                save_config(self.config_path, self.config)
+            except ConfigError as exc:
+                self.logger.warning("记录首次启动介绍状态失败：%s", exc)
+        self.center.apply_config(self.config)
+        self.logger.info("首次启动介绍状态已保存")
 
     def _mark_read(self) -> None:
         if self._unread:

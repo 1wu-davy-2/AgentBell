@@ -69,6 +69,8 @@ from ..integration import build_agent_instructions
 from ..models import STATUS_LABELS, Notification, safe_http_url
 from ..store import NotificationStore
 from .icons import make_app_icon
+from .motion import motion_enabled
+from .onboarding import OnboardingOverlay
 
 SIDEBAR_WIDTH = 232
 DEFAULT_SIZE = QSize(1120, 760)
@@ -1203,6 +1205,7 @@ class NotificationWindow(QMainWindow):
     action_requested = Signal(object, object)
     settings_saved = Signal(object)
     center_shown = Signal()
+    onboarding_finished = Signal()
     session_refresh_requested = Signal()
 
     def __init__(
@@ -1240,6 +1243,7 @@ class NotificationWindow(QMainWindow):
         self._shutting_down = False
         self._placed = False
         self._show_animation: QParallelAnimationGroup | None = None
+        self._onboarding: OnboardingOverlay | None = None
         self._cards: list[NotificationCard] = []
 
         self.setWindowTitle("AgentBell 通知中心")
@@ -2726,6 +2730,33 @@ class NotificationWindow(QMainWindow):
             )
         self._placed = True
 
+    def start_onboarding(self) -> OnboardingOverlay | None:
+        if self._shutting_down or self._onboarding is not None:
+            return self._onboarding
+        if not self.isVisible():
+            return None
+        overlay = OnboardingOverlay(
+            self._root,
+            hotkey=self.config.hotkey,
+            animate=motion_enabled(),
+        )
+        overlay.setGeometry(self._root.rect())
+        overlay.finished.connect(self._finish_onboarding)
+        overlay.show()
+        overlay.raise_()
+        self._onboarding = overlay
+        self.logger.info("显示首次启动介绍")
+        return overlay
+
+    def _finish_onboarding(self) -> None:
+        overlay = self._onboarding
+        self._onboarding = None
+        if overlay is not None:
+            overlay.hide()
+            overlay.deleteLater()
+        self.logger.info("首次启动介绍已完成")
+        self.onboarding_finished.emit()
+
     def toggle_maximize(self) -> None:
         if self.isMaximized():
             self.showNormal()
@@ -2749,6 +2780,10 @@ class NotificationWindow(QMainWindow):
         self._shutting_down = True
         self._copy_timer.stop()
         self._search_timer.stop()
+        if self._onboarding is not None:
+            self._onboarding.hide()
+            self._onboarding.deleteLater()
+            self._onboarding = None
         self.hide()
 
     def resizeEvent(self, event: QResizeEvent) -> None:
@@ -2759,6 +2794,9 @@ class NotificationWindow(QMainWindow):
                 self._root.height() - self._grip.height(),
             )
             self._grip.raise_()
+        if self._onboarding is not None:
+            self._onboarding.setGeometry(self._root.rect())
+            self._onboarding.raise_()
 
     def changeEvent(self, event) -> None:
         super().changeEvent(event)

@@ -402,8 +402,38 @@ class SettingsDialog(QDialog):
         popup_form.addRow("全局快捷键", self._hotkey_edit)
         layout.addWidget(popup)
 
+        about = QGroupBox("关于", page)
+        about_layout = QHBoxLayout(about)
+        about_layout.setContentsMargins(12, 12, 12, 12)
+        about_layout.setSpacing(10)
+        about_text = QVBoxLayout()
+        about_text.setContentsMargins(0, 0, 0, 0)
+        about_text.setSpacing(2)
+        about_title = QLabel("AgentBell 标志", about)
+        about_text.addWidget(about_title)
+        about_hint = QLabel(
+            "圆形底 + 分开的铃舌；查看尺寸、单色与 SVG 导出。", about
+        )
+        about_hint.setObjectName("editorHint")
+        about_text.addWidget(about_hint)
+        about_layout.addLayout(about_text, 1)
+        about_button = QPushButton("查看标志…", about)
+        about_button.setObjectName("secondaryButton")
+        about_button.setFixedSize(96, 32)
+        about_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        about_button.clicked.connect(self._open_about)
+        about_layout.addWidget(about_button)
+        layout.addWidget(about)
+
         layout.addStretch(1)
         return page
+
+    def _open_about(self) -> None:
+        from .about import AboutDialog
+
+        dialog = AboutDialog(self)
+        dialog.exec()
+        dialog.deleteLater()
 
     def _build_appearance_tab(self) -> QWidget:
         page = QWidget(self)

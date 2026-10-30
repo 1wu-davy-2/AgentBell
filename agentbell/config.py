@@ -130,6 +130,7 @@ class AppConfig:
     auto_close_seconds: int = DEFAULT_AUTO_CLOSE_SECONDS
     autostart: bool = False
     open_center_on_start: bool = True
+    onboarding_seen: bool = False
     instance_name: str = ""
     history: HistoryConfig = field(default_factory=HistoryConfig)
     quiet_hours: QuietHoursConfig = field(default_factory=QuietHoursConfig)
@@ -630,6 +631,7 @@ def _parse_config(data: dict[str, Any]) -> AppConfig:
         ),
         autostart=_read_bool(data, "autostart", False),
         open_center_on_start=_read_bool(data, "open_center_on_start", True),
+        onboarding_seen=_read_bool(data, "onboarding_seen", False),
         instance_name=_read_instance_name(data),
         history=_read_history(data),
         quiet_hours=_read_quiet_hours(data),

@@ -26,6 +26,7 @@ def test_missing_config_is_created_with_defaults(tmp_path):
         "end": "08:00",
         "allow_critical": True,
     }
+    assert data["onboarding_seen"] is False
     assert data["digest"] == {
         "enabled": True,
         "threshold": 4,
@@ -79,6 +80,7 @@ def test_missing_fields_use_defaults(tmp_path):
         ('{"port": "abc"}', "port"),
         ('{"auto_close_seconds": -1}', "auto_close_seconds"),
         ('{"autostart": "yes"}', "autostart"),
+        ('{"onboarding_seen": "maybe"}', "onboarding_seen"),
         ('{"token": 123}', "token"),
     ],
 )
@@ -201,6 +203,19 @@ def test_invalid_popup_and_session_config_is_rejected(tmp_path, payload, message
     path.write_text(payload, encoding="utf-8")
     with pytest.raises(ConfigError, match=message):
         load_config(path)
+
+
+def test_onboarding_seen_round_trip(tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text('{"onboarding_seen": "true"}', encoding="utf-8")
+    config, _ = load_config(path)
+    assert config.onboarding_seen is True
+
+    save_config(path, config)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["onboarding_seen"] is True
+    loaded, _ = load_config(path)
+    assert loaded.onboarding_seen is True
 
 
 def test_save_config_round_trip(tmp_path):

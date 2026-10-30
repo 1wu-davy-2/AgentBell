@@ -4,7 +4,6 @@ from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import (
     QColor,
     QIcon,
-    QLinearGradient,
     QPainter,
     QPainterPath,
     QPen,
@@ -27,6 +26,16 @@ PRIORITY_COLORS: dict[str, str] = {
     "critical": "#FF6B6B",
 }
 
+MARK_PRIMARY = "#2F6BFF"
+MARK_INK = "#FFFFFF"
+MARK_MONO_PRIMARY = "#1C212B"
+
+_MARK_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <circle cx="32" cy="32" r="32" fill="{primary}"/>
+  <path fill="{ink}" d="M19.2 28.4A12.8 12.8 0 0 1 44.8 28.4L52 39.2H12Z"/>
+  <circle cx="32" cy="49.6" r="4.2" fill="{ink}"/>
+</svg>"""
+
 
 def status_color(status: Status) -> QColor:
     return QColor(STATUS_COLORS.get(status, "#4F8CFF"))
@@ -36,51 +45,47 @@ def priority_color(priority: str) -> QColor:
     return QColor(PRIORITY_COLORS.get(priority, "#4F8CFF"))
 
 
-def _bell_path() -> QPainterPath:
+def mark_svg(primary: str = MARK_PRIMARY, ink: str = MARK_INK) -> str:
+    return _MARK_SVG.format(primary=primary, ink=ink)
+
+
+def _mark_bell_path() -> QPainterPath:
     path = QPainterPath()
-    path.moveTo(32.0, 14.0)
-    path.cubicTo(23.8, 14.0, 20.8, 20.8, 20.8, 29.4)
-    path.cubicTo(20.8, 36.6, 18.1, 38.9, 15.0, 42.0)
-    path.lineTo(49.0, 42.0)
-    path.cubicTo(45.9, 38.9, 43.2, 36.6, 43.2, 29.4)
-    path.cubicTo(43.2, 20.8, 40.2, 14.0, 32.0, 14.0)
+    path.moveTo(19.2, 28.4)
+    path.arcTo(QRectF(19.2, 15.6, 25.6, 25.6), 180.0, -180.0)
+    path.lineTo(52.0, 39.2)
+    path.lineTo(12.0, 39.2)
     path.closeSubpath()
     return path
 
 
-def _render_app_icon(size: int) -> QPixmap:
-    pixmap = QPixmap(size, size)
+def mark_pixmap(
+    size: int,
+    *,
+    primary: str = MARK_PRIMARY,
+    ink: str = MARK_INK,
+    ratio: float = 1.0,
+) -> QPixmap:
+    pixel = max(1, int(round(size * ratio)))
+    pixmap = QPixmap(pixel, pixel)
+    pixmap.setDevicePixelRatio(ratio)
     pixmap.fill(Qt.GlobalColor.transparent)
 
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-    painter.scale(size / 64.0, size / 64.0)
-
-    background = QLinearGradient(9.0, 3.0, 55.0, 62.0)
-    background.setColorAt(0.0, QColor("#5A9BFF"))
-    background.setColorAt(1.0, QColor("#6C5CE7"))
+    painter.scale(pixel / 64.0, pixel / 64.0)
     painter.setPen(Qt.PenStyle.NoPen)
-    painter.setBrush(background)
-    painter.drawEllipse(QRectF(2.0, 2.0, 60.0, 60.0))
-
-    highlight = QColor(255, 255, 255, 28)
-    painter.setBrush(highlight)
-    painter.drawEllipse(QRectF(9.0, 6.0, 46.0, 34.0))
-
-    painter.setBrush(QColor(10, 20, 45, 55))
-    painter.save()
-    painter.translate(0.0, 1.4)
-    painter.drawPath(_bell_path())
-    painter.drawEllipse(QRectF(28.5, 45.3, 7.0, 7.0))
-    painter.restore()
-
-    painter.setBrush(QColor(255, 255, 255, 246))
-    painter.drawEllipse(QRectF(29.4, 9.4, 5.2, 5.2))
-    painter.drawPath(_bell_path())
-    painter.drawEllipse(QRectF(28.5, 45.0, 7.0, 7.0))
-
+    painter.setBrush(QColor(primary))
+    painter.drawEllipse(QRectF(0.0, 0.0, 64.0, 64.0))
+    painter.setBrush(QColor(ink))
+    painter.drawPath(_mark_bell_path())
+    painter.drawEllipse(QRectF(27.8, 45.4, 8.4, 8.4))
     painter.end()
     return pixmap
+
+
+def _render_app_icon(size: int) -> QPixmap:
+    return mark_pixmap(size)
 
 
 def make_app_icon() -> QIcon:

@@ -10,7 +10,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 from PySide6.QtCore import QTime
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QScrollArea
+from PySide6.QtWidgets import QApplication, QPushButton, QScrollArea
 
 from agentbell.config import AppConfig, load_config
 from agentbell.ui.settings import SettingsDialog
@@ -124,6 +124,32 @@ def test_save_validates_and_writes_config(qapp, tmp_path):
         assert loaded.rules[0].require_ack is True
         assert loaded.channels[0].type == "ntfy"
         assert loaded.channels[0].topic == "agentbell-test"
+    finally:
+        dialog.deleteLater()
+        QTest.qWait(20)
+
+
+def test_onboarding_seen_survives_settings_save(qapp, tmp_path):
+    path = tmp_path / "config.json"
+    dialog = SettingsDialog(
+        AppConfig(port=18765, onboarding_seen=True),
+        path,
+        logging.getLogger("agentbell.tests"),
+    )
+    try:
+        dialog._save()
+        loaded, _ = load_config(path)
+        assert loaded.onboarding_seen is True
+    finally:
+        dialog.deleteLater()
+        QTest.qWait(20)
+
+
+def test_about_entry_is_present(qapp):
+    dialog = make_dialog(qapp)
+    try:
+        labels = [button.text() for button in dialog.findChildren(QPushButton)]
+        assert "查看标志…" in labels
     finally:
         dialog.deleteLater()
         QTest.qWait(20)

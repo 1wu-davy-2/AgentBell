@@ -23,6 +23,7 @@ def _clip(text: str, limit: int) -> str:
 class TrayIcon(QSystemTrayIcon):
     recent_selected = Signal(object)
     open_center_requested = Signal()
+    about_requested = Signal()
     quit_requested = Signal()
 
     def __init__(
@@ -68,6 +69,10 @@ class TrayIcon(QSystemTrayIcon):
         open_center.triggered.connect(self.open_center_requested.emit)
         self._recent_menu = menu.addMenu("显示最近通知")
         self._recent_menu.aboutToShow.connect(self._rebuild_recent_menu)
+        menu.addSeparator()
+
+        about_action = menu.addAction("关于 AgentBell…")
+        about_action.triggered.connect(self.about_requested.emit)
         menu.addSeparator()
 
         quit_action = menu.addAction("退出")
