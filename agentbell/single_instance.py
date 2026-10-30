@@ -15,13 +15,14 @@ _RETRY_DELAY_SECONDS = 0.1
 _SERVER_PREFIX = "AgentBell-single"
 
 
-def default_server_name() -> str:
+def default_server_name(instance: str = "") -> str:
     if hasattr(os, "getuid"):
         identity = str(os.getuid())
     else:
         identity = os.environ.get("USERNAME") or getpass.getuser()
     digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:12]
-    return f"{_SERVER_PREFIX}-{digest}"
+    base = f"{_SERVER_PREFIX}-{digest}"
+    return f"{base}-{instance}" if instance else base
 
 
 class SingleInstanceError(RuntimeError):

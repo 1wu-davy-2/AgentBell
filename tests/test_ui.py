@@ -6,7 +6,7 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QPoint, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLabel
 
@@ -91,14 +91,17 @@ def test_manager_stacks_five_and_queues_the_rest(qapp):
         QTest.qWait(50)
 
 
-def test_manager_duplicate_ids_are_ignored(qapp):
+def test_manager_same_id_updates_in_place(qapp):
     manager = ToastManager(30, logging.getLogger("agentbell.tests"))
     try:
         notification = make_notification(10)
         assert manager.enqueue(notification) is True
-        assert manager.enqueue(notification) is False
+        updated = make_notification(10, summary="进度更新", progress=60)
+        assert manager.enqueue(updated) is True
         QTest.qWait(100)
         assert len(manager._active) == 1
+        assert manager._active[0].notification.summary == "进度更新"
+        assert manager._active[0].notification.progress == 60
     finally:
         manager.close_all()
         QTest.qWait(50)
@@ -133,6 +136,120 @@ def test_auto_close_and_hover_pause(qapp):
         QTest.qWait(1500)
         assert len(manager._active) == 1
         toast._cursor_over_card = lambda: False
+        QTest.qWait(1500)
+        assert len(manager._active) == 0
+    finally:
+        manager.close_all()
+        QTest.qWait(50)
+
+
+def test_center_mode_is_modal_and_uses_light_skin(qapp):
+    toast = ToastWindow(
+        make_notification(50, require_ack=True),
+        30,
+        logging.getLogger("agentbell.tests"),
+        popup_mode="center",
+        popup_skin="light",
+    )
+    try:
+        assert toast.popup_mode == "center"
+        assert toast.popup_skin == "light"
+        assert toast._timeout_seconds == 0
+        assert toast.progress is None
+        assert toast.width() == 470 + 24
+        assert "background-color: #FFFFFF" in toast.styleSheet()
+    finally:
+        toast.close_now()
+        toast.deleteLater()
+        QTest.qWait(20)
+
+
+def test_overlay_fills_screen_and_backdrop_dismisses(qapp):
+    screen = QApplication.primaryScreen()
+    toast = ToastWindow(
+        make_notification(51),
+        30,
+        logging.getLogger("agentbell.tests"),
+        popup_mode="overlay",
+        popup_skin="ocean",
+    )
+    try:
+        toast.show_at(QPoint(0, 0))
+        QTest.qWait(60)
+        assert toast.isVisible()
+        assert toast._overlay_backdrop is not None
+        assert toast._timeout_seconds == 0
+        if screen is not None:
+            assert toast.geometry() == screen.geometry()
+        QTest.mouseClick(toast, Qt.MouseButton.LeftButton, pos=QPoint(4, 4))
+        assert toast._closing is True
+    finally:
+        toast.close_now()
+        toast.deleteLater()
+        QTest.qWait(20)
+
+
+def test_overlay_update_keeps_fullscreen_geometry(qapp):
+    screen = QApplication.primaryScreen()
+    toast = ToastWindow(
+        make_notification(52),
+        30,
+        logging.getLogger("agentbell.tests"),
+        popup_mode="overlay",
+    )
+    try:
+        toast.show_at(QPoint(0, 0))
+        QTest.qWait(40)
+        toast.update_notification(make_notification(52, summary="进度更新"))
+        QTest.qWait(40)
+        if screen is not None:
+            assert toast.geometry() == screen.geometry()
+    finally:
+        toast.close_now()
+        toast.deleteLater()
+        QTest.qWait(20)
+
+
+def test_modal_excludes_corner_cards_both_ways(qapp):
+    manager = ToastManager(30, logging.getLogger("agentbell.tests"))
+    try:
+        manager.enqueue(make_notification(60))
+        manager.enqueue(make_notification(61, popup_mode="center"))
+        QTest.qWait(120)
+        assert len(manager._active) == 1
+        assert manager._active[0].popup_mode == "corner"
+        assert len(manager._pending) == 1
+
+        manager._active[0].ack_button.click()
+        QTest.qWait(500)
+        assert len(manager._active) == 1
+        assert manager._active[0].popup_mode == "center"
+        assert not manager._pending
+
+        manager._active[0].ack_button.click()
+        QTest.qWait(200)
+        manager.enqueue(make_notification(62, popup_mode="overlay"))
+        QTest.qWait(120)
+        manager.enqueue(make_notification(63))
+        QTest.qWait(120)
+        assert len(manager._active) == 1
+        assert manager._active[0].popup_mode == "overlay"
+        assert len(manager._pending) == 1
+    finally:
+        manager.close_all()
+        QTest.qWait(50)
+
+
+def test_manager_pauses_all_countdowns(qapp):
+    manager = ToastManager(1, logging.getLogger("agentbell.tests"))
+    try:
+        manager.enqueue(make_notification(70))
+        QTest.qWait(150)
+        manager.set_paused(True)
+        QTest.qWait(1500)
+        assert len(manager._active) == 1
+
+        manager.set_paused(False)
         QTest.qWait(1500)
         assert len(manager._active) == 0
     finally:

@@ -143,11 +143,40 @@ def test_error_is_ignored_for_non_failed_status():
     assert inbox.get_nowait().error is None
 
 
+def test_popup_mode_and_skin_are_accepted_and_validated():
+    client, inbox = build()
+    response = client.post(
+        "/notify",
+        json={
+            "title": "部署完成",
+            "status": "failed",
+            "popup_mode": "CENTER",
+            "popup_skin": "Amber",
+        },
+        headers=auth_headers(),
+    )
+    assert response.status_code == 202
+    body = response.json()
+    assert body["popup_mode"] == "center"
+    assert body["popup_skin"] == "amber"
+    notification = inbox.get_nowait()
+    assert notification.popup_mode == "center"
+    assert notification.popup_skin == "amber"
+
+    response = client.post(
+        "/notify",
+        json={"title": "x", "popup_mode": "fullscreen"},
+        headers=auth_headers(),
+    )
+    assert response.status_code == 422
+    assert inbox.empty()
+
+
 def test_rejects_invalid_status_and_oversized_fields():
     client, inbox = build()
     response = client.post(
         "/notify",
-        json={"title": "x", "status": "running"},
+        json={"title": "x", "status": "paused"},
         headers=auth_headers(),
     )
     assert response.status_code == 422
@@ -158,6 +187,25 @@ def test_rejects_invalid_status_and_oversized_fields():
     )
     assert response.status_code == 422
     assert inbox.empty()
+
+
+def test_running_progress_notification_is_accepted():
+    client, inbox = build()
+    response = client.post(
+        "/notify",
+        json={
+            "title": "生成长报告",
+            "status": "running",
+            "progress": 45,
+            "summary": "正在整理第 3 章",
+        },
+        headers=auth_headers(),
+    )
+    assert response.status_code == 202
+    notification = inbox.get_nowait()
+    assert notification.status == "running"
+    assert notification.progress == 45
+    assert notification.priority == "low"
 
 
 def test_unsafe_links_are_dropped():
@@ -269,7 +317,7 @@ def test_shared_store_records_accepted_notifications():
     assert items[0].summary == "窗口应能读到这条记录。"
 
 
-def test_shared_store_skips_rejected_notifications():
+def test_queue_full_still_records_history():
     store = NotificationStore()
     client, inbox = build(maxsize=1, store=store)
     first = client.post("/notify", json={"title": "one"}, headers=auth_headers())
@@ -277,5 +325,73 @@ def test_shared_store_skips_rejected_notifications():
     second = client.post("/notify", json={"title": "two"}, headers=auth_headers())
     assert second.status_code == 503
 
-    assert [item.title for item in store.snapshot()] == ["one"]
+    assert [item.title for item in store.snapshot()] == ["two", "one"]
     assert inbox.qsize() == 1
+
+
+def test_dedupe_key_updates_the_same_notification():
+    store = NotificationStore()
+    client, inbox = build(store=store)
+    payload = {
+        "title": "长任务",
+        "status": "running",
+        "dedupe_key": "long-task",
+        "progress": 10,
+    }
+    first = client.post("/notify", json=payload, headers=auth_headers())
+    assert first.status_code == 202
+    assert first.json()["updated"] is False
+    assert first.json()["occurrence"] == 1
+
+    second = client.post(
+        "/notify",
+        json={**payload, "status": "succeeded", "progress": None},
+        headers=auth_headers(),
+    )
+    assert second.status_code == 202
+    body = second.json()
+    assert body["updated"] is True
+    assert body["id"] == first.json()["id"]
+    assert body["occurrence"] == 2
+
+    items = store.snapshot()
+    assert len(items) == 1
+    assert items[0].status == "succeeded"
+    assert items[0].occurrence_count == 2
+    assert inbox.qsize() == 2
+
+
+def test_require_ack_and_actions_are_forwarded():
+    client, inbox = build()
+    response = client.post(
+        "/notify",
+        json={
+            "title": "部署失败",
+            "status": "failed",
+            "priority": "critical",
+            "require_ack": True,
+            "bypass_quiet_hours": True,
+            "expires_in": 120,
+            "source": "deploy-bot",
+            "actions": [
+                {"kind": "open", "value": "https://example.com/logs"},
+                {"kind": "retry", "value": "http://127.0.0.1:9000/retry"},
+                {"kind": "path", "value": "C:/secret.txt"},
+                {"kind": "copy", "value": "curl http://127.0.0.1:9000/retry"},
+            ],
+        },
+        headers=auth_headers(),
+    )
+    assert response.status_code == 202
+    assert response.json()["require_ack"] is True
+    notification = inbox.get_nowait()
+    assert notification.priority == "critical"
+    assert notification.require_ack is True
+    assert notification.bypass_quiet_hours is True
+    assert notification.source == "deploy-bot"
+    assert notification.expires_at is not None
+    assert [action.kind for action in notification.actions] == [
+        "open",
+        "retry",
+        "copy",
+    ]

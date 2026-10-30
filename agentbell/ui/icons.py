@@ -17,11 +17,23 @@ STATUS_COLORS: dict[str, str] = {
     "succeeded": "#38D39F",
     "failed": "#FF6B6B",
     "canceled": "#F0B45A",
+    "running": "#4F8CFF",
+}
+
+PRIORITY_COLORS: dict[str, str] = {
+    "low": "#778192",
+    "normal": "#4F8CFF",
+    "high": "#F0B45A",
+    "critical": "#FF6B6B",
 }
 
 
 def status_color(status: Status) -> QColor:
     return QColor(STATUS_COLORS.get(status, "#4F8CFF"))
+
+
+def priority_color(priority: str) -> QColor:
+    return QColor(PRIORITY_COLORS.get(priority, "#4F8CFF"))
 
 
 def _bell_path() -> QPainterPath:
@@ -111,6 +123,10 @@ def status_pixmap(status: Status, size: int = 38) -> QPixmap:
         painter.drawLine(QPointF(25.0, 13.0), QPointF(13.0, 25.0))
     elif status == "canceled":
         painter.drawLine(QPointF(12.5, 19.0), QPointF(25.5, 19.0))
+    elif status == "running":
+        painter.drawEllipse(QPointF(19.0, 19.0), 7.0, 7.0)
+        painter.drawLine(QPointF(19.0, 15.0), QPointF(19.0, 19.0))
+        painter.drawLine(QPointF(19.0, 19.0), QPointF(22.0, 21.0))
     else:
         path = QPainterPath()
         path.moveTo(10.5, 19.6)
@@ -120,3 +136,20 @@ def status_pixmap(status: Status, size: int = 38) -> QPixmap:
 
     painter.end()
     return pixmap
+
+
+def make_alert_icon() -> QIcon:
+    icon = QIcon()
+    for size in (16, 24, 32, 48, 64, 128, 256):
+        pixmap = _render_app_icon(size)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        scale = size / 64.0
+        painter.setPen(QPen(QColor("#FFFFFF"), max(1.0, 2.0 * scale)))
+        painter.setBrush(QColor("#FF4D4F"))
+        radius = 15.0 * scale
+        center = QPointF(49.0 * scale, 15.0 * scale)
+        painter.drawEllipse(center, radius, radius)
+        painter.end()
+        icon.addPixmap(pixmap)
+    return icon

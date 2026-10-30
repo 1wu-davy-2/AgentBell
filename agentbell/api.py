@@ -5,6 +5,7 @@ import json
 import logging
 import queue
 import uuid
+from datetime import datetime, timedelta
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -13,11 +14,25 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from . import __version__
 from .config import AppConfig
-from .models import Notification, Status, safe_http_url
+from .models import (
+    ActionKind,
+    Notification,
+    NotificationAction,
+    PopupMode,
+    PopupSkin,
+    Priority,
+    Status,
+    default_priority,
+    safe_callback_url,
+    safe_http_url,
+    safe_local_path,
+)
+from .policy import apply_rules
 from .store import NotificationStore
 
 QUEUE_MAX_SIZE = 200
 MAX_BODY_BYTES = 1024 * 1024
+MAX_ACTIONS = 4
 
 _DEFAULT_WHEN_NULL = {
     "title": "未命名任务",
@@ -25,6 +40,22 @@ _DEFAULT_WHEN_NULL = {
     "summary": "",
     "duration": "",
 }
+
+_ACTION_LABELS: dict[str, str] = {
+    "open": "打开链接",
+    "copy": "复制",
+    "retry": "重试",
+    "path": "打开文件",
+    "center": "通知中心",
+}
+
+
+class ActionPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
+
+    kind: ActionKind
+    label: str = Field(default="", max_length=40)
+    value: str = Field(default="", max_length=2048)
 
 
 class NotifyPayload(BaseModel):
@@ -36,6 +67,19 @@ class NotifyPayload(BaseModel):
     duration: str = Field(default="", max_length=64)
     link: str | None = Field(default=None, max_length=2048)
     error: str | None = Field(default=None, max_length=2000)
+    priority: Priority | None = None
+    source: str = Field(default="", max_length=100)
+    dedupe_key: str | None = Field(default=None, max_length=200)
+    require_ack: bool = False
+    silent: bool = False
+    progress: int | None = Field(default=None, ge=0, le=100)
+    actions: list[ActionPayload] = Field(default_factory=list, max_length=8)
+    bypass_quiet_hours: bool = False
+    auto_close_seconds: int | None = Field(default=None, ge=0, le=3600)
+    expires_in: int | None = Field(default=None, ge=1, le=604800)
+    channel_types: list[str] = Field(default_factory=list, max_length=10)
+    popup_mode: PopupMode | None = None
+    popup_skin: PopupSkin | None = None
 
     @field_validator("title", "status", "summary", "duration", mode="before")
     @classmethod
@@ -50,7 +94,7 @@ class NotifyPayload(BaseModel):
         value = " ".join(value.split())
         return value or "未命名任务"
 
-    @field_validator("summary", "duration")
+    @field_validator("summary", "duration", "source")
     @classmethod
     def _compact_text(cls, value: str) -> str:
         return " ".join(value.split())
@@ -67,6 +111,24 @@ class NotifyPayload(BaseModel):
     @classmethod
     def _empty_link_to_none(cls, value: str | None) -> str | None:
         return value or None
+
+    @field_validator("dedupe_key", "priority", "popup_mode", "popup_skin", mode="before")
+    @classmethod
+    def _lower_optional(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            value = value.strip()
+            return value.lower() if value else None
+        return value
+
+    @field_validator("status", "priority", mode="before")
+    @classmethod
+    def _lower_known(cls, value: Any) -> Any:
+        return value.lower() if isinstance(value, str) else value
+
+    @field_validator("actions", "channel_types", mode="before")
+    @classmethod
+    def _none_to_empty(cls, value: Any) -> Any:
+        return [] if value is None else value
 
 
 def _client(request: Request) -> str:
@@ -152,6 +214,85 @@ async def _read_payload(
         )
 
 
+def _build_actions(
+    payload: NotifyPayload, config: AppConfig, logger: logging.Logger
+) -> tuple[NotificationAction, ...]:
+    actions: list[NotificationAction] = []
+    for item in payload.actions[:MAX_ACTIONS]:
+        value = item.value.strip()
+        if item.kind == "open":
+            safe = safe_http_url(value)
+            if not safe:
+                logger.warning("忽略无效的 open 动作：%s", _log_text(value, 200))
+                continue
+            value = safe
+        elif item.kind == "retry":
+            safe = safe_callback_url(value)
+            if not safe:
+                logger.warning("忽略非本机回环的 retry 动作：%s", _log_text(value, 200))
+                continue
+            value = safe
+        elif item.kind == "path":
+            if not config.allow_local_paths:
+                logger.warning("未开启 allow_local_paths，忽略 path 动作")
+                continue
+            safe = safe_local_path(value)
+            if not safe:
+                continue
+            value = safe
+        elif item.kind == "copy":
+            if not value or "\x00" in value:
+                continue
+            value = value[:2048]
+        else:
+            value = ""
+        label = item.label.strip()[:40] or _ACTION_LABELS[item.kind]
+        actions.append(NotificationAction(kind=item.kind, label=label, value=value))
+    return tuple(actions)
+
+
+def _build_notification(
+    payload: NotifyPayload,
+    config: AppConfig,
+    logger: logging.Logger,
+    now: datetime,
+) -> Notification:
+    link = safe_http_url(payload.link)
+    if payload.link and link is None:
+        logger.warning("忽略非 http(s) 链接：%s", _log_text(payload.link, 200))
+
+    priority = payload.priority or default_priority(payload.status)
+    notification = Notification(
+        id=uuid.uuid4().hex[:12],
+        title=payload.title,
+        status=payload.status,
+        summary=payload.summary,
+        duration=payload.duration,
+        link=link,
+        error=payload.error if payload.status == "failed" else None,
+        received_at=now,
+        updated_at=now,
+        priority=priority,
+        source=payload.source,
+        dedupe_key=payload.dedupe_key,
+        require_ack=payload.require_ack,
+        silent=payload.silent,
+        progress=payload.progress if payload.status == "running" else None,
+        actions=_build_actions(payload, config, logger),
+        bypass_quiet_hours=payload.bypass_quiet_hours,
+        auto_close_seconds=payload.auto_close_seconds,
+        expires_at=(
+            now + timedelta(seconds=payload.expires_in)
+            if payload.expires_in is not None
+            else None
+        ),
+        channel_types=tuple(payload.channel_types[:10]),
+        popup_mode=payload.popup_mode,
+        popup_skin=payload.popup_skin,
+    )
+    return apply_rules(notification, config.rules)
+
+
 def create_app(
     config: AppConfig,
     inbox: queue.Queue[Notification],
@@ -188,6 +329,7 @@ def create_app(
             "app": "AgentBell",
             "version": __version__,
             "auth": config.auth_enabled,
+            "history": len(history),
         }
 
     @app.post("/notify", status_code=202)
@@ -200,27 +342,33 @@ def create_app(
                 status_code=400, content={"ok": False, "error": "invalid payload"}
             )
 
-        link = safe_http_url(payload.link)
-        if payload.link and link is None:
-            logger.warning("忽略非 http(s) 链接：%s", _log_text(payload.link, 200))
+        now = datetime.now().astimezone()
+        notification = _build_notification(payload, config, logger, now)
+        stored, updated = history.add(notification)
 
-        notification = Notification(
-            id=uuid.uuid4().hex[:12],
-            title=payload.title,
-            status=payload.status,
-            summary=payload.summary,
-            duration=payload.duration,
-            link=link,
-            error=payload.error if payload.status == "failed" else None,
+        log_id = stored.id
+        logger.info(
+            "收到通知 id=%s status=%s priority=%s title=%s duration=%s "
+            "summary_len=%d source=%s dedupe=%s updated=%s client=%s",
+            log_id,
+            stored.status,
+            stored.priority,
+            _log_text(stored.title),
+            _log_text(stored.duration, 32) or "-",
+            len(stored.summary),
+            _log_text(stored.source, 60) or "-",
+            _log_text(stored.dedupe_key or "", 60) or "-",
+            updated,
+            _client(request),
         )
 
         try:
-            inbox.put_nowait(notification)
+            inbox.put_nowait(stored)
         except queue.Full:
             logger.error(
-                "通知队列已满，拒绝请求 id=%s title=%s client=%s",
-                notification.id,
-                _log_text(notification.title),
+                "通知队列已满，界面未更新 id=%s title=%s client=%s",
+                log_id,
+                _log_text(stored.title),
                 _client(request),
             )
             return JSONResponse(
@@ -228,16 +376,16 @@ def create_app(
                 content={"ok": False, "error": "notification queue is full"},
             )
 
-        history.add(notification)
-        logger.info(
-            "收到通知 id=%s status=%s title=%s duration=%s summary_len=%d client=%s",
-            notification.id,
-            notification.status,
-            _log_text(notification.title),
-            _log_text(notification.duration, 32) or "-",
-            len(notification.summary),
-            _client(request),
-        )
-        return {"ok": True, "id": notification.id, "queued": True}
+        return {
+            "ok": True,
+            "id": log_id,
+            "queued": True,
+            "updated": updated,
+            "priority": stored.priority,
+            "require_ack": stored.require_ack,
+            "occurrence": stored.occurrence_count,
+            "popup_mode": stored.popup_mode or config.popup_mode,
+            "popup_skin": stored.popup_skin or config.popup_skin,
+        }
 
     return app
