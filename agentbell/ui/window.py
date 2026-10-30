@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -32,8 +33,10 @@ from PySide6.QtGui import (
     QShowEvent,
 )
 from PySide6.QtWidgets import (
+    QApplication,
     QButtonGroup,
     QDialog,
+    QFileDialog,
     QFrame,
     QGraphicsDropShadowEffect,
     QHBoxLayout,
@@ -53,7 +56,14 @@ from PySide6.QtWidgets import (
 )
 
 from .. import __version__
-from ..agent_sessions import AgentSession
+from ..agent_sessions import (
+    AgentSession,
+    SessionItem,
+    SessionTranscript,
+    SessionTurn,
+    parse_session_transcript,
+    transcript_to_markdown,
+)
 from ..config import AppConfig
 from ..integration import build_agent_instructions
 from ..models import STATUS_LABELS, Notification, safe_http_url
@@ -234,6 +244,22 @@ def _paint_icon(kind: str, color: QColor, size: int) -> QIcon:
         painter.drawEllipse(QRectF(3.7, 3.7, 10.6, 10.6))
         painter.setBrush(color)
         painter.drawEllipse(QRectF(7.9, 7.9, 2.2, 2.2))
+    elif kind == "folder":
+        path = QPainterPath()
+        path.moveTo(2.9, 5.0)
+        path.lineTo(7.5, 5.0)
+        path.lineTo(9.1, 6.7)
+        path.lineTo(15.1, 6.7)
+        path.lineTo(15.1, 14.3)
+        path.lineTo(2.9, 14.3)
+        path.closeSubpath()
+        painter.drawPath(path)
+    elif kind == "back":
+        path = QPainterPath()
+        path.moveTo(11.2, 4.0)
+        path.lineTo(5.6, 9.0)
+        path.lineTo(11.2, 14.0)
+        painter.drawPath(path)
 
     painter.end()
     return QIcon(pixmap)
@@ -688,6 +714,7 @@ class NotificationCard(QFrame):
 class AgentSessionCard(QFrame):
     open_requested = Signal(object)
     copy_requested = Signal(object)
+    view_requested = Signal(object)
 
     def __init__(
         self, session: AgentSession, parent: QWidget | None = None
@@ -716,10 +743,9 @@ class AgentSessionCard(QFrame):
         title_row = QHBoxLayout()
         title_row.setContentsMargins(0, 0, 0, 0)
         title_row.setSpacing(8)
-        title = QLabel(f"会话 {session.session_id[:8]}", self)
+        title = ElidedLabel(session.display_title, self)
         title.setObjectName("sessionTitle")
-        title_row.addWidget(title)
-        title_row.addStretch(1)
+        title_row.addWidget(title, 1)
         updated = QLabel(format_received_at(session.updated_at), self)
         updated.setObjectName("sessionTime")
         title_row.addWidget(updated)
@@ -738,28 +764,321 @@ class AgentSessionCard(QFrame):
             meta_parts.append(
                 f"创建于 {session.created_at.strftime('%m-%d %H:%M')}"
             )
-        meta = QLabel(" · ".join(meta_parts), self)
+        meta = ElidedLabel(" · ".join(meta_parts), self)
         meta.setObjectName("sessionMeta")
         body.addWidget(meta)
 
-        self.open_button = QPushButton("打开目录", self)
-        self.open_button.setObjectName("sessionOpen")
-        self.open_button.setFixedSize(78, 28)
+        self.view_button = QPushButton("查看记录", self)
+        self.view_button.setObjectName("sessionView")
+        self.view_button.setFixedSize(78, 28)
+        self.view_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.view_button.clicked.connect(
+            lambda: self.view_requested.emit(session)
+        )
+        root.addWidget(self.view_button, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        self.open_button = QToolButton(self)
+        self.open_button.setObjectName("sessionIcon")
+        self.open_button.setIcon(_paint_icon("folder", QColor("#667085"), 16))
+        self.open_button.setIconSize(QSize(16, 16))
+        self.open_button.setFixedSize(30, 30)
         self.open_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.open_button.setToolTip(session.project_path or session.folder)
+        self.open_button.setToolTip("打开会话目录")
         self.open_button.clicked.connect(
             lambda: self.open_requested.emit(session)
         )
         root.addWidget(self.open_button, 0, Qt.AlignmentFlag.AlignVCenter)
 
-        self.copy_button = QPushButton("复制路径", self)
-        self.copy_button.setObjectName("sessionCopy")
-        self.copy_button.setFixedSize(78, 28)
+        self.copy_button = QToolButton(self)
+        self.copy_button.setObjectName("sessionIcon")
+        self.copy_button.setIcon(_paint_icon("copy", QColor("#667085"), 16))
+        self.copy_button.setIconSize(QSize(16, 16))
+        self.copy_button.setFixedSize(30, 30)
         self.copy_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.copy_button.setToolTip("复制项目路径")
         self.copy_button.clicked.connect(
             lambda: self.copy_requested.emit(session)
         )
         root.addWidget(self.copy_button, 0, Qt.AlignmentFlag.AlignVCenter)
+
+
+_TURN_RENDER_LIMIT = 220
+_ACTIVITY_RENDER_LIMIT = 160
+
+
+class _TurnHeader(QFrame):
+    clicked = Signal()
+
+    def __init__(self, turn: SessionTurn, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("turnHeader")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        row = QHBoxLayout(self)
+        row.setContentsMargins(12, 8, 10, 8)
+        row.setSpacing(10)
+
+        index = QLabel(f"#{turn.index}", self)
+        index.setObjectName("turnIndex")
+        index.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        index.setFixedSize(36, 20)
+        index.setCursor(Qt.CursorShape.PointingHandCursor)
+        row.addWidget(index, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        text = QVBoxLayout()
+        text.setContentsMargins(0, 0, 0, 0)
+        text.setSpacing(2)
+        prompt = ElidedLabel(turn.preview, self)
+        prompt.setObjectName("turnPrompt")
+        prompt.setCursor(Qt.CursorShape.PointingHandCursor)
+        text.addWidget(prompt)
+
+        parts: list[str] = []
+        if turn.tool_calls:
+            parts.append(f"{turn.tool_calls} 次工具调用")
+        if turn.tool_failures:
+            parts.append(f"{turn.tool_failures} 次失败")
+        if turn.files:
+            parts.append(f"{turn.files} 个文件")
+        if turn.timestamp is not None:
+            parts.append(turn.timestamp.astimezone().strftime("%m-%d %H:%M"))
+        if not parts:
+            parts.append("无工具调用")
+        meta = QLabel(" · ".join(parts), self)
+        meta.setObjectName("turnMeta")
+        meta.setCursor(Qt.CursorShape.PointingHandCursor)
+        text.addWidget(meta)
+        row.addLayout(text, 1)
+
+        self.arrow = QLabel("▸", self)
+        self.arrow.setObjectName("turnArrow")
+        self.arrow.setFixedWidth(16)
+        self.arrow.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.arrow.setCursor(Qt.CursorShape.PointingHandCursor)
+        row.addWidget(self.arrow, 0, Qt.AlignmentFlag.AlignVCenter)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton and self.rect().contains(
+            event.position().toPoint()
+        ):
+            self.clicked.emit()
+        super().mouseReleaseEvent(event)
+
+
+class SessionTurnView(QFrame):
+    def __init__(
+        self,
+        turn: SessionTurn,
+        default_expanded: bool = False,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.turn = turn
+        self.default_expanded = default_expanded
+        self._expanded = False
+        self._activity_items: list[SessionItem] = []
+        self._activity_built = False
+        self._body: QWidget | None = None
+        self._activity_host: QWidget | None = None
+        self._activity_layout: QVBoxLayout | None = None
+        self._activity_toggle: QToolButton | None = None
+
+        self.setObjectName("turnCard")
+        self._layout = QVBoxLayout(self)
+        self._layout.setContentsMargins(0, 0, 0, 0)
+        self._layout.setSpacing(0)
+
+        self.header = _TurnHeader(turn, self)
+        self.header.clicked.connect(self._toggle)
+        self._layout.addWidget(self.header)
+        self.set_expanded(default_expanded)
+
+    def _toggle(self) -> None:
+        self.set_expanded(not self._expanded)
+
+    def set_expanded(self, expanded: bool) -> None:
+        if expanded and self._body is None:
+            self._build_body()
+        self._expanded = expanded
+        self.header.arrow.setText("▾" if expanded else "▸")
+        if self._body is not None:
+            self._body.setVisible(expanded)
+
+    def _build_body(self) -> None:
+        body = QWidget(self)
+        body.setObjectName("turnBody")
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(16, 2, 16, 12)
+        layout.setSpacing(8)
+
+        prompt = QLabel(self.turn.prompt or "（会话开始）", body)
+        prompt.setObjectName("turnPromptFull")
+        prompt.setWordWrap(True)
+        prompt.setTextFormat(Qt.TextFormat.PlainText)
+        prompt.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        layout.addWidget(prompt)
+
+        rendered = 0
+        for item in self.turn.items:
+            if rendered >= _TURN_RENDER_LIMIT:
+                break
+            if item.kind in {"text", "image"}:
+                label = QLabel(item.text or "[图片]", body)
+                label.setObjectName(
+                    "turnText" if item.kind == "text" else "turnImage"
+                )
+                label.setWordWrap(True)
+                label.setTextFormat(Qt.TextFormat.PlainText)
+                label.setTextInteractionFlags(
+                    Qt.TextInteractionFlag.TextSelectableByMouse
+                )
+                layout.addWidget(label)
+                rendered += 1
+                continue
+            self._activity_items.append(item)
+            if self._activity_toggle is None:
+                self._build_activity_block(body, layout)
+        dropped = len(self.turn.items) - rendered - len(self._activity_items)
+        if dropped > 0:
+            more = QLabel(f"另有 {dropped} 项内容未展示（超出单轮显示上限）。", body)
+            more.setObjectName("turnMore")
+            layout.addWidget(more)
+
+        self._body = body
+        self._layout.addWidget(body)
+
+    def _build_activity_block(
+        self, body: QWidget, layout: QVBoxLayout
+    ) -> None:
+        parts = [f"{len(self._activity_items)} 项过程"]
+        if self.turn.tool_calls:
+            parts.append(f"{self.turn.tool_calls} 次工具调用")
+        if self.turn.tool_failures:
+            parts.append(f"{self.turn.tool_failures} 次失败")
+        if self.turn.files:
+            parts.append(f"{self.turn.files} 个文件")
+        toggle = QToolButton(body)
+        toggle.setObjectName("activityToggle")
+        toggle.setCheckable(True)
+        toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        toggle.setToolButtonStyle(
+            Qt.ToolButtonStyle.ToolButtonTextOnly
+        )
+        toggle.setText("▸ 过程 · " + " · ".join(parts))
+        toggle.toggled.connect(self._on_activity_toggled)
+        layout.addWidget(toggle)
+
+        host = QWidget(body)
+        host.setObjectName("activityHost")
+        host_layout = QVBoxLayout(host)
+        host_layout.setContentsMargins(0, 0, 0, 2)
+        host_layout.setSpacing(6)
+        host.setVisible(False)
+        layout.addWidget(host)
+
+        self._activity_toggle = toggle
+        self._activity_host = host
+        self._activity_layout = host_layout
+
+    def _on_activity_toggled(self, checked: bool) -> None:
+        if checked and not self._activity_built:
+            self._build_activity_rows()
+        if self._activity_host is not None:
+            self._activity_host.setVisible(checked)
+        if self._activity_toggle is not None:
+            symbol = "▾" if checked else "▸"
+            text = self._activity_toggle.text()
+            self._activity_toggle.setText(symbol + text[1:])
+
+    def _build_activity_rows(self) -> None:
+        if self._activity_layout is None:
+            return
+        self._activity_built = True
+        for item in self._activity_items[:_ACTIVITY_RENDER_LIMIT]:
+            self._activity_layout.addWidget(self._make_activity_row(item))
+        dropped = len(self._activity_items) - _ACTIVITY_RENDER_LIMIT
+        if dropped > 0 and self._activity_host is not None:
+            more = QLabel(
+                f"另有 {dropped} 项过程未展示。", self._activity_host
+            )
+            more.setObjectName("turnMore")
+            self._activity_layout.addWidget(more)
+
+    def _make_activity_row(self, item: SessionItem) -> QFrame:
+        host = self._activity_host or self
+        row = QFrame(host)
+        row.setObjectName("activityRow")
+        row.setProperty("error", item.error)
+        layout = QVBoxLayout(row)
+        layout.setContentsMargins(10, 6, 10, 6)
+        layout.setSpacing(3)
+
+        head = QHBoxLayout()
+        head.setContentsMargins(0, 0, 0, 0)
+        head.setSpacing(6)
+        if item.kind == "tool":
+            name = f"工具 · {item.name}"
+        elif item.kind == "result":
+            name = f"结果 · {item.name}" if item.name else "工具结果"
+        else:
+            name = "思考"
+        label = QLabel(name, row)
+        label.setObjectName("activityName")
+        label.setProperty("kind", item.kind)
+        head.addWidget(label)
+        if item.error:
+            error = QLabel("失败", row)
+            error.setObjectName("activityError")
+            head.addWidget(error)
+        head.addStretch(1)
+        if item.truncated:
+            clipped = QLabel("已截断", row)
+            clipped.setObjectName("activityClipped")
+            head.addWidget(clipped)
+        layout.addLayout(head)
+
+        text = QLabel(item.text or "（无输出）", row)
+        text.setObjectName(
+            "activityThinking" if item.kind == "thinking" else "activityText"
+        )
+        text.setWordWrap(True)
+        text.setTextFormat(Qt.TextFormat.PlainText)
+        text.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        layout.addWidget(text)
+        return row
+
+    def matches(self, query: str) -> bool:
+        lowered = query.lower()
+        if lowered in self.turn.prompt.lower():
+            return True
+        return any(
+            lowered in item.text.lower() or lowered in item.name.lower()
+            for item in self.turn.items
+        )
+
+    def set_search(self, query: str) -> None:
+        query = query.strip()
+        if not query:
+            self.setVisible(True)
+            self.set_expanded(self.default_expanded)
+            return
+        matched = self.matches(query)
+        self.setVisible(matched)
+        if not matched:
+            return
+        self.set_expanded(True)
+        if self._activity_toggle is not None and not self._activity_toggle.isChecked():
+            self._activity_toggle.setChecked(True)
+
+    def expand_activity(self) -> None:
+        if self._activity_toggle is None:
+            return
+        if not self._activity_toggle.isChecked():
+            self._activity_toggle.setChecked(True)
 
 
 def _default_action_label(kind: str) -> str:
@@ -907,6 +1226,17 @@ class NotificationWindow(QMainWindow):
         self._stats: dict = {}
         self._sessions: list[AgentSession] = []
         self._session_scanned_at: datetime | None = None
+        self._session_detail_session: AgentSession | None = None
+        self._session_transcript: SessionTranscript | None = None
+        self._session_transcript_cache: dict[str, SessionTranscript] = {}
+        self._turn_views: list[SessionTurnView] = []
+        self._transcript_base_hint = ""
+        self._transcript_hint_timer = QTimer(self)
+        self._transcript_hint_timer.setSingleShot(True)
+        self._transcript_hint_timer.setInterval(2400)
+        self._transcript_hint_timer.timeout.connect(
+            self._restore_transcript_hint
+        )
         self._shutting_down = False
         self._placed = False
         self._show_animation: QParallelAnimationGroup | None = None
@@ -1459,6 +1789,46 @@ class NotificationWindow(QMainWindow):
         page = QWidget()
         page.setObjectName("bodyPanel")
         layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self._session_view_stack = QStackedWidget(page)
+        self._session_view_stack.setObjectName("pageStack")
+        self._session_view_stack.addWidget(self._build_session_list())
+        self._session_view_stack.addWidget(self._build_session_detail())
+        layout.addWidget(self._session_view_stack, 1)
+
+        QTimer.singleShot(0, self._rebuild_session_cards)
+        return page
+
+    def _make_search_box(
+        self, parent: QWidget, placeholder: str, width: int = 260
+    ) -> tuple[QFrame, QLineEdit]:
+        host = QFrame(parent)
+        host.setObjectName("searchHost")
+        host.setFixedSize(width, 32)
+        layout = QHBoxLayout(host)
+        layout.setContentsMargins(10, 0, 6, 0)
+        layout.setSpacing(6)
+        icon = QLabel(host)
+        icon.setPixmap(
+            _paint_icon("search", QColor("#8A919D"), 14).pixmap(14, 14)
+        )
+        icon.setFixedSize(14, 14)
+        layout.addWidget(icon)
+        edit = QLineEdit(host)
+        edit.setObjectName("searchInput")
+        edit.setPlaceholderText(placeholder)
+        edit.setClearButtonEnabled(True)
+        edit.setFrame(False)
+        edit.setFixedHeight(26)
+        layout.addWidget(edit, 1)
+        return host, edit
+
+    def _build_session_list(self) -> QWidget:
+        page = QWidget()
+        page.setObjectName("bodyPanel")
+        layout = QVBoxLayout(page)
         layout.setContentsMargins(28, 22, 28, 24)
         layout.setSpacing(0)
 
@@ -1471,7 +1841,7 @@ class NotificationWindow(QMainWindow):
         title = QLabel("Agent 会话", page)
         title.setObjectName("pageTitle")
         subtitle = QLabel(
-            "只读扫描本机 Claude Code 与 Qoder 的会话元数据，不解析对话内容。",
+            "扫描本机 Claude Code 与 Qoder 的会话，可直接在软件内查看完整记录。",
             page,
         )
         subtitle.setObjectName("pageSubtitle")
@@ -1498,28 +1868,12 @@ class NotificationWindow(QMainWindow):
         self._session_summary.setObjectName("sessionSummary")
         toolbar_row.addWidget(self._session_summary, 1)
 
-        search_host = QFrame(toolbar)
-        search_host.setObjectName("searchHost")
-        search_host.setFixedSize(260, 32)
-        search_layout = QHBoxLayout(search_host)
-        search_layout.setContentsMargins(10, 0, 6, 0)
-        search_layout.setSpacing(6)
-        search_icon = QLabel(search_host)
-        search_icon.setPixmap(
-            _paint_icon("search", QColor("#8A919D"), 14).pixmap(14, 14)
+        search_host, self._session_search = self._make_search_box(
+            toolbar, "搜索项目、标题、会话 ID 或路径"
         )
-        search_icon.setFixedSize(14, 14)
-        search_layout.addWidget(search_icon)
-        self._session_search = QLineEdit(search_host)
-        self._session_search.setObjectName("searchInput")
-        self._session_search.setPlaceholderText("搜索项目、会话 ID 或路径")
-        self._session_search.setClearButtonEnabled(True)
-        self._session_search.setFrame(False)
-        self._session_search.setFixedHeight(26)
         self._session_search.textChanged.connect(
             lambda _text: self._rebuild_session_cards()
         )
-        search_layout.addWidget(self._session_search, 1)
         toolbar_row.addWidget(search_host, 0, Qt.AlignmentFlag.AlignVCenter)
         layout.addWidget(toolbar)
 
@@ -1540,8 +1894,133 @@ class NotificationWindow(QMainWindow):
         self._session_layout.setSpacing(8)
         self._session_scroll.setWidget(self._session_host)
         layout.addWidget(self._session_scroll, 1)
+        return page
 
-        QTimer.singleShot(0, self._rebuild_session_cards)
+    def _build_session_detail(self) -> QWidget:
+        page = QWidget()
+        page.setObjectName("bodyPanel")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(28, 18, 28, 20)
+        layout.setSpacing(0)
+
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(10)
+
+        back = QToolButton(page)
+        back.setObjectName("detailIcon")
+        back.setIcon(_paint_icon("back", QColor("#5A6472"), 16))
+        back.setIconSize(QSize(16, 16))
+        back.setFixedSize(30, 30)
+        back.setCursor(Qt.CursorShape.PointingHandCursor)
+        back.setToolTip("返回会话列表")
+        back.clicked.connect(self._close_session_view)
+        header.addWidget(back, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        self._detail_agent = QLabel("", page)
+        self._detail_agent.setObjectName("sessionAgent")
+        self._detail_agent.setProperty("agent", "claude")
+        self._detail_agent.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._detail_agent.setFixedSize(70, 22)
+        header.addWidget(self._detail_agent, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        title_box = QVBoxLayout()
+        title_box.setContentsMargins(0, 0, 0, 0)
+        title_box.setSpacing(2)
+        self._detail_title = ElidedLabel("", page)
+        self._detail_title.setObjectName("detailTitle")
+        self._detail_meta = ElidedLabel("", page)
+        self._detail_meta.setObjectName("detailMeta")
+        title_box.addWidget(self._detail_title)
+        title_box.addWidget(self._detail_meta)
+        header.addLayout(title_box, 1)
+
+        self._outline_button = QToolButton(page)
+        self._outline_button.setObjectName("detailMenu")
+        self._outline_button.setText("目录")
+        self._outline_button.setFixedSize(58, 28)
+        self._outline_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._outline_button.setPopupMode(
+            QToolButton.ToolButtonPopupMode.InstantPopup
+        )
+        self._outline_menu = QMenu(self._outline_button)
+        self._outline_button.setMenu(self._outline_menu)
+        self._outline_button.setToolTip("按轮次跳转")
+        header.addWidget(
+            self._outline_button, 0, Qt.AlignmentFlag.AlignVCenter
+        )
+
+        self._detail_copy_button = QPushButton("复制全文", page)
+        self._detail_copy_button.setObjectName("detailAction")
+        self._detail_copy_button.setFixedSize(72, 28)
+        self._detail_copy_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._detail_copy_button.setToolTip("复制整段会话为 Markdown")
+        self._detail_copy_button.clicked.connect(
+            self._copy_transcript_markdown
+        )
+        header.addWidget(
+            self._detail_copy_button, 0, Qt.AlignmentFlag.AlignVCenter
+        )
+
+        self._detail_export_button = QPushButton("导出 MD", page)
+        self._detail_export_button.setObjectName("detailAction")
+        self._detail_export_button.setFixedSize(72, 28)
+        self._detail_export_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._detail_export_button.setToolTip("将会话导出为 Markdown 文件")
+        self._detail_export_button.clicked.connect(
+            self._export_transcript_markdown
+        )
+        header.addWidget(
+            self._detail_export_button, 0, Qt.AlignmentFlag.AlignVCenter
+        )
+
+        folder = QToolButton(page)
+        folder.setObjectName("detailIcon")
+        folder.setIcon(_paint_icon("folder", QColor("#5A6472"), 16))
+        folder.setIconSize(QSize(16, 16))
+        folder.setFixedSize(30, 30)
+        folder.setCursor(Qt.CursorShape.PointingHandCursor)
+        folder.setToolTip("打开会话目录")
+        folder.clicked.connect(self._open_detail_folder)
+        header.addWidget(folder, 0, Qt.AlignmentFlag.AlignVCenter)
+        layout.addLayout(header)
+
+        layout.addSpacing(12)
+
+        toolbar = QWidget(page)
+        toolbar_row = QHBoxLayout(toolbar)
+        toolbar_row.setContentsMargins(0, 0, 0, 0)
+        toolbar_row.setSpacing(12)
+        self._transcript_hint = QLabel("", toolbar)
+        self._transcript_hint.setObjectName("sessionSummary")
+        toolbar_row.addWidget(self._transcript_hint, 1)
+
+        search_host, self._transcript_search = self._make_search_box(
+            toolbar, "在会话内容中搜索", 280
+        )
+        self._transcript_search.textChanged.connect(
+            self._apply_transcript_search
+        )
+        toolbar_row.addWidget(search_host, 0, Qt.AlignmentFlag.AlignVCenter)
+        layout.addWidget(toolbar)
+
+        layout.addSpacing(10)
+
+        self._transcript_scroll = QScrollArea(page)
+        self._transcript_scroll.setObjectName("listArea")
+        self._transcript_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._transcript_scroll.setWidgetResizable(True)
+        self._transcript_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self._transcript_scroll.viewport().setAutoFillBackground(False)
+        self._transcript_host = QWidget()
+        self._transcript_host.setObjectName("listHost")
+        self._transcript_layout = QVBoxLayout(self._transcript_host)
+        self._transcript_layout.setContentsMargins(0, 0, 6, 0)
+        self._transcript_layout.setSpacing(8)
+        self._transcript_scroll.setWidget(self._transcript_host)
+        layout.addWidget(self._transcript_scroll, 1)
         return page
 
     def _make_stat_card(
@@ -1824,6 +2303,7 @@ class NotificationWindow(QMainWindow):
             in " ".join(
                 (
                     session.project,
+                    session.title,
                     session.agent_label,
                     session.session_id,
                     session.project_path,
@@ -1900,6 +2380,7 @@ class NotificationWindow(QMainWindow):
                 card = AgentSessionCard(session, self._session_host)
                 card.open_requested.connect(self._open_session_folder)
                 card.copy_requested.connect(self._copy_session_path)
+                card.view_requested.connect(self._open_session_view)
                 self._session_layout.addWidget(card)
         self._session_layout.addStretch(1)
 
@@ -1917,6 +2398,203 @@ class NotificationWindow(QMainWindow):
         target = self._session_target(session)
         QGuiApplication.clipboard().setText(target)
         self.logger.info("复制会话路径 %s", _clip(target, 200))
+
+    def _open_session_view(self, session: AgentSession) -> None:
+        key = f"{session.path}|{int(session.updated_at.timestamp())}"
+        transcript = self._session_transcript_cache.get(key)
+        if transcript is None:
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+            try:
+                transcript = parse_session_transcript(session)
+            except Exception as exc:  # pragma: no cover - defensive
+                self.logger.warning(
+                    "解析会话记录失败 %s：%s", _clip(session.path, 200), exc
+                )
+                transcript = SessionTranscript(
+                    session=session, note=f"解析会话记录失败：{exc}"
+                )
+            finally:
+                QApplication.restoreOverrideCursor()
+            self._session_transcript_cache[key] = transcript
+            while len(self._session_transcript_cache) > 6:
+                oldest = next(iter(self._session_transcript_cache))
+                self._session_transcript_cache.pop(oldest, None)
+
+        self._session_detail_session = session
+        self._session_transcript = transcript
+        self._detail_agent.setText(session.agent_label)
+        self._detail_agent.setProperty("agent", session.agent)
+        _repolish(self._detail_agent)
+        self._detail_title.set_full_text(session.display_title)
+        updated = session.updated_at.astimezone().strftime("%Y-%m-%d %H:%M")
+        self._detail_meta.set_full_text(
+            f"{session.project} · {session.project_path or session.folder} "
+            f"· 更新于 {updated}"
+        )
+
+        self._transcript_hint_timer.stop()
+        self._transcript_search.blockSignals(True)
+        self._transcript_search.clear()
+        self._transcript_search.blockSignals(False)
+        self._transcript_search.setEnabled(bool(transcript.turns))
+        self._render_transcript(transcript)
+        self._session_view_stack.setCurrentIndex(1)
+        self._transcript_scroll.verticalScrollBar().setValue(0)
+        self.logger.info(
+            "查看会话记录 %s（%d 轮 / %d 项）",
+            _clip(session.display_title, 80),
+            transcript.total_turns,
+            transcript.total_items,
+        )
+
+    def _close_session_view(self) -> None:
+        if self._session_view_stack.currentIndex() != 1:
+            return
+        self._session_view_stack.setCurrentIndex(0)
+        self._session_detail_session = None
+        self._session_transcript = None
+        self._transcript_hint_timer.stop()
+
+    def _clear_transcript_views(self) -> None:
+        while self._transcript_layout.count():
+            entry = self._transcript_layout.takeAt(0)
+            widget = entry.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+        self._turn_views = []
+
+    def _render_transcript(self, transcript: SessionTranscript) -> None:
+        self._clear_transcript_views()
+        if not transcript.turns:
+            box = QWidget(self._transcript_host)
+            box_layout = QVBoxLayout(box)
+            box_layout.setContentsMargins(24, 66, 24, 40)
+            box_layout.setSpacing(8)
+            empty = QLabel(
+                transcript.note or "该会话没有可展示的对话内容。", box
+            )
+            empty.setObjectName("sessionEmptyText")
+            empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            empty.setWordWrap(True)
+            box_layout.addStretch(1)
+            box_layout.addWidget(empty)
+            box_layout.addStretch(2)
+            self._transcript_layout.addWidget(box)
+        else:
+            last = len(transcript.turns) - 1
+            for index, turn in enumerate(transcript.turns):
+                view = SessionTurnView(
+                    turn,
+                    default_expanded=index == last,
+                    parent=self._transcript_host,
+                )
+                self._transcript_layout.addWidget(view)
+                self._turn_views.append(view)
+            self._transcript_layout.addStretch(1)
+
+        parts = [
+            f"{len(transcript.turns)} 轮",
+            f"{transcript.total_items} 项内容",
+        ]
+        if transcript.total_turns > len(transcript.turns):
+            parts.append(f"共 {transcript.total_turns} 轮")
+        if transcript.note and transcript.turns:
+            parts.append(transcript.note)
+        self._transcript_base_hint = " · ".join(parts)
+        self._transcript_hint.setText(self._transcript_base_hint)
+        self._rebuild_outline()
+        has_turns = bool(transcript.turns)
+        self._detail_copy_button.setEnabled(has_turns)
+        self._detail_export_button.setEnabled(has_turns)
+
+    def _apply_transcript_search(self, text: str) -> None:
+        query = text.strip()
+        self._transcript_hint_timer.stop()
+        matched = 0
+        for view in self._turn_views:
+            view.set_search(query)
+            if query and not view.isHidden():
+                matched += 1
+        if query:
+            self._transcript_hint.setText(
+                f"匹配 {matched} / {len(self._turn_views)} 轮"
+            )
+        else:
+            self._transcript_hint.setText(self._transcript_base_hint)
+
+    def _rebuild_outline(self) -> None:
+        self._outline_menu.clear()
+        if not self._turn_views:
+            action = self._outline_menu.addAction("（无内容）")
+            action.setEnabled(False)
+            self._outline_button.setEnabled(False)
+            return
+        self._outline_button.setEnabled(True)
+        for index, view in enumerate(self._turn_views):
+            label = f"{view.turn.index}. {_clip(view.turn.preview, 42)}"
+            action = self._outline_menu.addAction(label)
+            action.triggered.connect(
+                lambda checked=False, i=index: self._scroll_to_turn(i)
+            )
+
+    def _scroll_to_turn(self, index: int) -> None:
+        if not 0 <= index < len(self._turn_views):
+            return
+        view = self._turn_views[index]
+        view.setVisible(True)
+        view.set_expanded(True)
+        self._transcript_scroll.ensureWidgetVisible(view, 0, 12)
+
+    def _flash_transcript_hint(self, text: str) -> None:
+        self._transcript_hint.setText(text)
+        self._transcript_hint_timer.start()
+
+    def _restore_transcript_hint(self) -> None:
+        if self._session_transcript is not None:
+            self._transcript_hint.setText(self._transcript_base_hint)
+
+    def _copy_transcript_markdown(self) -> None:
+        transcript = self._session_transcript
+        if transcript is None:
+            return
+        text = transcript_to_markdown(transcript)
+        QGuiApplication.clipboard().setText(text)
+        self.logger.info(
+            "复制会话 Markdown %s（%d 字符）",
+            _clip(transcript.session.display_title, 80),
+            len(text),
+        )
+        self._flash_transcript_hint(f"已复制 Markdown · {len(text)} 字符")
+
+    def _export_transcript_markdown(self) -> None:
+        transcript = self._session_transcript
+        if transcript is None:
+            return
+        safe_name = re.sub(
+            r'[\\/:*?"<>|]+', "-", transcript.session.display_title
+        ).strip(" .")[:60]
+        safe_name = safe_name or transcript.session.session_id
+        target = Path.home() / "Downloads" / f"{safe_name}.md"
+        path, _selected = QFileDialog.getSaveFileName(
+            self, "导出会话记录", str(target), "Markdown (*.md)"
+        )
+        if not path:
+            return
+        try:
+            Path(path).write_text(
+                transcript_to_markdown(transcript), encoding="utf-8"
+            )
+        except OSError as exc:
+            self.logger.warning("导出会话失败 %s：%s", _clip(path, 200), exc)
+            self._flash_transcript_hint(f"导出失败：{exc}")
+            return
+        self.logger.info("导出会话 Markdown %s", _clip(path, 200))
+        self._flash_transcript_hint(f"已导出：{_clip(path, 90)}")
+
+    def _open_detail_folder(self) -> None:
+        if self._session_detail_session is not None:
+            self._open_session_folder(self._session_detail_session)
 
     # ---------- actions ----------
 
@@ -2660,7 +3338,7 @@ QLabel#sessionMeta {
     font-size: 10px;
     color: #9AA1AC;
 }
-QPushButton#sessionOpen {
+QPushButton#sessionView {
     background-color: #2F6FF0;
     border: none;
     border-radius: 7px;
@@ -2668,20 +3346,177 @@ QPushButton#sessionOpen {
     font-size: 10px;
     font-weight: 600;
 }
-QPushButton#sessionOpen:hover {
+QPushButton#sessionView:hover {
     background-color: #1F5FDF;
 }
-QPushButton#sessionCopy {
+QToolButton#sessionIcon {
+    background-color: #F5F6FA;
+    border: 1px solid #EAECF1;
+    border-radius: 8px;
+}
+QToolButton#sessionIcon:hover {
+    background-color: #EAF1FF;
+    border-color: #C9DBFF;
+}
+QLabel#detailTitle {
+    font-size: 15px;
+    font-weight: 650;
+    color: #161A20;
+}
+QLabel#detailMeta {
+    font-size: 10px;
+    color: #8A919D;
+}
+QToolButton#detailIcon {
+    background-color: #F5F6FA;
+    border: 1px solid #EAECF1;
+    border-radius: 8px;
+}
+QToolButton#detailIcon:hover {
+    background-color: #EAF1FF;
+    border-color: #C9DBFF;
+}
+QToolButton#detailMenu {
+    background-color: #FFFFFF;
+    border: 1px solid #E3E7ED;
+    border-radius: 7px;
+    color: #4B5563;
+    font-size: 10px;
+}
+QToolButton#detailMenu:hover {
+    background-color: #F2F5FA;
+}
+QToolButton#detailMenu::menu-indicator {
+    image: none;
+    width: 0px;
+}
+QPushButton#detailAction {
     background-color: #F5F6FA;
     border: 1px solid #EAECF1;
     border-radius: 7px;
-    color: #5A6472;
+    color: #4B5563;
     font-size: 10px;
 }
-QPushButton#sessionCopy:hover {
+QPushButton#detailAction:hover {
     background-color: #EAF1FF;
     border-color: #C9DBFF;
     color: #2F6FF0;
+}
+QPushButton#detailAction:disabled {
+    color: #B4BAC4;
+}
+QFrame#turnCard {
+    background-color: #FFFFFF;
+    border: 1px solid #E6E8EC;
+    border-radius: 12px;
+}
+QLabel#turnIndex {
+    background-color: #EAF2FF;
+    border-radius: 6px;
+    color: #2F6FF0;
+    font-size: 10px;
+    font-weight: 600;
+}
+QLabel#turnPrompt {
+    font-size: 12px;
+    font-weight: 600;
+    color: #1F2329;
+}
+QLabel#turnMeta {
+    font-size: 10px;
+    color: #9AA1AC;
+}
+QLabel#turnArrow {
+    color: #98A0AC;
+    font-size: 12px;
+}
+QWidget#turnBody {
+    background: transparent;
+}
+QLabel#turnPromptFull {
+    background-color: #F5F7FB;
+    border-radius: 8px;
+    padding: 8px 10px;
+    color: #323A45;
+    font-size: 11px;
+}
+QLabel#turnText {
+    color: #2B313B;
+    font-size: 11px;
+}
+QLabel#turnImage {
+    color: #8A919D;
+    font-size: 10px;
+    font-style: italic;
+}
+QLabel#turnMore {
+    color: #9AA1AC;
+    font-size: 10px;
+}
+QToolButton#activityToggle {
+    background: transparent;
+    border: none;
+    color: #5B6B84;
+    font-size: 10px;
+    text-align: left;
+    padding: 2px 0px;
+}
+QToolButton#activityToggle:hover {
+    color: #2F6FF0;
+}
+QWidget#activityHost {
+    background: transparent;
+}
+QFrame#activityRow {
+    background-color: #F8F9FB;
+    border: 1px solid #EDEFF3;
+    border-radius: 8px;
+}
+QFrame#activityRow[error="true"] {
+    background-color: #FEF6F6;
+    border-color: #F3D6D6;
+}
+QLabel#activityName {
+    background-color: #EEF2F8;
+    border-radius: 5px;
+    padding: 1px 6px;
+    color: #5A6472;
+    font-size: 9px;
+    font-weight: 600;
+}
+QLabel#activityName[kind="tool"] {
+    background-color: #EAF2FF;
+    color: #2F6FF0;
+}
+QLabel#activityName[kind="result"] {
+    background-color: #E8F8F0;
+    color: #15885C;
+}
+QLabel#activityName[kind="thinking"] {
+    background-color: #F1EEFA;
+    color: #6B4FBB;
+}
+QLabel#activityError {
+    background-color: #FDECEC;
+    border-radius: 5px;
+    padding: 1px 6px;
+    color: #C24141;
+    font-size: 9px;
+    font-weight: 600;
+}
+QLabel#activityClipped {
+    color: #9AA1AC;
+    font-size: 9px;
+}
+QLabel#activityText {
+    font-family: Consolas, "Cascadia Mono";
+    color: #3A4350;
+    font-size: 10px;
+}
+QLabel#activityThinking {
+    color: #7A8091;
+    font-size: 10px;
+    font-style: italic;
 }
 QLabel#sessionEmptyTitle {
     font-size: 16px;

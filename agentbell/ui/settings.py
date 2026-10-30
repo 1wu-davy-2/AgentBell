@@ -38,6 +38,7 @@ from ..config import (
     save_config,
 )
 from ..models import (
+    OVERLAY_ANCHOR_LABELS,
     OVERLAY_ANCHORS,
     OVERLAY_CARD_WIDTH_DEFAULT,
     OVERLAY_CARD_WIDTH_MAX,
@@ -52,6 +53,7 @@ from ..models import (
     Notification,
 )
 from .icons import make_app_icon
+from .overlay_editor import OverlayAreaEditor
 from .toast import ToastWindow
 
 _SOUND_KEYS = ("succeeded", "failed", "canceled", "running", "critical")
@@ -68,17 +70,6 @@ _TEMPLATE_LABELS = {
     "failed": "失败标题",
     "canceled": "取消标题",
     "running": "进行中标题",
-}
-_OVERLAY_ANCHOR_LABELS = {
-    "center": "居中",
-    "top": "上方居中",
-    "bottom": "下方居中",
-    "left": "左侧居中",
-    "right": "右侧居中",
-    "top_left": "左上角",
-    "top_right": "右上角",
-    "bottom_left": "左下角",
-    "bottom_right": "右下角",
 }
 
 _RULES_EXAMPLE = [
@@ -510,7 +501,7 @@ class SettingsDialog(QDialog):
         self._overlay_anchor_combo = QComboBox(area_group)
         for key in OVERLAY_ANCHORS:
             self._overlay_anchor_combo.addItem(
-                _OVERLAY_ANCHOR_LABELS.get(key, key), key
+                OVERLAY_ANCHOR_LABELS.get(key, key), key
             )
         index = self._overlay_anchor_combo.findData(self.config.overlay_area.anchor)
         self._overlay_anchor_combo.setCurrentIndex(max(0, index))
@@ -545,9 +536,21 @@ class SettingsDialog(QDialog):
         self._overlay_offset_y_spin.setValue(self.config.overlay_area.offset_y)
         area_form.addRow("垂直微调", self._overlay_offset_y_spin)
 
+        self._overlay_drag_button = QPushButton("全屏拖拽定位…", area_group)
+        self._overlay_drag_button.setObjectName("testButton")
+        self._overlay_drag_button.setFixedHeight(30)
+        self._overlay_drag_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._overlay_drag_button.setToolTip(
+            "打开全屏预览，直接拖动卡片定位，保存后立即生效"
+        )
+        self._overlay_drag_button.clicked.connect(
+            self._edit_overlay_area_fullscreen
+        )
+        area_form.addRow("", self._overlay_drag_button)
+
         area_hint = QLabel(
-            "仅「全屏遮挡」模式生效。卡片高度随内容自动；位置以九宫格为基准，"
-            "再用微调移动到任意位置。修改后点击底部「测试」立即预览。",
+            "仅「全屏遮挡」模式生效。卡片高度随内容自动；可点「全屏拖拽定位」"
+            "直接拖动卡片，保存后立即写入配置。",
             area_group,
         )
         area_hint.setObjectName("editorHint")
@@ -570,6 +573,31 @@ class SettingsDialog(QDialog):
             offset_y=self._overlay_offset_y_spin.value(),
             margin=self._overlay_margin_spin.value(),
         )
+
+    def _edit_overlay_area_fullscreen(self) -> None:
+        editor = OverlayAreaEditor(
+            self._overlay_area_from_controls(),
+            image_path=self._overlay_image_edit.text().strip(),
+            skin=self._popup_skin_combo.currentData(),
+        )
+        editor.open_fullscreen()
+        editor.exec()
+        area = editor.result_area
+        editor.deleteLater()
+        if area is None:
+            return
+        index = self._overlay_anchor_combo.findData(area.anchor)
+        self._overlay_anchor_combo.setCurrentIndex(max(0, index))
+        self._overlay_offset_x_spin.setValue(area.offset_x)
+        self._overlay_offset_y_spin.setValue(area.offset_y)
+        self.logger.info(
+            "全屏拖拽定位：锚点=%s 偏移=%+d/%+d 宽=%s",
+            area.anchor,
+            area.offset_x,
+            area.offset_y,
+            area.width or OVERLAY_CARD_WIDTH_DEFAULT,
+        )
+        self._save()
 
     def _choose_overlay_image(self) -> None:
         current = self._overlay_image_edit.text().strip()

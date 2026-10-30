@@ -45,6 +45,81 @@ OVERLAY_MARGIN_DEFAULT = 32
 OVERLAY_MARGIN_MAX = 600
 OVERLAY_OFFSET_LIMIT = 2000
 
+
+def overlay_effective_margin(
+    margin: int, screen_width: int, screen_height: int
+) -> int:
+    return max(
+        0,
+        min(
+            margin,
+            max(0, (screen_width - OVERLAY_CARD_WIDTH_MIN) // 2),
+            max(0, (screen_height - 160) // 2),
+        ),
+    )
+
+
+def overlay_anchor_origin(
+    anchor: str,
+    screen_width: int,
+    screen_height: int,
+    card_width: int,
+    card_height: int,
+    margin: int,
+) -> tuple[int, int]:
+    if anchor in {"left", "top_left", "bottom_left"}:
+        x = margin
+    elif anchor in {"right", "top_right", "bottom_right"}:
+        x = screen_width - margin - card_width
+    else:
+        x = (screen_width - card_width) // 2
+    if anchor in {"top", "top_left", "top_right"}:
+        y = margin
+    elif anchor in {"bottom", "bottom_left", "bottom_right"}:
+        y = screen_height - margin - card_height
+    else:
+        y = (screen_height - card_height) // 2
+    return x, y
+
+
+def overlay_anchor_for_rect(
+    screen_width: int,
+    screen_height: int,
+    card_x: int,
+    card_y: int,
+    card_width: int,
+    card_height: int,
+    margin: int,
+    current_anchor: str | None = None,
+) -> tuple[str, int, int]:
+    """Map a free-form card position back to an anchor plus fine offsets."""
+    max_x = max(0, screen_width - card_width)
+    max_y = max(0, screen_height - card_height)
+    x = max(0, min(card_x, max_x))
+    y = max(0, min(card_y, max_y))
+    best_anchor = "center"
+    best_origin = (0, 0)
+    best_score = float("inf")
+    for anchor in OVERLAY_ANCHORS:
+        origin = overlay_anchor_origin(
+            anchor,
+            screen_width,
+            screen_height,
+            card_width,
+            card_height,
+            margin,
+        )
+        score = abs(x - origin[0]) + abs(y - origin[1])
+        if anchor == current_anchor:
+            score -= 0.5
+        if score < best_score:
+            best_score = score
+            best_anchor = anchor
+            best_origin = origin
+    offset_x = max(-OVERLAY_OFFSET_LIMIT, min(x - best_origin[0], OVERLAY_OFFSET_LIMIT))
+    offset_y = max(-OVERLAY_OFFSET_LIMIT, min(y - best_origin[1], OVERLAY_OFFSET_LIMIT))
+    return best_anchor, offset_x, offset_y
+
 STATUS_LABELS: dict[str, str] = {
     "succeeded": "已完成",
     "failed": "失败",
@@ -77,6 +152,18 @@ POPUP_SKIN_LABELS: dict[str, str] = {
     "light": "晨光白",
     "ocean": "深海青",
     "amber": "琥珀暖",
+}
+
+OVERLAY_ANCHOR_LABELS: dict[str, str] = {
+    "center": "居中",
+    "top": "上方居中",
+    "bottom": "下方居中",
+    "left": "左侧居中",
+    "right": "右侧居中",
+    "top_left": "左上角",
+    "top_right": "右上角",
+    "bottom_left": "左下角",
+    "bottom_right": "右下角",
 }
 
 DEFAULT_TEMPLATES: dict[str, str] = {

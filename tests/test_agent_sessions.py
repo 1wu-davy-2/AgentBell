@@ -10,8 +10,11 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 
 from agentbell.agent_sessions import (
+    AgentSession,
     AgentSessionScanner,
+    parse_session_transcript,
     scan_sessions,
+    transcript_to_markdown,
 )
 from agentbell.config import AgentSessionsConfig
 
@@ -184,3 +187,243 @@ def test_parse_time_supports_iso_and_epoch():
     assert epoch is not None
     assert epoch.year >= 2026
     assert _parse_time("not-a-time") is None
+
+
+def write_transcript(path: Path, entries: list[dict]) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "\n".join(json.dumps(entry, ensure_ascii=False) for entry in entries) + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def transcript_entries() -> list[dict]:
+    return [
+        {
+            "type": "summary",
+            "cwd": "E:\\opt\\demo",
+            "timestamp": "2026-10-30T08:00:00Z",
+        },
+        {
+            "type": "user",
+            "cwd": "E:\\opt\\demo",
+            "timestamp": "2026-10-30T08:00:00Z",
+            "message": {
+                "content": [{"type": "text", "text": "帮我重构设置页的布局"}]
+            },
+        },
+        {
+            "type": "assistant",
+            "timestamp": "2026-10-30T08:00:05Z",
+            "message": {
+                "content": [
+                    {"type": "thinking", "thinking": "先看看现有布局再动手"},
+                    {"type": "text", "text": "我先读取设置页代码。"},
+                    {
+                        "type": "tool_use",
+                        "id": "t1",
+                        "name": "Read",
+                        "input": {"file_path": "agentbell/ui/settings.py"},
+                    },
+                ]
+            },
+        },
+        {
+            "type": "user",
+            "timestamp": "2026-10-30T08:00:07Z",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "t1",
+                        "content": "1 from __future__ ...",
+                    }
+                ]
+            },
+        },
+        {
+            "type": "assistant",
+            "timestamp": "2026-10-30T08:00:12Z",
+            "message": {
+                "content": [{"type": "text", "text": "布局已调整完成。"}]
+            },
+        },
+        {
+            "type": "user",
+            "timestamp": "2026-10-30T08:02:00Z",
+            "message": {
+                "content": [{"type": "text", "text": "再补一组单元测试"}]
+            },
+        },
+        {
+            "type": "assistant",
+            "timestamp": "2026-10-30T08:02:05Z",
+            "message": {
+                "content": [
+                    {"type": "text", "text": "已补充设置页布局测试。"},
+                    {
+                        "type": "tool_use",
+                        "id": "t2",
+                        "name": "Write",
+                        "input": {"file_path": "tests/test_settings.py"},
+                    },
+                ]
+            },
+        },
+        {
+            "type": "user",
+            "timestamp": "2026-10-30T08:02:09Z",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "t2",
+                        "is_error": True,
+                        "content": "permission denied",
+                    }
+                ]
+            },
+        },
+    ]
+
+
+def test_scan_extracts_title_from_first_prompt(tmp_path):
+    claude_root = tmp_path / "claude-root"
+    with_title = write_transcript(
+        claude_root / "E--opt-demo" / "session-title.jsonl",
+        transcript_entries(),
+    )
+    touch(with_title, datetime(2026, 10, 30, 8, 0, tzinfo=timezone.utc))
+    no_prompt = write_transcript(
+        claude_root / "E--opt-demo" / "session-empty.jsonl",
+        [{"type": "summary", "cwd": "E:\\opt\\demo"}],
+    )
+    touch(no_prompt, datetime(2026, 10, 29, 8, 0, tzinfo=timezone.utc))
+
+    sessions = scan_sessions(claude_root, tmp_path / "missing", max_sessions=10)
+    by_id = {item.session_id: item for item in sessions}
+    assert by_id["session-title"].title == "帮我重构设置页的布局"
+    assert by_id["session-title"].display_title == "帮我重构设置页的布局"
+    assert by_id["session-title"].project_path == "E:\\opt\\demo"
+    assert by_id["session-title"].created_at is not None
+    assert by_id["session-empty"].title == ""
+    assert by_id["session-empty"].display_title.startswith("会话 ")
+
+
+def test_parse_transcript_builds_turns_tools_and_errors(tmp_path):
+    path = write_transcript(
+        tmp_path / "claude" / "E--opt-demo" / "session-a.jsonl",
+        transcript_entries(),
+    )
+    session = AgentSession(
+        agent="claude",
+        session_id="session-a",
+        project="demo",
+        project_path="E:\\opt\\demo",
+        path=str(path),
+        updated_at=datetime(2026, 10, 30, 8, 5, tzinfo=timezone.utc),
+        title="帮我重构设置页的布局",
+    )
+
+    transcript = parse_session_transcript(session)
+
+    assert transcript.note == ""
+    assert transcript.truncated is False
+    assert transcript.total_turns == 2
+    assert [turn.prompt for turn in transcript.turns] == [
+        "帮我重构设置页的布局",
+        "再补一组单元测试",
+    ]
+    first, second = transcript.turns
+    assert first.tool_calls == 1
+    assert first.files == 0
+    assert first.tool_failures == 0
+    assert [item.kind for item in first.items] == [
+        "thinking",
+        "text",
+        "tool",
+        "result",
+        "text",
+    ]
+    tool = first.items[2]
+    assert tool.name == "Read"
+    assert tool.text == "agentbell/ui/settings.py"
+    result = first.items[3]
+    assert result.name == "Read"
+    assert result.error is False
+    assert second.tool_calls == 1
+    assert second.files == 1
+    assert second.tool_failures == 1
+    assert second.items[-1].error is True
+    assert second.items[-1].name == "Write"
+
+
+def test_transcript_markdown_contains_sections(tmp_path):
+    path = write_transcript(
+        tmp_path / "claude" / "E--opt-demo" / "session-a.jsonl",
+        transcript_entries(),
+    )
+    session = AgentSession(
+        agent="claude",
+        session_id="session-a",
+        project="demo",
+        project_path="E:\\opt\\demo",
+        path=str(path),
+        updated_at=datetime(2026, 10, 30, 8, 5, tzinfo=timezone.utc),
+        title="帮我重构设置页的布局",
+    )
+    markdown = transcript_to_markdown(parse_session_transcript(session))
+
+    assert markdown.startswith("# 帮我重构设置页的布局")
+    assert "## 1. 帮我重构设置页的布局" in markdown
+    assert "**工具 · Read**" in markdown
+    assert "**工具结果 · 失败 · Write**" in markdown
+    assert "> 思考" in markdown
+    assert "```\npermission denied\n```" in markdown
+
+
+def test_parse_transcript_handles_missing_file(tmp_path):
+    session = AgentSession(
+        agent="qoder",
+        session_id="missing",
+        project="demo",
+        project_path="E:\\opt\\demo",
+        path=str(tmp_path / "nowhere"),
+        updated_at=datetime(2026, 10, 30, 8, 5, tzinfo=timezone.utc),
+    )
+    transcript = parse_session_transcript(session)
+    assert transcript.turns == ()
+    assert "未找到" in transcript.note
+
+
+def test_qoder_scan_prefers_jsonl_and_reads_titles(tmp_path):
+    qoder_root = tmp_path / "qoder-root"
+    project = qoder_root / "E--opt-demo"
+    session_dir = project / "qoder-session-1"
+    session_dir.mkdir(parents=True)
+    (session_dir / "state.json").write_text(
+        json.dumps(
+            {
+                "sessionId": "qoder-session-1",
+                "createdAt": "2026-10-30T08:00:00Z",
+                "updatedAt": "2026-10-30T09:00:00Z",
+                "cwd": "E:\\opt\\demo",
+            }
+        ),
+        encoding="utf-8",
+    )
+    write_transcript(project / "qoder-session-1.jsonl", transcript_entries())
+
+    sessions = scan_sessions(tmp_path / "missing", qoder_root, max_sessions=10)
+
+    assert len(sessions) == 1
+    session = sessions[0]
+    assert session.agent == "qoder"
+    assert session.path.endswith("qoder-session-1.jsonl")
+    assert session.title == "帮我重构设置页的布局"
+    assert session.project == "demo"
+    assert session.message_count == len(transcript_entries())
+    transcript = parse_session_transcript(session)
+    assert len(transcript.turns) == 2
+    assert Path(session.folder) == project

@@ -52,6 +52,8 @@ from ..models import (
     POPUP_SKINS,
     Notification,
     NotificationAction,
+    overlay_anchor_origin,
+    overlay_effective_margin,
     safe_http_url,
 )
 from .icons import priority_color, status_color, status_pixmap
@@ -139,7 +141,11 @@ def _normalized_skin(skin: str | None) -> str:
     return skin if skin in POPUP_SKINS else "midnight"
 
 
-class _OverlayBackdrop(QWidget):
+def overlay_palette(skin: str | None) -> Mapping[str, str]:
+    return _SKIN_PALETTES[_normalized_skin(skin)]
+
+
+class OverlayBackdrop(QWidget):
     def __init__(
         self,
         image_path: str,
@@ -368,7 +374,7 @@ class ToastWindow(QWidget):
         if self.popup_mode == "overlay":
             outer.setContentsMargins(0, 0, 0, 0)
             palette = _SKIN_PALETTES[self.popup_skin]
-            backdrop = _OverlayBackdrop(self._overlay_image, palette, self)
+            backdrop = OverlayBackdrop(self._overlay_image, palette, self)
             backdrop.setObjectName("overlayBackdrop")
             self.card = QFrame(backdrop)
             self.card.setObjectName("card")
@@ -849,13 +855,8 @@ class ToastWindow(QWidget):
         bounds = backdrop.rect()
         if bounds.width() <= 0 or bounds.height() <= 0:
             return
-        margin = max(
-            0,
-            min(
-                self._overlay_area.margin,
-                max(0, (bounds.width() - OVERLAY_CARD_WIDTH_MIN) // 2),
-                max(0, (bounds.height() - 160) // 2),
-            ),
+        margin = overlay_effective_margin(
+            self._overlay_area.margin, bounds.width(), bounds.height()
         )
         width = min(
             self._configured_overlay_width(),
@@ -875,18 +876,14 @@ class ToastWindow(QWidget):
         anchor = self._overlay_area.anchor
         if anchor not in OVERLAY_ANCHORS:
             anchor = "center"
-        if anchor in {"left", "top_left", "bottom_left"}:
-            x = margin
-        elif anchor in {"right", "top_right", "bottom_right"}:
-            x = bounds.width() - margin - width
-        else:
-            x = (bounds.width() - width) // 2
-        if anchor in {"top", "top_left", "top_right"}:
-            y = margin
-        elif anchor in {"bottom", "bottom_left", "bottom_right"}:
-            y = bounds.height() - margin - height
-        else:
-            y = (bounds.height() - height) // 2
+        x, y = overlay_anchor_origin(
+            anchor,
+            bounds.width(),
+            bounds.height(),
+            width,
+            height,
+            margin,
+        )
         x += self._overlay_area.offset_x
         y += self._overlay_area.offset_y
         x = max(0, min(x, bounds.width() - width))

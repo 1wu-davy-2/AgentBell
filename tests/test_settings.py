@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from dataclasses import replace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -237,5 +238,60 @@ def test_preview_uses_selected_appearance_and_cleans_up(qapp, tmp_path):
     finally:
         if dialog._preview is not None:
             dialog._preview.close_now()
+        dialog.deleteLater()
+        QTest.qWait(20)
+
+
+def test_fullscreen_drag_editor_updates_controls_and_saves(qapp, tmp_path, monkeypatch):
+    import agentbell.ui.settings as settings_module
+
+    calls: dict = {}
+
+    class FakeEditor:
+        def __init__(self, area, image_path="", skin="midnight"):
+            calls["area"] = area
+            calls["image"] = image_path
+            calls["skin"] = skin
+            self.result_area = replace(
+                area, anchor="bottom_right", offset_x=-52, offset_y=-36
+            )
+
+        def open_fullscreen(self):
+            calls["opened"] = True
+
+        def exec(self):
+            return 1
+
+        def deleteLater(self):
+            calls["deleted"] = True
+
+    monkeypatch.setattr(settings_module, "OverlayAreaEditor", FakeEditor)
+    dialog = make_dialog(qapp, tmp_path / "config.json")
+    try:
+        dialog._overlay_anchor_combo.setCurrentIndex(
+            dialog._overlay_anchor_combo.findData("top_left")
+        )
+        dialog._overlay_offset_x_spin.setValue(12)
+        dialog._overlay_offset_y_spin.setValue(20)
+        dialog._overlay_image_edit.setText("E:\\opt\\bg.png")
+        dialog._popup_skin_combo.setCurrentIndex(
+            dialog._popup_skin_combo.findData("ocean")
+        )
+
+        dialog._edit_overlay_area_fullscreen()
+
+        assert calls["opened"] is True
+        assert calls["deleted"] is True
+        assert calls["area"].anchor == "top_left"
+        assert calls["image"] == "E:\\opt\\bg.png"
+        assert calls["skin"] == "ocean"
+        assert dialog._overlay_anchor_combo.currentData() == "bottom_right"
+        assert dialog._overlay_offset_x_spin.value() == -52
+        assert dialog._overlay_offset_y_spin.value() == -36
+        assert dialog.result_config is not None
+        assert dialog.result_config.overlay_area.anchor == "bottom_right"
+        assert dialog.result_config.overlay_area.offset_x == -52
+        assert dialog.result_config.overlay_area.offset_y == -36
+    finally:
         dialog.deleteLater()
         QTest.qWait(20)

@@ -488,3 +488,228 @@ def test_apply_config_updates_service_labels(window_factory):
     assert window._auth_label.text() == "X-Token 未开启"
     assert window._status_address.text() == "127.0.0.1:18765 · 运行中"
     assert window._hotkey_label.text() == "快捷键 Ctrl+Alt+A"
+
+
+def write_view_transcript(tmp_path):
+    import json
+
+    path = tmp_path / "session-view.jsonl"
+    entries = [
+        {
+            "type": "summary",
+            "cwd": "E:\\opt\\demo",
+            "timestamp": "2026-10-30T08:00:00Z",
+        },
+        {
+            "type": "user",
+            "cwd": "E:\\opt\\demo",
+            "timestamp": "2026-10-30T08:00:00Z",
+            "message": {
+                "content": [{"type": "text", "text": "帮我重构设置页的布局"}]
+            },
+        },
+        {
+            "type": "assistant",
+            "timestamp": "2026-10-30T08:00:05Z",
+            "message": {
+                "content": [
+                    {"type": "thinking", "thinking": "先看看现有布局"},
+                    {"type": "text", "text": "我先读取设置页代码。"},
+                    {
+                        "type": "tool_use",
+                        "id": "t1",
+                        "name": "Read",
+                        "input": {"file_path": "agentbell/ui/settings.py"},
+                    },
+                ]
+            },
+        },
+        {
+            "type": "user",
+            "timestamp": "2026-10-30T08:00:07Z",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "t1",
+                        "content": "1 from __future__ ...",
+                    }
+                ]
+            },
+        },
+        {
+            "type": "assistant",
+            "timestamp": "2026-10-30T08:00:12Z",
+            "message": {
+                "content": [{"type": "text", "text": "布局已调整完成。"}]
+            },
+        },
+        {
+            "type": "user",
+            "timestamp": "2026-10-30T08:02:00Z",
+            "message": {
+                "content": [{"type": "text", "text": "再补一组单元测试"}]
+            },
+        },
+        {
+            "type": "assistant",
+            "timestamp": "2026-10-30T08:02:05Z",
+            "message": {
+                "content": [
+                    {"type": "text", "text": "已补充设置页布局测试。"},
+                    {
+                        "type": "tool_use",
+                        "id": "t2",
+                        "name": "Write",
+                        "input": {"file_path": "tests/test_settings.py"},
+                    },
+                ]
+            },
+        },
+        {
+            "type": "user",
+            "timestamp": "2026-10-30T08:02:09Z",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "t2",
+                        "is_error": True,
+                        "content": "permission denied",
+                    }
+                ]
+            },
+        },
+    ]
+    path.write_text(
+        "\n".join(json.dumps(entry, ensure_ascii=False) for entry in entries)
+        + "\n",
+        encoding="utf-8",
+    )
+    now = datetime.now().astimezone()
+    return AgentSession(
+        agent="claude",
+        session_id="session-view",
+        project="demo",
+        project_path="E:\\opt\\demo",
+        path=str(path),
+        updated_at=now,
+        created_at=now - timedelta(hours=1),
+        message_count=len(entries),
+        size_bytes=path.stat().st_size,
+        title="帮我重构设置页的布局",
+    )
+
+
+def test_session_view_renders_searches_and_exports(window_factory, tmp_path, monkeypatch):
+    import agentbell.ui.window as window_module
+
+    window = window_factory()
+    session = write_view_transcript(tmp_path)
+    window.update_sessions([session])
+    window.set_page("sessions")
+    QTest.qWait(30)
+
+    cards = window._session_host.findChildren(AgentSessionCard)
+    assert len(cards) == 1
+    title = cards[0].findChildren(QLabel, "sessionTitle")[0]
+    assert title.toolTip() == "帮我重构设置页的布局"
+
+    window._session_search.setText("重构设置页")
+    QTest.qWait(20)
+    assert len(window._session_host.findChildren(AgentSessionCard)) == 1
+    window._session_search.clear()
+    QTest.qWait(20)
+
+    cards = window._session_host.findChildren(AgentSessionCard)
+    cards[0].view_button.click()
+    QTest.qWait(40)
+
+    assert window._session_view_stack.currentIndex() == 1
+    assert len(window._turn_views) == 2
+    first, second = window._turn_views
+    assert first._body is None
+    assert second._body is not None
+    assert first._expanded is False
+    assert second._expanded is True
+
+    first.header.clicked.emit()
+    QTest.qWait(20)
+    assert first._body is not None
+    assert first._expanded is True
+
+    window._transcript_search.setText("permission")
+    QTest.qWait(20)
+    assert first.isHidden() is True
+    assert second.isHidden() is False
+    assert "匹配 1 / 2" in window._transcript_hint.text()
+    assert second._activity_toggle is not None
+    assert second._activity_toggle.isChecked() is True
+
+    window._transcript_search.clear()
+    QTest.qWait(20)
+    assert first.isHidden() is False
+    assert second.isHidden() is False
+    assert second._expanded is True
+    assert "2 轮" in window._transcript_hint.text()
+
+    outline = [action.text() for action in window._outline_menu.actions()]
+    assert outline == [
+        "1. 帮我重构设置页的布局",
+        "2. 再补一组单元测试",
+    ]
+
+    window._detail_copy_button.click()
+    clipboard = QGuiApplication.clipboard().text()
+    assert clipboard.startswith("# 帮我重构设置页的布局")
+    assert "## 1. 帮我重构设置页的布局" in clipboard
+    assert "**工具 · Read**" in clipboard
+    assert "已复制 Markdown" in window._transcript_hint.text()
+
+    class FakeFileDialog:
+        @staticmethod
+        def getSaveFileName(*args, **kwargs):
+            return str(tmp_path / "export.md"), "Markdown (*.md)"
+
+    monkeypatch.setattr(window_module, "QFileDialog", FakeFileDialog)
+    window._detail_export_button.click()
+    exported = tmp_path / "export.md"
+    assert exported.is_file()
+    assert "## 2. 再补一组单元测试" in exported.read_text(encoding="utf-8")
+    assert "已导出" in window._transcript_hint.text()
+
+    window._close_session_view()
+    assert window._session_view_stack.currentIndex() == 0
+
+
+def test_session_view_handles_missing_transcript(window_factory, tmp_path):
+    window = window_factory()
+    now = datetime.now().astimezone()
+    session = AgentSession(
+        agent="qoder",
+        session_id="missing",
+        project="demo",
+        project_path="E:\\opt\\demo",
+        path=str(tmp_path / "missing-session"),
+        updated_at=now,
+        title="缺失记录",
+    )
+    window.update_sessions([session])
+    window.set_page("sessions")
+    QTest.qWait(20)
+
+    window._open_session_view(session)
+    QTest.qWait(20)
+
+    assert window._session_view_stack.currentIndex() == 1
+    assert window._turn_views == []
+    assert window._detail_copy_button.isEnabled() is False
+    assert window._detail_export_button.isEnabled() is False
+    texts = [
+        label.text()
+        for label in window._transcript_host.findChildren(QLabel, "sessionEmptyText")
+    ]
+    assert any("未找到" in text for text in texts)
+
+    window._close_session_view()
+    assert window._session_view_stack.currentIndex() == 0
