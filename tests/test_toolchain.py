@@ -232,70 +232,24 @@ def test_uninstall_removes_package_and_manifest(tmp_path: Path):
     assert "pi" not in service.manifest().get("tools", {})
 
 
-_CC_ASSET = "CC-Switch-v4.0.22-Windows-Portable.zip"
-
-
-def _cc_routes(digest: str = "") -> dict:
-    archive = _zip_bytes({"CC Switch.exe": b"MZ", "resources/app.asar": b"x"})
-    release = {
-        "tag_name": "v4.0.22",
-        "assets": [
-            {
-                "name": _CC_ASSET,
-                "browser_download_url": f"https://github.com/farion1231/cc-switch/releases/download/v4.0.22/{_CC_ASSET}",
-                "digest": digest,
-            },
-            {
-                "name": "CC-Switch-v4.0.22-Windows.msi",
-                "browser_download_url": "https://github.com/x/cc.msi",
-            },
-        ],
-    }
-    return {
-        f"{tc.GITHUB_API_ROOT}/repos/{tc.CC_SWITCH_REPO}/releases/latest": (
-            json.dumps(release).encode("utf-8"),
-            {},
-        ),
-        f"https://github.com/farion1231/cc-switch/releases/download/v4.0.22/{_CC_ASSET}": (
-            archive,
-            {},
-        ),
-    }
-
-
-def test_cc_switch_release_picks_portable_asset(tmp_path: Path):
+def test_state_lists_node_and_seven_npm_tools(tmp_path: Path):
     service = tc.ToolchainService(
         tmp_path / "runtime",
-        opener=FakeOpener(_cc_routes()),
+        opener=FakeOpener({}),
         registry=tc.NPM_REGISTRY_OFFICIAL,
     )
-    tag, name, url, digest = service.cc_switch_release()
-    assert tag == "v4.0.22"
-    assert name == _CC_ASSET
-    assert url.endswith(_CC_ASSET)
-    assert digest == ""
+    state = service.state()
+    assert state.node.installed is False
+    assert [tool.id for tool in state.tools] == [spec.id for spec in tc.NPM_TOOLS]
+    assert len(state.tools) == 7
+    assert not hasattr(state, "cc_switch")
 
 
-def test_install_cc_switch_extracts_portable_build(tmp_path: Path):
-    service = tc.ToolchainService(
-        tmp_path / "runtime",
-        opener=FakeOpener(_cc_routes()),
-        registry=tc.NPM_REGISTRY_OFFICIAL,
-    )
-    version = service.install_cc_switch()
-    assert version == "4.0.22"
-    assert service.cc_switch_executable() is not None
-    assert service.state().cc_switch.version == "4.0.22"
-
-
-def test_install_cc_switch_rejects_digest_mismatch(tmp_path: Path):
-    service = tc.ToolchainService(
-        tmp_path / "runtime",
-        opener=FakeOpener(_cc_routes(digest="sha256:" + "a" * 64)),
-        registry=tc.NPM_REGISTRY_OFFICIAL,
-    )
+def test_download_allowlist_rejects_github_hosts():
     with pytest.raises(tc.ToolchainError):
-        service.install_cc_switch()
+        tc._check_url("https://api.github.com/repos/farion1231/cc-switch")
+    with pytest.raises(tc.ToolchainError):
+        tc._check_url("https://github.com/farion1231/cc-switch/releases")
 
 
 def test_protect_and_reveal_secret_roundtrip():

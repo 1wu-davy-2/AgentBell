@@ -1601,7 +1601,7 @@ class NotificationWindow(QMainWindow):
         self._toolchain_button.setFixedHeight(38)
         self._toolchain_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self._toolchain_button.setToolTip(
-            "把 Node、常用 Agent CLI 与 cc-switch 安装到安装目录，免管理员权限"
+            "把 Node 与常用 Agent CLI 安装到安装目录，免管理员权限"
         )
         self._toolchain_button.clicked.connect(self._on_toolchain_clicked)
         layout.addWidget(self._toolchain_button)

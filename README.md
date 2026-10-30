@@ -37,7 +37,7 @@ AgentBell 是一个只做提醒的 Windows 桌面工具。AI Agent 每轮任务�
 - 待确认、5/15/30 分钟稍后提醒，以及回到终端、打开链接、复制、重试等动作。
 - 通知中心搜索、筛选、成功率 / 耗时统计与 7 天趋势。
 - 内置 11 种 Agent 的检测与启动，默认使用安装目录下的 `chat/` 工作区。
-- 便携运行环境：一键把 Node LTS、7 个官方 Agent CLI（Claude Code、Codex、Gemini CLI、OpenCode、OpenClaw、Hermes、Pi）和 cc-switch 装进安装目录的 `runtime/`，免管理员权限、不改系统 PATH；DeepSeek 作为供应商预设直接注入 Claude Code。
+- 便携运行环境：一键把 Node LTS 和 7 个官方 Agent CLI（Claude Code、Codex、Gemini CLI、OpenCode、OpenClaw、Hermes、Pi）装进安装目录的 `runtime/`，免管理员权限、不改系统 PATH；cc-switch 等外部工具直接跳转官方下载页；DeepSeek 作为供应商预设直接注入 Claude Code。
 - 基于 GitHub Releases 的自身更新。
 
 ### 设计初衷
@@ -68,7 +68,7 @@ AgentBell 是一个只做提醒的 Windows 桌面工具。AI Agent 每轮任务�
 
 ![Agent 启动](docs/screenshots/agent-launcher.png)
 
-**运行环境**：Node、Agent CLI 与 cc-switch 一键装进安装目录，卸载与重新检测都在这一页。
+**运行环境**：Node 与 Agent CLI 一键装进安装目录，cc-switch 等外部工具跳转下载页。
 
 ![运行环境](docs/screenshots/toolchain.png)
 
@@ -155,11 +155,11 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8765/notify" -Method Post `
 
 #### 4. 一键装好 Agent 运行环境
 
-打开「运行环境」页，点「一键安装全部」，或只安装需要的组件：
+打开「运行环境」页，点「一键安装全部」即装好 Node 与 7 个 CLI，也可只安装需要的组件：
 
 - **Node**：官方 LTS 便携包，解压到 `runtime/node`，用官方 `SHASUMS256.txt` 校验 SHA-256。
 - **Agent CLI**：Claude Code、Codex、Gemini CLI、OpenCode、OpenClaw、Hermes、Pi 七个官方 npm 包，装到 `runtime/agents`，不写系统全局目录。
-- **cc-switch**：GitHub Release 的便携版 zip，解压到 `runtime/cc-switch`。
+- **cc-switch 等外部工具**：不在 AgentBell 内代装，点该行的「打开下载页」跳到 GitHub Releases 自行下载解压。
 
 全程不需要管理员权限，也不修改系统 `PATH`；AgentBell 只在检测和启动 Agent 时临时把这些目录加进子进程环境。装完到「Agent 启动」页点「重新检测」，新装的 CLI 会出现在已安装列表里。DeepSeek 没有官方 CLI，可在页面底部保存 API Key，用「用 DeepSeek 启动 Claude Code」以该供应商打开终端。
 
@@ -201,7 +201,7 @@ python -m PyInstaller --noconfirm --clean AgentBell12.spec
 推送到 `develop` 会触发测试与打包；推送 `v*` 标签会校验标签与 `agentbell/__init__.py` 的 `__version__` 一致，然后自动发布 Release。
 
 ```bash
-git tag v2.9.0
+git tag v2.9.1
 git push origin develop --tags
 ```
 

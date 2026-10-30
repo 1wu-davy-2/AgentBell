@@ -40,7 +40,7 @@ AgentBell does one thing well: **tell you the moment a round ends, and let you g
 | **Agent launcher** | **Program update settings** |
 | ![Agent launcher](docs/screenshots/agent-launcher.png) | ![Settings](docs/screenshots/settings-update.png) |
 
-**Runtime**: install portable Node, the official agent CLIs, and cc-switch into the program directory with one click.
+**Runtime**: install portable Node and the official agent CLIs into the program directory with one click; external tools such as cc-switch link straight to their download pages.
 
 ![Runtime](docs/screenshots/toolchain.png)
 
@@ -108,7 +108,7 @@ Open the **Runtime** page and click **Install all**, or install only what you ne
 
 - **Node**: the official LTS portable zip is verified against the official `SHASUMS256.txt` and extracted to `runtime/node`.
 - **Agent CLIs**: Claude Code, Codex, Gemini CLI, OpenCode, OpenClaw, Hermes, and Pi from their official npm packages, installed under `runtime/agents`, never into the system global directory.
-- **cc-switch**: the portable zip from GitHub Releases, extracted to `runtime/cc-switch`.
+- **External tools** such as cc-switch are not installed by AgentBell; their row opens the GitHub Releases download page instead.
 
 No administrator rights are required, and the system `PATH` is left untouched; AgentBell only prepends these folders for agent detection and spawned terminals. Afterwards, click **Refresh** on the launcher page to pick up the new CLIs. DeepSeek has no official CLI, so save an API key at the bottom of the page and use **Launch Claude Code with DeepSeek** to start it with that provider.
 

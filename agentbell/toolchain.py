@@ -25,8 +25,6 @@ NODE_INDEX_URL = "https://nodejs.org/dist/index.json"
 NODE_DIST_ROOT = "https://nodejs.org/dist"
 NPM_REGISTRY_OFFICIAL = "https://registry.npmjs.org"
 NPM_REGISTRY_MIRROR = "https://registry.npmmirror.com"
-CC_SWITCH_REPO = "farion1231/cc-switch"
-GITHUB_API_ROOT = "https://api.github.com"
 
 MANIFEST_NAME = "tools.json"
 MAX_JSON_BYTES = 2 * 1024 * 1024
@@ -41,11 +39,6 @@ ALLOWED_DOWNLOAD_HOSTS = frozenset(
         "nodejs.org",
         "registry.npmjs.org",
         "registry.npmmirror.com",
-        "api.github.com",
-        "github.com",
-        "objects.githubusercontent.com",
-        "release-assets.githubusercontent.com",
-        "github-releases.githubusercontent.com",
     }
 )
 
@@ -126,8 +119,6 @@ NPM_TOOLS: tuple[NpmToolSpec, ...] = (
 )
 
 _TOOL_BY_ID = {tool.id: tool for tool in NPM_TOOLS}
-_NPM_TOOL_IDS = frozenset(_TOOL_BY_ID)
-CC_SWITCH_ID = "cc-switch"
 NODE_ID = "node"
 
 DEEPSEEK_CLAUDE_ENV = {
@@ -166,13 +157,10 @@ class ToolchainState:
     root: str
     node: ComponentState
     tools: tuple[ComponentState, ...]
-    cc_switch: ComponentState
 
     def component(self, component_id: str) -> ComponentState | None:
         if component_id == self.node.id:
             return self.node
-        if component_id == self.cc_switch.id:
-            return self.cc_switch
         for tool in self.tools:
             if tool.id == component_id:
                 return tool
@@ -226,14 +214,6 @@ def _build_opener() -> urllib.request.OpenerDirector:
     return urllib.request.build_opener(_AllowlistRedirectHandler())
 
 
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(CHUNK_SIZE), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def _user_agent() -> str:
     return f"AgentBell/{__version__} (+https://github.com/1wu-davy-2/AgentBell)"
 
@@ -244,7 +224,7 @@ def _request(url: str) -> urllib.request.Request:
         url,
         headers={
             "User-Agent": _user_agent(),
-            "Accept": "application/vnd.github+json, application/json;q=0.9, */*;q=0.8",
+            "Accept": "application/json, */*;q=0.8",
         },
     )
 
@@ -375,7 +355,6 @@ class ToolchainService:
         root: Path | None = None,
         *,
         registry: str = NPM_REGISTRY_OFFICIAL,
-        cc_repo: str = CC_SWITCH_REPO,
         logger=None,  # noqa: ANN001
         opener: urllib.request.OpenerDirector | None = None,
         runner: Callable[..., subprocess.CompletedProcess] = subprocess.run,
@@ -383,7 +362,6 @@ class ToolchainService:
     ) -> None:
         self.root = Path(root) if root is not None else runtime_dir()
         self.registry = validate_registry(registry)
-        self.cc_repo = cc_repo
         self.logger = logger
         self._opener = opener or _build_opener()
         self._runner = runner
@@ -406,10 +384,6 @@ class ToolchainService:
     @property
     def agents_dir(self) -> Path:
         return self.root / "agents"
-
-    @property
-    def cc_switch_dir(self) -> Path:
-        return self.root / "cc-switch"
 
     @property
     def cache_dir(self) -> Path:
@@ -676,12 +650,6 @@ class ToolchainService:
             self._forget("node", "runtime")
             report(Progress("Node 已移除", 100))
             return "Node 已移除"
-        if component_id == CC_SWITCH_ID:
-            if self.cc_switch_dir.exists():
-                shutil.rmtree(self.cc_switch_dir, ignore_errors=True)
-            self._forget("tools", CC_SWITCH_ID)
-            report(Progress("cc-switch 已移除", 100))
-            return "cc-switch 已移除"
         tool = _TOOL_BY_ID.get(component_id)
         if tool is None:
             raise ToolchainError(f"未知组件：{component_id}")
@@ -720,87 +688,6 @@ class ToolchainService:
                 return candidate
         return None
 
-    # ---------- cc-switch ----------
-
-    def cc_switch_release(self) -> tuple[str, str, str, str]:
-        data = self._get_json(
-            f"{GITHUB_API_ROOT}/repos/{self.cc_repo}/releases/latest"
-        )
-        if not isinstance(data, dict):
-            raise ToolchainError("无法读取 cc-switch 的发布信息")
-        tag = str(data.get("tag_name") or "")
-        assets = data.get("assets")
-        if not tag or not isinstance(assets, list):
-            raise ToolchainError("无法读取 cc-switch 的发布信息")
-        for asset in assets:
-            if not isinstance(asset, dict):
-                continue
-            name = str(asset.get("name") or "")
-            if name.lower().endswith("windows-portable.zip"):
-                digest = str(asset.get("digest") or "")
-                return (
-                    tag,
-                    name,
-                    str(asset.get("browser_download_url") or ""),
-                    digest,
-                )
-        raise ToolchainError("cc-switch 最新版没有 Windows 便携包")
-
-    def cc_switch_version(self) -> str:
-        entry = self.manifest().get("tools")
-        if isinstance(entry, dict):
-            record = entry.get(CC_SWITCH_ID)
-            if isinstance(record, dict) and self.cc_switch_executable():
-                return str(record.get("version") or "")
-        return ""
-
-    def cc_switch_executable(self) -> Path | None:
-        if not self.cc_switch_dir.is_dir():
-            return None
-        candidates = sorted(
-            (
-                item
-                for item in self.cc_switch_dir.rglob("*.exe")
-                if "uninstall" not in item.name.lower()
-            ),
-            key=lambda item: (len(item.parts), item.name.lower()),
-        )
-        return candidates[0] if candidates else None
-
-    def install_cc_switch(self, progress: ProgressCallback | None = None) -> str:
-        report = progress or _noop
-        tag, name, url, digest = self.cc_switch_release()
-        report(Progress(f"下载 cc-switch {tag}", 0))
-        with tempfile.TemporaryDirectory(dir=str(self._temp_root())) as temp:
-            temp_dir = Path(temp)
-            archive = temp_dir / name
-            actual = self._download(url, archive, report, f"下载 cc-switch {tag}")
-            expected = _digest_value(digest)
-            if expected and expected != actual:
-                raise ToolchainError("cc-switch 安装包校验失败")
-            report(Progress("解压 cc-switch", -1))
-            extracted = temp_dir / "unpacked"
-            safe_extract_zip(archive, extracted)
-            inner = _single_root(extracted)
-            _swap_directory(inner, self.cc_switch_dir)
-        exe = self.cc_switch_executable()
-        if exe is None:
-            shutil.rmtree(self.cc_switch_dir, ignore_errors=True)
-            raise ToolchainError("cc-switch 压缩包内没有可执行文件")
-        version = tag.lstrip("vV")
-        self._record(
-            "tools",
-            CC_SWITCH_ID,
-            {
-                "version": version,
-                "asset": name,
-                "asset_sha256": actual,
-                "installed_at": _timestamp(),
-            },
-        )
-        report(Progress(f"cc-switch {version} 已安装", 100))
-        return version
-
     # ---------- state ----------
 
     def state(self) -> ToolchainState:
@@ -829,20 +716,7 @@ class ToolchainService:
                     project_url=spec.project_url,
                 )
             )
-        version = self.cc_switch_version()
-        exe = self.cc_switch_executable()
-        cc_switch = ComponentState(
-            id=CC_SWITCH_ID,
-            name="cc-switch",
-            kind="app",
-            summary="供应商切换与配置共享（便携版）",
-            version=version,
-            path=str(exe) if exe else "",
-            project_url="https://github.com/farion1231/cc-switch",
-        )
-        return ToolchainState(
-            root=str(self.root), node=node, tools=tuple(tools), cc_switch=cc_switch
-        )
+        return ToolchainState(root=str(self.root), node=node, tools=tuple(tools))
 
     def _temp_root(self) -> Path:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -857,13 +731,6 @@ def _parse_shasums(text: str, filename: str) -> str:
             if _ARCHIVE_HASH.match(candidate):
                 return candidate
     return ""
-
-
-def _digest_value(raw: str) -> str:
-    text = (raw or "").strip().lower()
-    if text.startswith("sha256:"):
-        text = text[len("sha256:") :]
-    return text if _ARCHIVE_HASH.match(text) else ""
 
 
 def _windows_arch() -> str:

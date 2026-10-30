@@ -41,7 +41,7 @@ def updates_dir() -> Path:
 
 
 def runtime_dir() -> Path:
-    """Portable toolchain (Node, npm agents, cc-switch) beside config.json."""
+    """Portable Node and npm agents beside config.json."""
     return app_dir() / "runtime"
 
 

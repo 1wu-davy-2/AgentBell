@@ -22,7 +22,6 @@ from PySide6.QtWidgets import (
 
 from ..config import ToolchainConfig
 from ..toolchain import (
-    CC_SWITCH_ID,
     DEEPSEEK_CODEX_TOML,
     NODE_ID,
     NPM_REGISTRY_MIRROR,
@@ -36,6 +35,8 @@ from ..toolchain import (
     protect_secret,
     reveal_secret,
 )
+
+CC_SWITCH_URL = "https://github.com/farion1231/cc-switch/releases/latest"
 
 STYLE = """
 QFrame#toolRow {
@@ -254,6 +255,46 @@ class _ToolRow(QFrame):
         self._open_button.setEnabled(not busy)
 
 
+class _ExternalRow(QFrame):
+    def __init__(
+        self,
+        name: str,
+        summary: str,
+        url: str,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setObjectName("toolRow")
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(14, 10, 12, 10)
+        layout.setSpacing(10)
+
+        text = QVBoxLayout()
+        text.setContentsMargins(0, 0, 0, 0)
+        text.setSpacing(2)
+        self._name = QLabel(name, self)
+        self._name.setObjectName("toolName")
+        text.addWidget(self._name)
+        self._summary = QLabel(summary, self)
+        self._summary.setObjectName("toolSummary")
+        text.addWidget(self._summary)
+        meta = QLabel("GitHub Releases · 便携版", self)
+        meta.setObjectName("toolMeta")
+        text.addWidget(meta)
+        layout.addLayout(text, 1)
+
+        self._download = QPushButton("打开下载页", self)
+        self._download.setObjectName("toolAction")
+        self._download.setFixedHeight(28)
+        self._download.setMinimumWidth(88)
+        self._download.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._download.clicked.connect(
+            lambda: QDesktopServices.openUrl(QUrl(url))
+        )
+        layout.addWidget(self._download)
+
+
 class ToolchainPage(QWidget):
     changed = Signal()
     provider_launch_requested = Signal(dict)
@@ -337,7 +378,7 @@ class ToolchainPage(QWidget):
         self._install_all_button.setObjectName("toolPrimary")
         self._install_all_button.setFixedSize(112, 32)
         self._install_all_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._install_all_button.setToolTip("依次安装 Node、7 个 Agent CLI 和 cc-switch")
+        self._install_all_button.setToolTip("依次安装 Node 和 7 个 Agent CLI")
         self._install_all_button.clicked.connect(self._install_all)
         title_row.addWidget(
             self._install_all_button, 0, Qt.AlignmentFlag.AlignVCenter
@@ -345,7 +386,7 @@ class ToolchainPage(QWidget):
         heading.addLayout(title_row)
 
         subtitle = QLabel(
-            "把 Node、Agent CLI 和 cc-switch 装进安装目录的 runtime/，免管理员权限，"
+            "把 Node 和 7 个 Agent CLI 装进安装目录的 runtime/，免管理员权限，"
             "不修改系统 PATH；装好后可在「Agent 启动」里直接使用。",
             self,
         )
@@ -387,13 +428,20 @@ class ToolchainPage(QWidget):
 
         host_layout.addSpacing(8)
         host_layout.addWidget(
-            self._section(host, "供应商切换", "便携版 cc-switch，解压即用，不写注册表。")
+            self._section(
+                host,
+                "其他工具",
+                "cc-switch 为独立便携应用，AgentBell 不代装；点右侧按钮到 GitHub 下载。",
+            )
         )
-        cc_row = self._add_row(
-            host_layout, CC_SWITCH_ID, "cc-switch", "在 Claude Code / Codex 之间切换供应商"
+        host_layout.addWidget(
+            _ExternalRow(
+                "cc-switch",
+                "在 Claude Code / Codex 之间切换供应商",
+                CC_SWITCH_URL,
+                host,
+            )
         )
-        cc_row.open_requested.connect(self._open_component)
-        host_layout.addWidget(cc_row)
 
         host_layout.addSpacing(8)
         host_layout.addWidget(
@@ -531,12 +579,11 @@ class ToolchainPage(QWidget):
             row = self._rows.get(tool.id)
             if row is not None:
                 row.set_state(tool, self._busy)
-        self._rows[CC_SWITCH_ID].set_state(state.cc_switch, self._busy)
         if not self._busy:
             installed = sum(
-                1 for item in (state.node, *state.tools, state.cc_switch) if item.installed
+                1 for item in (state.node, *state.tools) if item.installed
             )
-            self._set_status(f"已安装 {installed}/9 个组件 · {state.root}")
+            self._set_status(f"已安装 {installed}/8 个组件 · {state.root}")
 
     def _sync_provider_hint(self) -> None:
         key = reveal_secret(self._config.deepseek_key)
@@ -556,12 +603,10 @@ class ToolchainPage(QWidget):
         if self._busy:
             return
         label = self._label(component_id)
-        if component_id == CC_SWITCH_ID:
+        if component_id == NODE_ID:
             work: Callable[[Callable[[Progress], None]], str] = (
-                lambda report: self._service.install_cc_switch(report)
+                lambda report: self._service.install_node(report)
             )
-        elif component_id == NODE_ID:
-            work = lambda report: self._service.install_node(report)  # noqa: E731
         else:
             work = lambda report: self._service.install_tool(component_id, report)  # noqa: E731
         self._start(f"正在安装 {label}", work)
@@ -576,14 +621,12 @@ class ToolchainPage(QWidget):
     def _install_all(self) -> None:
         if self._busy:
             return
-        plan = [NODE_ID, *(spec.id for spec in NPM_TOOLS), CC_SWITCH_ID]
+        plan = [NODE_ID, *(spec.id for spec in NPM_TOOLS)]
 
         def work(report: Callable[[Progress], None]) -> str:
             for component_id in plan:
                 if component_id == NODE_ID:
                     self._service.install_node(report)
-                elif component_id == CC_SWITCH_ID:
-                    self._service.install_cc_switch(report)
                 else:
                     self._service.install_tool(component_id, report)
             return "全部组件安装完成"
@@ -666,9 +709,6 @@ class ToolchainPage(QWidget):
         if state is None or not state.path:
             return
         target = Path(state.path)
-        if component_id == CC_SWITCH_ID:
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(target)))
-            return
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(target.parent)))
 
     def _on_registry_changed(self) -> None:
