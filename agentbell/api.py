@@ -4,6 +4,7 @@ import hmac
 import json
 import logging
 import queue
+import re
 import uuid
 from datetime import datetime, timedelta
 from typing import Any
@@ -48,6 +49,9 @@ _ACTION_LABELS: dict[str, str] = {
     "path": "打开文件",
     "center": "通知中心",
 }
+
+_SUSPECT_MARKS = re.compile(r"\?{3,}")
+_LOSSY_FIELDS = ("title", "summary", "duration", "error", "source")
 
 
 class ActionPayload(BaseModel):
@@ -345,6 +349,19 @@ def create_app(
         now = datetime.now().astimezone()
         notification = _build_notification(payload, config, logger, now)
         stored, updated = history.add(notification)
+
+        lossy_fields = [
+            name
+            for name in _LOSSY_FIELDS
+            if _SUSPECT_MARKS.search(getattr(payload, name) or "")
+        ]
+        if lossy_fields:
+            logger.warning(
+                "通知文本疑似编码丢失 id=%s fields=%s：发送端须按 UTF-8 发送；"
+                "PowerShell 5.1 请用 [System.Text.Encoding]::UTF8.GetBytes($json)",
+                stored.id,
+                ",".join(lossy_fields),
+            )
 
         log_id = stored.id
         logger.info(

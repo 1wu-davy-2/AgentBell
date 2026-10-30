@@ -83,6 +83,37 @@ def test_accepts_full_payload():
     assert notification.headline == "上一轮【生成竞品分析报告】已完成，请查看"
 
 
+def test_lossy_question_marks_trigger_encoding_warning(caplog):
+    client, inbox = build()
+    with caplog.at_level(logging.WARNING):
+        response = client.post(
+            "/notify",
+            json={
+                "title": "??????????????",
+                "status": "succeeded",
+                "summary": "?? HTTPS ????????? ip:???/???",
+            },
+            headers=auth_headers(),
+        )
+    assert response.status_code == 202
+    inbox.get_nowait()
+    assert "疑似编码丢失" in caplog.text
+    assert "fields=title,summary" in caplog.text
+
+
+def test_normal_question_marks_do_not_trigger_encoding_warning(caplog):
+    client, inbox = build()
+    with caplog.at_level(logging.WARNING):
+        response = client.post(
+            "/notify",
+            json={"title": "这样吗??", "summary": "正常的中文与 ? 标点"},
+            headers=auth_headers(),
+        )
+    assert response.status_code == 202
+    inbox.get_nowait()
+    assert "疑似编码丢失" not in caplog.text
+
+
 def test_missing_and_null_fields_get_defaults():
     client, inbox = build()
     response = client.post(

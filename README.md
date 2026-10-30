@@ -10,6 +10,8 @@
 
 2.2 让 `overlay` 真正铺满整块屏幕（覆盖任务栏），支持自定义全屏背景图、在设置里一键「测试」预览；双击启动后默认自动打开通知中心，并带淡入上浮动画，启动状态一眼可见。仍然没有 Web 页面，界面全部是 PySide6 原生窗口。
 
+2.2.1 修复接入指令导致的乱码隐患：要求所有字段按 UTF-8 发送，补充 Python、PowerShell 5.1 与 curl 的正确写法；服务端收到连续问号时会记录「疑似编码丢失」告警。已经被发送端转成 `?` 的文本无法还原。
+
 ## 特性
 
 - 只监听 `127.0.0.1:8765`（可在 `config.json` 改端口），不暴露到局域网。
@@ -77,6 +79,7 @@ agentbell/
 ├─ AgentBell2.spec        PyInstaller 配置（AgentBell-2.exe，可与 1.x 并存）
 ├─ AgentBell3.spec        PyInstaller 配置（AgentBell-3.exe，2.1 功能）
 ├─ AgentBell4.spec        PyInstaller 配置（AgentBell-4.exe，2.2 功能）
+├─ AgentBell5.spec        PyInstaller 配置（AgentBell-5.exe，2.2.1 编码修复）
 └─ README.md
 ```
 
@@ -355,7 +358,7 @@ curl http://127.0.0.1:8765/health
 ```
 
 ```json
-{"ok":true,"app":"AgentBell","version":"2.2.0","auth":true}
+{"ok":true,"app":"AgentBell","version":"2.2.1","auth":true}
 ```
 
 AgentBell 只提供 `GET /health` 和 `POST /notify` 两个接口，不提供 Web 页面或 HTTP 通知列表；记录显示在应用内的原生通知中心里。
@@ -546,14 +549,30 @@ curl -X POST http://127.0.0.1:8765/notify \
 
 预期：桌面右上角出现对应弹窗；待确认通知不自动关闭，可点「知道了」或在菜单里选 5/15/30 分钟后提醒；通知中心能看到状态、来源、次数和动作按钮。
 
-Windows 的 `curl.exe` 会把命令行字面量按当前代码页（通常是 GBK）发送。AgentBell 已做 GB18030 兼容；若仍遇到编码问题，推荐把 JSON 存成 UTF-8 文件：
+### 中文与编码
+
+所有字段都必须是 UTF-8。最常见的乱码来源不是 AgentBell，而是发送端已经把中文转成了 `?`，这种文本无法还原。
+
+- **PowerShell 5.1**：`Invoke-RestMethod -Body $json` 会把字符串按系统 ANSI 代码页转换，中文会变成 `?`。必须先转成 UTF-8 字节：
+
+```powershell
+$payload = @{ title = "生成竞品分析报告"; status = "succeeded"; summary = "已完成 12 页报告" } | ConvertTo-Json
+Invoke-RestMethod -Uri "http://127.0.0.1:8765/notify" -Method Post `
+  -ContentType "application/json; charset=utf-8" `
+  -Headers @{ "X-Token" = "your-token" } `
+  -Body ([System.Text.Encoding]::UTF8.GetBytes($payload))
+```
+
+- **curl**：不要把中文写在 `-d '...'` 里；先保存成无 BOM 的 UTF-8 `payload.json`，再用 `--data-binary` 发送：
 
 ```bash
 curl -X POST http://127.0.0.1:8765/notify \
-  -H "Content-Type: application/json" \
+  -H "Content-Type: application/json; charset=utf-8" \
   -H "X-Token: your-token" \
   --data-binary @payload.json
 ```
+
+Python 的 `requests.post(..., json=...)` 会自动按 UTF-8 编码，是最省心的方式。2.2.1 起，若 title / summary 等字段出现连续三个以上问号，日志会记录「疑似编码丢失」告警，提示发送端检查编码。
 
 ## 让 Agent 每轮自动推送（推荐）
 
@@ -561,7 +580,7 @@ curl -X POST http://127.0.0.1:8765/notify \
 2. 点击窗口右上角的「复制 Agent 接入指令」按钮，按钮会变为「已复制接入指令」。
 3. 把剪贴板内容直接粘贴给 Agent（Claude Code、Codex、Qoder 等），发送一次即可。
 
-复制内容包含当前端口、当前 `X-Token`、请求头、全部字段说明、curl 示例，以及规则：**每一轮任务结束都必须推送一次通知，无论成功、失败还是取消**。同时说明了 `dedupe_key`、`progress`、`require_ack` 和 `actions` 的推荐用法。
+复制内容包含当前端口、当前 `X-Token`、请求头、全部字段说明、**UTF-8 编码要求与 PowerShell 5.1 注意事项**、Python / PowerShell / curl 三种示例，以及规则：**每一轮任务结束都必须推送一次通知，无论成功、失败还是取消**。同时说明了 `dedupe_key`、`progress`、`require_ack` 和 `actions` 的推荐用法。
 
 > 修改 `config.json` 的端口或 token 后需要重启 AgentBell，并重新点击复制。复制动作会把 token 写入系统剪贴板，请勿在不受信任的环境粘贴。
 
@@ -649,16 +668,19 @@ python -m PyInstaller --noconfirm --clean AgentBell3.spec
 
 # 2.2 名称：dist\AgentBell-4.exe（整屏遮挡、自定义背景图、测试预览、启动动画）
 python -m PyInstaller --noconfirm --clean AgentBell4.spec
+
+# 2.2.1 名称：dist\AgentBell-5.exe（编码安全的接入指令、疑似乱码告警）
+python -m PyInstaller --noconfirm --clean AgentBell5.spec
 ```
 
 把 `config.json` 复制到 exe 旁边再运行：
 
 ```bash
 copy config.json dist\config.json
-dist\AgentBell-4.exe
+dist\AgentBell-5.exe
 ```
 
-> 新旧版本默认共用单实例锁：若托盘中已有 AgentBell（1.x / 2.x）在运行，双击 AgentBell-4 只会唤醒旧实例。切换版本前先从托盘退出旧版，再启动新 exe。
+> 新旧版本默认共用单实例锁：若托盘中已有 AgentBell（1.x / 2.x）在运行，双击 AgentBell-5 只会唤醒旧实例。切换版本前先从托盘退出旧版，再启动新 exe。
 
 打包后 `config.json`、`logs/` 与 `agentbell.db` 都位于 exe 所在目录。单文件模式首次启动需要解压到临时目录，通常会有 1–3 秒延迟。
 
@@ -668,7 +690,7 @@ dist\AgentBell-4.exe
 
 ```bash
 pyinstaller --noconfirm --clean --onefile --windowed \
-  --name AgentBell-4 \
+  --name AgentBell-5 \
   --hidden-import uvicorn.logging \
   --hidden-import uvicorn.loops.asyncio \
   --hidden-import uvicorn.protocols.http.h11_impl \
@@ -690,7 +712,7 @@ $env:QT_QPA_PLATFORM="offscreen"; python -m pytest -q
 QT_QPA_PLATFORM=offscreen python -m pytest -q
 ```
 
-覆盖：鉴权与 401、字段默认值/空值/长度、非法状态、危险链接、GB18030 请求体、空/坏 JSON、超大请求体、队列满、去重合并、待确认与动作、规则匹配、免打扰/全屏/会议/锁屏决策、优先级弹窗策略、弹窗模式与皮肤、全屏自定义背景图与失效回落、渠道选择、配置校验、SQLite 存取/搜索/统计/裁剪、通知中心筛选/搜索/统计/设置/Agent 会话页、设置效果预览与清理、弹窗文案/按钮/去重更新/聚合、居中与全屏弹窗互斥、锁屏暂停、单实例唤醒、自动关闭与悬停暂停、启动自动打开与会话动画收尾。
+覆盖：鉴权与 401、字段默认值/空值/长度、非法状态、危险链接、GB18030 请求体、疑似编码丢失告警、空/坏 JSON、超大请求体、队列满、去重合并、待确认与动作、规则匹配、免打扰/全屏/会议/锁屏决策、优先级弹窗策略、弹窗模式与皮肤、全屏自定义背景图与失效回落、渠道选择、配置校验、SQLite 存取/搜索/统计/裁剪、通知中心筛选/搜索/统计/设置/Agent 会话页、设置效果预览与清理、弹窗文案/按钮/去重更新/聚合、居中与全屏弹窗互斥、锁屏暂停、单实例唤醒、自动关闭与悬停暂停、启动自动打开与会话动画收尾。
 
 ## 常见问题
 
@@ -708,9 +730,19 @@ netstat -ano | findstr :8765
 
 `X-Token` 缺失或与 `config.json` 的 `token` 不一致。若不需要鉴权，把 `token` 设为空字符串并重启；本机使用仍建议保留随机 token。
 
+**通知里的中文变成问号 / 乱码**
+
+这是发送端编码丢失，不是 AgentBell 显示问题。Windows PowerShell 5.1 的 `Invoke-RestMethod -Body "JSON 字符串"` 会把中文按 ANSI 代码页转成 `?`，请求到达时已经无法还原。改用：
+
+```powershell
+-Body ([System.Text.Encoding]::UTF8.GetBytes($json)) -ContentType "application/json; charset=utf-8"
+```
+
+或在 Python 里用 `requests.post(..., json=...)`；curl 则把 JSON 保存为 UTF-8 文件后 `--data-binary @payload.json`。升级到 2.2.1 后，在通知中心重新点击「复制 Agent 接入指令」并粘贴给 Agent，替换旧指令。日志里的「疑似编码丢失」告警会标出具体字段。
+
 **Windows 下 curl 中文报 400**
 
-优先使用 UTF-8 文件 + `--data-binary @payload.json`。AgentBell 对 GB18030 有兼容解码，正常情况下直接内联中文也可用。
+优先使用 UTF-8 文件 + `--data-binary @payload.json`。AgentBell 对 GB18030 有兼容解码，但无法恢复已经变成 `?` 的文本。
 
 **没有托盘图标**
 
