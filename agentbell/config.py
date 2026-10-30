@@ -9,10 +9,17 @@ from typing import Any
 
 from .models import (
     DEFAULT_TEMPLATES,
+    OVERLAY_ANCHORS,
+    OVERLAY_CARD_WIDTH_MAX,
+    OVERLAY_CARD_WIDTH_MIN,
+    OVERLAY_MARGIN_DEFAULT,
+    OVERLAY_MARGIN_MAX,
+    OVERLAY_OFFSET_LIMIT,
     POPUP_MODES,
     POPUP_SKINS,
     PRIORITIES,
     STATUSES,
+    OverlayAnchor,
     PopupMode,
     PopupSkin,
     Priority,
@@ -75,6 +82,15 @@ class AgentSessionsConfig:
     enabled: bool = True
     scan_interval_seconds: int = 120
     max_sessions: int = 80
+
+
+@dataclass(frozen=True, slots=True)
+class OverlayAreaConfig:
+    anchor: OverlayAnchor = "center"
+    width: int = 0
+    offset_x: int = 0
+    offset_y: int = 0
+    margin: int = OVERLAY_MARGIN_DEFAULT
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,6 +161,7 @@ class AppConfig:
     popup_mode: PopupMode = "corner"
     popup_skin: PopupSkin = "midnight"
     overlay_image: str = ""
+    overlay_area: OverlayAreaConfig = field(default_factory=OverlayAreaConfig)
     hold_when_locked: bool = True
     agent_sessions: AgentSessionsConfig = field(
         default_factory=AgentSessionsConfig
@@ -331,6 +348,46 @@ def _read_optional_popup_skin(
     if data.get(key) is None:
         return None
     return _read_popup_skin(data, key)
+
+
+def _read_overlay_area(data: dict[str, Any]) -> OverlayAreaConfig:
+    section = _section(data, "overlay_area")
+    anchor = _read_str(section, "anchor", "center", 20).lower()
+    if anchor not in OVERLAY_ANCHORS:
+        raise ConfigError(
+            f'"overlay_area.anchor" 必须是 {" / ".join(OVERLAY_ANCHORS)}'
+        )
+
+    def _int(key: str, default: int, minimum: int, maximum: int) -> int:
+        raw = section.get(key, default)
+        if isinstance(raw, bool):
+            raise ConfigError(f'"overlay_area.{key}" 必须是整数')
+        if isinstance(raw, str):
+            try:
+                raw = int(raw.strip())
+            except ValueError as exc:
+                raise ConfigError(f'"overlay_area.{key}" 必须是整数') from exc
+        if not isinstance(raw, int):
+            raise ConfigError(f'"overlay_area.{key}" 必须是整数')
+        if not minimum <= raw <= maximum:
+            raise ConfigError(
+                f'"overlay_area.{key}" 必须在 {minimum} 到 {maximum} 之间'
+            )
+        return raw
+
+    width = _int("width", 0, 0, OVERLAY_CARD_WIDTH_MAX)
+    if width and width < OVERLAY_CARD_WIDTH_MIN:
+        raise ConfigError(
+            f'"overlay_area.width" 必须为 0（默认）或 '
+            f"{OVERLAY_CARD_WIDTH_MIN} 到 {OVERLAY_CARD_WIDTH_MAX}"
+        )
+    return OverlayAreaConfig(
+        anchor=anchor,  # type: ignore[arg-type]
+        width=width,
+        offset_x=_int("offset_x", 0, -OVERLAY_OFFSET_LIMIT, OVERLAY_OFFSET_LIMIT),
+        offset_y=_int("offset_y", 0, -OVERLAY_OFFSET_LIMIT, OVERLAY_OFFSET_LIMIT),
+        margin=_int("margin", OVERLAY_MARGIN_DEFAULT, 0, OVERLAY_MARGIN_MAX),
+    )
 
 
 def _read_agent_sessions(data: dict[str, Any]) -> AgentSessionsConfig:
@@ -604,6 +661,7 @@ def _parse_config(data: dict[str, Any]) -> AppConfig:
         popup_mode=_read_popup_mode(data, "popup_mode", "corner"),
         popup_skin=_read_popup_skin(data, "popup_skin", "midnight"),
         overlay_image=_read_str(data, "overlay_image", "", 1024),
+        overlay_area=_read_overlay_area(data),
         hold_when_locked=_read_bool(data, "hold_when_locked", True),
         agent_sessions=_read_agent_sessions(data),
     )

@@ -11,11 +11,39 @@ Priority = Literal["low", "normal", "high", "critical"]
 ActionKind = Literal["open", "copy", "retry", "path", "center", "focus"]
 PopupMode = Literal["corner", "center", "overlay"]
 PopupSkin = Literal["midnight", "light", "ocean", "amber"]
+OverlayAnchor = Literal[
+    "center",
+    "top",
+    "bottom",
+    "left",
+    "right",
+    "top_left",
+    "top_right",
+    "bottom_left",
+    "bottom_right",
+]
 
 STATUSES: tuple[Status, ...] = ("succeeded", "failed", "canceled", "running")
 PRIORITIES: tuple[Priority, ...] = ("low", "normal", "high", "critical")
 POPUP_MODES: tuple[PopupMode, ...] = ("corner", "center", "overlay")
 POPUP_SKINS: tuple[PopupSkin, ...] = ("midnight", "light", "ocean", "amber")
+OVERLAY_ANCHORS: tuple[OverlayAnchor, ...] = (
+    "center",
+    "top",
+    "bottom",
+    "left",
+    "right",
+    "top_left",
+    "top_right",
+    "bottom_left",
+    "bottom_right",
+)
+OVERLAY_CARD_WIDTH_MIN = 240
+OVERLAY_CARD_WIDTH_DEFAULT = 540
+OVERLAY_CARD_WIDTH_MAX = 1600
+OVERLAY_MARGIN_DEFAULT = 32
+OVERLAY_MARGIN_MAX = 600
+OVERLAY_OFFSET_LIMIT = 2000
 
 STATUS_LABELS: dict[str, str] = {
     "succeeded": "已完成",

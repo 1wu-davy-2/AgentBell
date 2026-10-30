@@ -29,6 +29,13 @@
   "popup_mode": "corner",
   "popup_skin": "midnight",
   "overlay_image": "",
+  "overlay_area": {
+    "anchor": "center",
+    "width": 0,
+    "offset_x": 0,
+    "offset_y": 0,
+    "margin": 32
+  },
   "hold_when_locked": true,
   "agent_sessions": {
     "enabled": true,

@@ -42,7 +42,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..config import OverlayAreaConfig
 from ..models import (
+    OVERLAY_ANCHORS,
+    OVERLAY_CARD_WIDTH_DEFAULT,
+    OVERLAY_CARD_WIDTH_MAX,
+    OVERLAY_CARD_WIDTH_MIN,
     POPUP_MODES,
     POPUP_SKINS,
     Notification,
@@ -53,7 +58,7 @@ from .icons import priority_color, status_color, status_pixmap
 
 CARD_WIDTH = 400
 CENTER_CARD_WIDTH = 470
-OVERLAY_CARD_WIDTH = 540
+OVERLAY_CARD_WIDTH = OVERLAY_CARD_WIDTH_DEFAULT
 SHADOW_MARGIN = 12
 WINDOW_WIDTH = CARD_WIDTH + SHADOW_MARGIN * 2
 EDGE_MARGIN = 12
@@ -217,6 +222,7 @@ class ToastWindow(QWidget):
         popup_mode: str | None = None,
         popup_skin: str | None = None,
         overlay_image: str = "",
+        overlay_area: OverlayAreaConfig | None = None,
         parent: QWidget | None = None,
     ) -> None:
         flags = (
@@ -235,11 +241,15 @@ class ToastWindow(QWidget):
         self.popup_mode = _normalized_mode(popup_mode or notification.popup_mode)
         self.popup_skin = _normalized_skin(popup_skin or notification.popup_skin)
         self._overlay_image = overlay_image
-        self._card_width = {
-            "corner": CARD_WIDTH,
-            "center": CENTER_CARD_WIDTH,
-            "overlay": OVERLAY_CARD_WIDTH,
-        }[self.popup_mode]
+        self._overlay_area = overlay_area or OverlayAreaConfig()
+        if self.popup_mode == "overlay":
+            self._card_width = self._configured_overlay_width()
+        else:
+            self._card_width = {
+                "corner": CARD_WIDTH,
+                "center": CENTER_CARD_WIDTH,
+                "overlay": OVERLAY_CARD_WIDTH,
+            }[self.popup_mode]
         self._window_width = self._card_width + SHADOW_MARGIN * 2
         requested_seconds = (
             notification.auto_close_seconds
@@ -299,6 +309,10 @@ class ToastWindow(QWidget):
 
     # ---------- construction ----------
 
+    def _configured_overlay_width(self) -> int:
+        width = self._overlay_area.width or OVERLAY_CARD_WIDTH_DEFAULT
+        return max(OVERLAY_CARD_WIDTH_MIN, min(OVERLAY_CARD_WIDTH_MAX, width))
+
     def _headline(self) -> str:
         if self._is_digest:
             count = len(self._digest_titles or ())
@@ -356,21 +370,8 @@ class ToastWindow(QWidget):
             palette = _SKIN_PALETTES[self.popup_skin]
             backdrop = _OverlayBackdrop(self._overlay_image, palette, self)
             backdrop.setObjectName("overlayBackdrop")
-            backdrop_layout = QVBoxLayout(backdrop)
-            backdrop_layout.setContentsMargins(24, 24, 24, 24)
-            backdrop_layout.setSpacing(0)
-            backdrop_layout.addStretch(1)
-            card_row = QHBoxLayout()
-            card_row.setContentsMargins(0, 0, 0, 0)
-            card_row.addStretch(1)
             self.card = QFrame(backdrop)
             self.card.setObjectName("card")
-            self.card.setMaximumWidth(self._card_width)
-            self.card.setMinimumWidth(self._card_width)
-            card_row.addWidget(self.card)
-            card_row.addStretch(1)
-            backdrop_layout.addLayout(card_row)
-            backdrop_layout.addStretch(1)
             outer.addWidget(backdrop)
             self._overlay_backdrop = backdrop
         else:
@@ -749,6 +750,8 @@ class ToastWindow(QWidget):
         self.layout().activate()
         if self.popup_mode != "overlay":
             self.setFixedHeight(self.sizeHint().height())
+        else:
+            self._place_overlay_card()
         self._logger.info(
             "弹窗原地更新 id=%s 次数=%d 进度=%s",
             notification.id,
@@ -825,6 +828,8 @@ class ToastWindow(QWidget):
             self.setGeometry(screen.geometry())
         self.setWindowOpacity(0.0)
         self.showFullScreen()
+        self.layout().activate()
+        self._place_overlay_card()
         self.raise_()
 
         fade = QPropertyAnimation(self, b"windowOpacity", self)
@@ -836,6 +841,63 @@ class ToastWindow(QWidget):
         group.addAnimation(fade)
         self._entry_animation = group
         group.start()
+
+    def _place_overlay_card(self) -> None:
+        backdrop = self._overlay_backdrop
+        if backdrop is None:
+            return
+        bounds = backdrop.rect()
+        if bounds.width() <= 0 or bounds.height() <= 0:
+            return
+        margin = max(
+            0,
+            min(
+                self._overlay_area.margin,
+                max(0, (bounds.width() - OVERLAY_CARD_WIDTH_MIN) // 2),
+                max(0, (bounds.height() - 160) // 2),
+            ),
+        )
+        width = min(
+            self._configured_overlay_width(),
+            max(1, bounds.width() - margin * 2),
+        )
+        self._card_width = width
+        self.card.setFixedWidth(width)
+        self._refresh_summary_height()
+        layout = self.card.layout()
+        if layout is not None:
+            layout.activate()
+        height = self.card.heightForWidth(width)
+        if height <= 0:
+            height = self.card.sizeHint().height()
+        height = max(1, min(height, max(1, bounds.height() - margin * 2)))
+
+        anchor = self._overlay_area.anchor
+        if anchor not in OVERLAY_ANCHORS:
+            anchor = "center"
+        if anchor in {"left", "top_left", "bottom_left"}:
+            x = margin
+        elif anchor in {"right", "top_right", "bottom_right"}:
+            x = bounds.width() - margin - width
+        else:
+            x = (bounds.width() - width) // 2
+        if anchor in {"top", "top_left", "top_right"}:
+            y = margin
+        elif anchor in {"bottom", "bottom_left", "bottom_right"}:
+            y = bounds.height() - margin - height
+        else:
+            y = (bounds.height() - height) // 2
+        x += self._overlay_area.offset_x
+        y += self._overlay_area.offset_y
+        x = max(0, min(x, bounds.width() - width))
+        y = max(0, min(y, bounds.height() - height))
+        self.card.setGeometry(QRect(x, y, width, height))
+        self.card.raise_()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        if self.popup_mode == "overlay" and self._overlay_backdrop is not None:
+            self._place_overlay_card()
 
     def mousePressEvent(self, event) -> None:
         if (
@@ -980,6 +1042,7 @@ class ToastManager(QObject):
         popup_mode: str = "corner",
         popup_skin: str = "midnight",
         overlay_image: str = "",
+        overlay_area: OverlayAreaConfig | None = None,
     ) -> None:
         super().__init__()
         self._auto_close_seconds = auto_close_seconds
@@ -989,6 +1052,7 @@ class ToastManager(QObject):
         self._popup_mode = _normalized_mode(popup_mode)
         self._popup_skin = _normalized_skin(popup_skin)
         self._overlay_image = overlay_image
+        self._overlay_area = overlay_area or OverlayAreaConfig()
         self._paused = False
         self._active: list[ToastWindow] = []
         self._pending: deque[tuple[Notification, tuple[str, ...] | None]] = deque()
@@ -1005,11 +1069,14 @@ class ToastManager(QObject):
         popup_mode: str,
         popup_skin: str,
         overlay_image: str | None = None,
+        overlay_area: OverlayAreaConfig | None = None,
     ) -> None:
         self._popup_mode = _normalized_mode(popup_mode)
         self._popup_skin = _normalized_skin(popup_skin)
         if overlay_image is not None:
             self._overlay_image = overlay_image
+        if overlay_area is not None:
+            self._overlay_area = overlay_area
 
     def set_paused(self, paused: bool) -> None:
         self._paused = bool(paused)
@@ -1135,6 +1202,7 @@ class ToastManager(QObject):
             popup_mode=mode,
             popup_skin=skin,
             overlay_image=self._overlay_image,
+            overlay_area=self._overlay_area,
         )
         toast.dismissed.connect(self._on_dismissed)
         toast.acknowledged.connect(self.acknowledged)

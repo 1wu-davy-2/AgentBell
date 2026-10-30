@@ -107,6 +107,11 @@ def test_new_popup_and_session_defaults(tmp_path):
     assert config.popup_mode == "corner"
     assert config.popup_skin == "midnight"
     assert config.overlay_image == ""
+    assert config.overlay_area.anchor == "center"
+    assert config.overlay_area.width == 0
+    assert config.overlay_area.offset_x == 0
+    assert config.overlay_area.offset_y == 0
+    assert config.overlay_area.margin == 32
     assert config.open_center_on_start is True
     assert config.hold_when_locked is True
     assert config.agent_sessions.enabled is True
@@ -116,6 +121,13 @@ def test_new_popup_and_session_defaults(tmp_path):
     assert data["popup_mode"] == "corner"
     assert data["popup_skin"] == "midnight"
     assert data["overlay_image"] == ""
+    assert data["overlay_area"] == {
+        "anchor": "center",
+        "width": 0,
+        "offset_x": 0,
+        "offset_y": 0,
+        "margin": 32,
+    }
     assert data["open_center_on_start"] is True
     assert data["hold_when_locked"] is True
     assert data["agent_sessions"] == {
@@ -133,6 +145,13 @@ def test_popup_and_session_values_are_case_insensitive(tmp_path):
                 "popup_mode": "CENTER",
                 "popup_skin": "Light",
                 "overlay_image": r"C:\images\bg.png",
+                "overlay_area": {
+                    "anchor": "BOTTOM_RIGHT",
+                    "width": 720,
+                    "offset_x": -40,
+                    "offset_y": "-24",
+                    "margin": 48,
+                },
                 "open_center_on_start": False,
                 "hold_when_locked": False,
                 "agent_sessions": {
@@ -148,6 +167,11 @@ def test_popup_and_session_values_are_case_insensitive(tmp_path):
     assert config.popup_mode == "center"
     assert config.popup_skin == "light"
     assert config.overlay_image == r"C:\images\bg.png"
+    assert config.overlay_area.anchor == "bottom_right"
+    assert config.overlay_area.width == 720
+    assert config.overlay_area.offset_x == -40
+    assert config.overlay_area.offset_y == -24
+    assert config.overlay_area.margin == 48
     assert config.open_center_on_start is False
     assert config.hold_when_locked is False
     assert config.agent_sessions.enabled is False
@@ -162,6 +186,12 @@ def test_popup_and_session_values_are_case_insensitive(tmp_path):
         ('{"popup_skin": "bogus"}', "popup_skin"),
         ('{"open_center_on_start": "sometimes"}', "open_center_on_start"),
         ('{"overlay_image": 12}', "overlay_image"),
+        ('{"overlay_area": {"anchor": "bogus"}}', "overlay_area.anchor"),
+        ('{"overlay_area": {"width": 100}}', "overlay_area.width"),
+        ('{"overlay_area": {"width": 2000}}', "overlay_area.width"),
+        ('{"overlay_area": {"margin": -1}}', "overlay_area.margin"),
+        ('{"overlay_area": {"offset_x": 5000}}', "overlay_area.offset_x"),
+        ('{"overlay_area": "center"}', "overlay_area"),
         ('{"agent_sessions": {"scan_interval_seconds": 5}}', "scan_interval_seconds"),
         ('{"agent_sessions": {"max_sessions": 0}}', "max_sessions"),
     ],

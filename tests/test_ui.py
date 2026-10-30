@@ -11,6 +11,7 @@ from PySide6.QtGui import QColor, QPixmap
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLabel
 
+from agentbell.config import OverlayAreaConfig
 from agentbell.models import Notification
 from agentbell.ui.toast import MAX_VISIBLE, ToastManager, ToastWindow
 
@@ -256,6 +257,85 @@ def test_overlay_missing_image_falls_back_to_gradient(qapp, tmp_path):
         QTest.qWait(40)
         assert toast._overlay_backdrop is not None
         assert toast._overlay_backdrop.has_image is False
+    finally:
+        toast.close_now()
+        toast.deleteLater()
+        QTest.qWait(20)
+
+
+def test_overlay_card_respects_anchor_width_and_offsets(qapp):
+    toast = ToastWindow(
+        make_notification(55),
+        30,
+        logging.getLogger("agentbell.tests"),
+        popup_mode="overlay",
+        overlay_area=OverlayAreaConfig(
+            anchor="top_left",
+            width=360,
+            offset_x=10,
+            offset_y=20,
+            margin=30,
+        ),
+    )
+    try:
+        toast.show_at(QPoint(0, 0))
+        QTest.qWait(60)
+        assert toast.card.width() == 360
+        assert toast.card.height() > 0
+        assert toast.card.x() == 40
+        assert toast.card.y() == 50
+    finally:
+        toast.close_now()
+        toast.deleteLater()
+        QTest.qWait(20)
+
+
+def test_overlay_card_supports_bottom_right_and_clamps_to_screen(qapp):
+    toast = ToastWindow(
+        make_notification(56),
+        30,
+        logging.getLogger("agentbell.tests"),
+        popup_mode="overlay",
+        overlay_area=OverlayAreaConfig(
+            anchor="bottom_right",
+            width=360,
+            offset_x=-12,
+            offset_y=-18,
+            margin=26,
+        ),
+    )
+    try:
+        toast.show_at(QPoint(0, 0))
+        QTest.qWait(60)
+        backdrop = toast._overlay_backdrop
+        assert backdrop is not None
+        assert toast.card.width() == 360
+        assert toast.card.x() == backdrop.width() - 26 - 360 - 12
+        assert toast.card.y() == backdrop.height() - 26 - toast.card.height() - 18
+        assert toast.card.geometry().right() < backdrop.width()
+        assert toast.card.geometry().bottom() < backdrop.height()
+    finally:
+        toast.close_now()
+        toast.deleteLater()
+        QTest.qWait(20)
+
+
+def test_overlay_card_width_is_clamped_on_narrow_screen(qapp):
+    toast = ToastWindow(
+        make_notification(57),
+        30,
+        logging.getLogger("agentbell.tests"),
+        popup_mode="overlay",
+        overlay_area=OverlayAreaConfig(anchor="left", width=1600, margin=20),
+    )
+    try:
+        toast.show_at(QPoint(0, 0))
+        QTest.qWait(60)
+        backdrop = toast._overlay_backdrop
+        assert backdrop is not None
+        assert toast.card.width() == min(1600, backdrop.width() - 40)
+        assert toast.card.height() <= backdrop.height() - 40
+        assert toast.card.x() == 20
     finally:
         toast.close_now()
         toast.deleteLater()

@@ -43,6 +43,13 @@ def test_save_validates_and_writes_config(qapp, tmp_path):
         dialog._success_popup_check.setChecked(False)
         dialog._open_center_check.setChecked(False)
         dialog._overlay_image_edit.setText(str(tmp_path / "bg.png"))
+        dialog._overlay_anchor_combo.setCurrentIndex(
+            dialog._overlay_anchor_combo.findData("top_right")
+        )
+        dialog._overlay_width_spin.setValue(680)
+        dialog._overlay_margin_spin.setValue(44)
+        dialog._overlay_offset_x_spin.setValue(-18)
+        dialog._overlay_offset_y_spin.setValue(26)
         dialog._quiet_enabled_check.setChecked(True)
         dialog._quiet_start_edit.setTime(QTime.fromString("21:30", "HH:mm"))
         dialog._quiet_end_edit.setTime(QTime.fromString("07:15", "HH:mm"))
@@ -96,6 +103,11 @@ def test_save_validates_and_writes_config(qapp, tmp_path):
         assert loaded.success_popup is False
         assert loaded.open_center_on_start is False
         assert loaded.overlay_image == str(tmp_path / "bg.png")
+        assert loaded.overlay_area.anchor == "top_right"
+        assert loaded.overlay_area.width == 680
+        assert loaded.overlay_area.margin == 44
+        assert loaded.overlay_area.offset_x == -18
+        assert loaded.overlay_area.offset_y == 26
         assert loaded.quiet_hours.enabled is True
         assert loaded.quiet_hours.start == "21:30"
         assert loaded.quiet_hours.end == "07:15"
@@ -175,6 +187,18 @@ def test_empty_rules_and_channels_are_valid(qapp):
         QTest.qWait(20)
 
 
+def test_overlay_width_snaps_to_minimum(qapp):
+    dialog = make_dialog(qapp)
+    try:
+        dialog._overlay_width_spin.setValue(100)
+        assert dialog._overlay_width_spin.value() == 240
+        dialog._overlay_width_spin.setValue(0)
+        assert dialog._overlay_width_spin.value() == 0
+    finally:
+        dialog.deleteLater()
+        QTest.qWait(20)
+
+
 def test_preview_uses_selected_appearance_and_cleans_up(qapp, tmp_path):
     dialog = make_dialog(qapp)
     try:
@@ -186,6 +210,13 @@ def test_preview_uses_selected_appearance_and_cleans_up(qapp, tmp_path):
             dialog._popup_skin_combo.findData("amber")
         )
         dialog._overlay_image_edit.setText(str(image_path))
+        dialog._overlay_anchor_combo.setCurrentIndex(
+            dialog._overlay_anchor_combo.findData("bottom_left")
+        )
+        dialog._overlay_width_spin.setValue(620)
+        dialog._overlay_margin_spin.setValue(40)
+        dialog._overlay_offset_x_spin.setValue(12)
+        dialog._overlay_offset_y_spin.setValue(-6)
         dialog._preview_popup()
 
         preview = dialog._preview
@@ -194,6 +225,11 @@ def test_preview_uses_selected_appearance_and_cleans_up(qapp, tmp_path):
         assert preview.popup_skin == "amber"
         assert preview._overlay_backdrop is not None
         assert preview._overlay_backdrop.has_image is False
+        assert preview._overlay_area.anchor == "bottom_left"
+        assert preview._overlay_area.width == 620
+        assert preview._overlay_area.margin == 40
+        assert preview._overlay_area.offset_x == 12
+        assert preview._overlay_area.offset_y == -6
 
         preview.dismiss("ack")
         QTest.qWait(260)

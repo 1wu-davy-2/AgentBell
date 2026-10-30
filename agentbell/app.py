@@ -76,6 +76,7 @@ class AgentBellApp(QObject):
             popup_mode=config.popup_mode,
             popup_skin=config.popup_skin,
             overlay_image=config.overlay_image,
+            overlay_area=config.overlay_area,
         )
         self.tray = TrayIcon(
             make_app_icon(),
@@ -606,7 +607,10 @@ class AgentBellApp(QObject):
         self.toasts.set_auto_close(config.auto_close_seconds)
         self.toasts.set_templates(config.templates)
         self.toasts.set_appearance(
-            config.popup_mode, config.popup_skin, config.overlay_image
+            config.popup_mode,
+            config.popup_skin,
+            config.overlay_image,
+            config.overlay_area,
         )
         self.toasts.set_paused(config.hold_when_locked and self._presence.locked)
         self.presence_monitor.apply_config(config)

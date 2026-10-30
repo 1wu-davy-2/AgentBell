@@ -32,11 +32,19 @@ from PySide6.QtWidgets import (
 from ..config import (
     AppConfig,
     ConfigError,
+    OverlayAreaConfig,
     config_from_dict,
     config_to_dict,
     save_config,
 )
 from ..models import (
+    OVERLAY_ANCHORS,
+    OVERLAY_CARD_WIDTH_DEFAULT,
+    OVERLAY_CARD_WIDTH_MAX,
+    OVERLAY_CARD_WIDTH_MIN,
+    OVERLAY_MARGIN_DEFAULT,
+    OVERLAY_MARGIN_MAX,
+    OVERLAY_OFFSET_LIMIT,
     POPUP_MODE_LABELS,
     POPUP_MODES,
     POPUP_SKIN_LABELS,
@@ -60,6 +68,17 @@ _TEMPLATE_LABELS = {
     "failed": "失败标题",
     "canceled": "取消标题",
     "running": "进行中标题",
+}
+_OVERLAY_ANCHOR_LABELS = {
+    "center": "居中",
+    "top": "上方居中",
+    "bottom": "下方居中",
+    "left": "左侧居中",
+    "right": "右侧居中",
+    "top_left": "左上角",
+    "top_right": "右上角",
+    "bottom_left": "左下角",
+    "bottom_right": "右下角",
 }
 
 _RULES_EXAMPLE = [
@@ -416,7 +435,7 @@ class SettingsDialog(QDialog):
         mode_hint = QLabel(
             "右侧卡片：从屏幕右侧滑入，按倒计时自动关闭。\n"
             "居中确认：屏幕中央弹出，必须点击「知道了」才会消失。\n"
-            "全屏遮挡：半透明遮罩铺满屏幕，中央焦点卡片，需手动确认。",
+            "全屏遮挡：半透明遮罩铺满屏幕，卡片位置与宽度可在下方设置，需手动确认。",
             mode_group,
         )
         mode_hint.setObjectName("editorHint")
@@ -483,8 +502,74 @@ class SettingsDialog(QDialog):
         image_form.addRow("", image_hint)
         layout.addWidget(image_group)
 
+        area_group = QGroupBox("全屏显示区域", page)
+        area_form = QFormLayout(area_group)
+        area_form.setContentsMargins(12, 14, 12, 10)
+        area_form.setSpacing(9)
+
+        self._overlay_anchor_combo = QComboBox(area_group)
+        for key in OVERLAY_ANCHORS:
+            self._overlay_anchor_combo.addItem(
+                _OVERLAY_ANCHOR_LABELS.get(key, key), key
+            )
+        index = self._overlay_anchor_combo.findData(self.config.overlay_area.anchor)
+        self._overlay_anchor_combo.setCurrentIndex(max(0, index))
+        area_form.addRow("位置", self._overlay_anchor_combo)
+
+        self._overlay_width_spin = QSpinBox(area_group)
+        self._overlay_width_spin.setRange(0, OVERLAY_CARD_WIDTH_MAX)
+        self._overlay_width_spin.setSingleStep(20)
+        self._overlay_width_spin.setSuffix(" px")
+        self._overlay_width_spin.setSpecialValueText(
+            f"默认（{OVERLAY_CARD_WIDTH_DEFAULT} px）"
+        )
+        self._overlay_width_spin.setValue(self.config.overlay_area.width)
+        self._overlay_width_spin.valueChanged.connect(self._snap_overlay_width)
+        area_form.addRow("卡片宽度", self._overlay_width_spin)
+
+        self._overlay_margin_spin = QSpinBox(area_group)
+        self._overlay_margin_spin.setRange(0, OVERLAY_MARGIN_MAX)
+        self._overlay_margin_spin.setSuffix(" px")
+        self._overlay_margin_spin.setValue(self.config.overlay_area.margin)
+        area_form.addRow("与屏幕边缘距离", self._overlay_margin_spin)
+
+        self._overlay_offset_x_spin = QSpinBox(area_group)
+        self._overlay_offset_x_spin.setRange(-OVERLAY_OFFSET_LIMIT, OVERLAY_OFFSET_LIMIT)
+        self._overlay_offset_x_spin.setSuffix(" px")
+        self._overlay_offset_x_spin.setValue(self.config.overlay_area.offset_x)
+        area_form.addRow("水平微调", self._overlay_offset_x_spin)
+
+        self._overlay_offset_y_spin = QSpinBox(area_group)
+        self._overlay_offset_y_spin.setRange(-OVERLAY_OFFSET_LIMIT, OVERLAY_OFFSET_LIMIT)
+        self._overlay_offset_y_spin.setSuffix(" px")
+        self._overlay_offset_y_spin.setValue(self.config.overlay_area.offset_y)
+        area_form.addRow("垂直微调", self._overlay_offset_y_spin)
+
+        area_hint = QLabel(
+            "仅「全屏遮挡」模式生效。卡片高度随内容自动；位置以九宫格为基准，"
+            "再用微调移动到任意位置。修改后点击底部「测试」立即预览。",
+            area_group,
+        )
+        area_hint.setObjectName("editorHint")
+        area_hint.setWordWrap(True)
+        area_form.addRow("", area_hint)
+        layout.addWidget(area_group)
+
         layout.addStretch(1)
         return page
+
+    def _snap_overlay_width(self, value: int) -> None:
+        if 0 < value < OVERLAY_CARD_WIDTH_MIN:
+            self._overlay_width_spin.setValue(OVERLAY_CARD_WIDTH_MIN)
+
+    def _overlay_area_from_controls(self) -> OverlayAreaConfig:
+        return OverlayAreaConfig(
+            anchor=self._overlay_anchor_combo.currentData(),
+            width=self._overlay_width_spin.value(),
+            offset_x=self._overlay_offset_x_spin.value(),
+            offset_y=self._overlay_offset_y_spin.value(),
+            margin=self._overlay_margin_spin.value(),
+        )
 
     def _choose_overlay_image(self) -> None:
         current = self._overlay_image_edit.text().strip()
@@ -817,6 +902,7 @@ class SettingsDialog(QDialog):
             require_ack=True,
         )
         image = self._overlay_image_edit.text().strip()
+        area = self._overlay_area_from_controls()
         preview = ToastWindow(
             notification,
             10,
@@ -825,16 +911,21 @@ class SettingsDialog(QDialog):
             popup_mode=self._popup_mode_combo.currentData(),
             popup_skin=self._popup_skin_combo.currentData(),
             overlay_image=image,
+            overlay_area=area,
             parent=self,
         )
         preview.dismissed.connect(self._on_preview_dismissed)
         self._preview = preview
         preview.show_at(QPoint(0, 0))
         self.logger.info(
-            "设置预览：模式=%s 皮肤=%s 背景图=%s",
+            "设置预览：模式=%s 皮肤=%s 背景图=%s 区域=%s/%s/+%s,+%s",
             preview.popup_mode,
             preview.popup_skin,
             image or "-",
+            area.anchor,
+            area.width or OVERLAY_CARD_WIDTH_DEFAULT,
+            area.offset_x,
+            area.offset_y,
         )
 
     def _on_preview_dismissed(self, notification: Notification, reason: str) -> None:
@@ -874,6 +965,13 @@ class SettingsDialog(QDialog):
                 "popup_mode": self._popup_mode_combo.currentData(),
                 "popup_skin": self._popup_skin_combo.currentData(),
                 "overlay_image": self._overlay_image_edit.text().strip(),
+                "overlay_area": {
+                    "anchor": self._overlay_anchor_combo.currentData(),
+                    "width": self._overlay_width_spin.value(),
+                    "offset_x": self._overlay_offset_x_spin.value(),
+                    "offset_y": self._overlay_offset_y_spin.value(),
+                    "margin": self._overlay_margin_spin.value(),
+                },
                 "agent_sessions": {
                     "enabled": self._agent_enabled_check.isChecked(),
                     "scan_interval_seconds": self._agent_interval_spin.value(),
