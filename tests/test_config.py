@@ -4,7 +4,12 @@ import json
 
 import pytest
 
-from agentbell.config import ConfigError, load_config, save_config
+from agentbell.config import (
+    AgentLauncherConfig,
+    ConfigError,
+    load_config,
+    save_config,
+)
 
 
 def test_missing_config_is_created_with_defaults(tmp_path):
@@ -228,3 +233,88 @@ def test_save_config_round_trip(tmp_path):
     assert loaded.port == 9000
     assert loaded.token == "abc"
     assert loaded.auto_close_seconds == 10
+
+
+def test_agent_launcher_defaults_and_round_trip(tmp_path):
+    path = tmp_path / "config.json"
+    config, _ = load_config(path)
+    assert config.agent_launcher.recent_projects == ()
+    assert config.agent_launcher.last_agent == ""
+
+    from dataclasses import replace
+
+    updated = replace(
+        config,
+        agent_launcher=AgentLauncherConfig(
+            recent_projects=(r"E:\work\demo", r"E:\work\other"),
+            last_agent="claude-code",
+        ),
+    )
+    save_config(path, updated)
+
+    loaded, _ = load_config(path)
+    assert loaded.agent_launcher.recent_projects == (
+        r"E:\work\demo",
+        r"E:\work\other",
+    )
+    assert loaded.agent_launcher.last_agent == "claude-code"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["agent_launcher"] == {
+        "recent_projects": [r"E:\work\demo", r"E:\work\other"],
+        "last_agent": "claude-code",
+    }
+
+
+def test_agent_launcher_accepts_tuples_from_config_to_dict(tmp_path):
+    from dataclasses import replace
+
+    from agentbell.config import config_from_dict, config_to_dict
+
+    path = tmp_path / "config.json"
+    config, _ = load_config(path)
+    config = replace(
+        config,
+        agent_launcher=AgentLauncherConfig(
+            recent_projects=(r"E:\work\demo",), last_agent="codex"
+        ),
+    )
+
+    restored = config_from_dict(config_to_dict(config))
+
+    assert restored.agent_launcher.recent_projects == (r"E:\work\demo",)
+    assert restored.agent_launcher.last_agent == "codex"
+
+
+@pytest.mark.parametrize(
+    "payload,message",
+    [
+        (
+            json.dumps(
+                {
+                    "agent_launcher": {
+                        "recent_projects": [
+                            rf"E:\project{index}" for index in range(7)
+                        ]
+                    }
+                }
+            ),
+            "recent_projects",
+        ),
+        (
+            json.dumps({"agent_launcher": {"recent_projects": r"E:\x"}}),
+            "recent_projects",
+        ),
+        (
+            json.dumps(
+                {"agent_launcher": {"recent_projects": ["x" * 261]}}
+            ),
+            "recent_projects",
+        ),
+        (json.dumps({"agent_launcher": {"last_agent": 5}}), "last_agent"),
+    ],
+)
+def test_agent_launcher_config_is_validated(tmp_path, payload, message):
+    path = tmp_path / "config.json"
+    path.write_text(payload, encoding="utf-8")
+    with pytest.raises(ConfigError, match=message):
+        load_config(path)

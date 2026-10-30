@@ -42,6 +42,10 @@
     "scan_interval_seconds": 120,
     "max_sessions": 80
   },
+  "agent_launcher": {
+    "recent_projects": [],
+    "last_agent": ""
+  },
   "digest": {
     "enabled": true,
     "threshold": 4,

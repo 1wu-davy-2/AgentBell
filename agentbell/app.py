@@ -14,8 +14,8 @@ from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QObject, QTimer, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QGuiApplication
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtGui import QCursor, QDesktopServices, QGuiApplication
+from PySide6.QtWidgets import QApplication, QMenu, QMessageBox
 
 from .agent_sessions import AgentSessionScanner
 from .channels import ChannelDispatcher
@@ -30,7 +30,13 @@ from .ui.icons import make_app_icon
 from .ui.toast import ToastManager
 from .ui.tray import TrayIcon
 from .ui.window import NotificationWindow
-from .window_focus import focus_terminal
+from .window_focus import (
+    FocusChoice,
+    FocusRequest,
+    FocusResult,
+    find_focus_choices,
+    focus_terminal,
+)
 
 RECENT_LIMIT = 20
 MAX_INBOX_BATCH = 50
@@ -112,6 +118,7 @@ class AgentBellApp(QObject):
         self.center.ack_requested.connect(self._acknowledge)
         self.center.snooze_requested.connect(self._snooze)
         self.center.action_requested.connect(self._run_action)
+        self.center.focus_requested.connect(self._focus_requested)
         self.center.settings_saved.connect(self._apply_config)
         self.center.center_shown.connect(self._mark_read)
         self.center.onboarding_finished.connect(self._finish_onboarding)
@@ -479,6 +486,77 @@ class AgentBellApp(QObject):
             self.logger.info("通知已确认 id=%s", notification_id)
         if self.center.isVisible():
             self.center.refresh_items(self.store.snapshot())
+
+    def _focus_requested(self, request: object) -> None:
+        if not isinstance(request, FocusRequest):
+            return
+        if request.pid:
+            self._focus_value(request)
+            return
+        query = " ".join((request.window_title or "").split())
+        if not query:
+            self._focus_failed(
+                FocusResult(
+                    False, "缺少窗口标题，无法匹配终端", request.working_dir
+                )
+            )
+            return
+        choices = find_focus_choices(query)
+        if not choices:
+            self._focus_failed(
+                FocusResult(
+                    False,
+                    f"未找到标题包含「{query[:40]}」的终端或编辑器窗口",
+                    request.working_dir,
+                )
+            )
+            return
+        if len(choices) == 1:
+            self._focus_choice(choices[0], request.working_dir)
+            return
+        menu = QMenu(self.center)
+        menu.setToolTipsVisible(True)
+        for choice in choices:
+            label = (
+                choice.title
+                if len(choice.title) <= 64
+                else choice.title[:61] + "…"
+            )
+            action = menu.addAction(label)
+            action.setToolTip(choice.executable)
+            action.triggered.connect(
+                lambda checked=False, value=choice: self._focus_choice(
+                    value, request.working_dir
+                )
+            )
+        menu.exec(QCursor.pos())
+
+    def _focus_choice(self, choice: FocusChoice, working_dir: str) -> None:
+        self._focus_value(
+            FocusRequest(
+                pid=choice.pid,
+                window_title=choice.title,
+                working_dir=working_dir,
+            )
+        )
+
+    def _focus_value(self, request: FocusRequest) -> None:
+        result = focus_terminal(request.to_value())
+        if result.ok:
+            window_title = " ".join(result.message.split())[:80]
+            self.logger.info("回到终端 window=%s", window_title)
+            if self.center.isVisible():
+                QTimer.singleShot(0, self.center.hide_center)
+            return
+        self._focus_failed(result)
+
+    def _focus_failed(self, result: FocusResult) -> None:
+        message = result.message
+        if result.working_dir and not result.raised:
+            QGuiApplication.clipboard().setText(result.working_dir)
+            message += "，项目路径已复制"
+        self.tray.showMessage("AgentBell", message, make_app_icon(), 3500)
+        self.logger.warning("回到终端失败：%s", result.message)
 
     def _run_action(self, notification: Notification, action: NotificationAction) -> None:
         if action.kind == "focus":

@@ -6,6 +6,7 @@ a = Analysis(
     binaries=[],
     datas=[
         ("assets/agentbell.ico", "assets"),
+        ("assets/agentbell.svg", "assets"),
     ],
     hiddenimports=[
         "uvicorn.logging",
@@ -28,7 +29,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="AgentBell-5",
+    name="AgentBell-10",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

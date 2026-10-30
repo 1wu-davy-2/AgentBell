@@ -20,6 +20,8 @@
 
 2.6.0 重做启动体验与标志：双击后先出现带铃响动画的启动卡片，约 2.2 秒内依次显示本机服务、监听地址与下一步状态；首次启动随后进入四步介绍，可跳过或暂停自动播放，走完或跳过后写入 `onboarding_seen`，再次打开只显示「正在打开通知中心」。标志改为蓝底白铃、铃舌与铃身分开的圆标，缩到 16 像素仍能认出是铃；托盘和偏好设置新增「关于 AgentBell」，可查看 16/24/32/48/64 尺寸、彩色/单色变体、重响启动铃声并导出 SVG。
 
+2.7.0 新增「Agent 启动」页：像 cc-switch 一样在程序内管理本机 Agent，自动检测 Claude Code、Claude Desktop、Codex、Gemini CLI、Grok Build、OpenCode、OpenClaw、Hermes、Pi、MiniMax Code、Antigravity 是否安装；选择项目目录并填写初始提示词后，直接在 PowerShell 新终端里启动对应 Agent 并传入提示词，最近项目与最近使用的 Agent 会保存到配置。终端从 AgentBell 打开时记录精确 PID，可一键切回。同时把「回到终端」入口放到会话卡片、会话详情和启动记录上，不用等通知卡片也能窗口级跳转。
+
 ## 特性
 
 - 只监听 `127.0.0.1:8765`（可在 `config.json` 改端口），不暴露到局域网。
@@ -42,7 +44,8 @@
 - 去重更新：相同 `dedupe_key` 原地更新同一张卡片，适合长任务的进度推送。
 - 闭环处理：`require_ack` 待确认、5/15/30 分钟稍后提醒、未读升级（重新弹出 + 托盘闪烁 + 提示音）。
 - 卡片动作：回到终端、打开链接、复制文本、重试回调、打开本地文件、打开通知中心。
-- 回到终端：请求带 `origin`（`pid` / `window_title` / `working_dir`）时自动生成按钮，沿父进程链定位宿主终端或编辑器窗口并切到前台；只聚焦窗口，不选中标签页，也不执行任何命令。
+- 回到终端：请求带 `origin`（`pid` / `window_title` / `working_dir`）时自动生成按钮，沿父进程链定位宿主终端或编辑器窗口并切到前台；只聚焦窗口，不选中标签页，也不执行任何命令。会话卡片、会话详情与启动记录也有「回到终端 / 回到窗口」入口，最近通知没带 `origin` 时同样可以用。
+- Agent 启动：内置 11 个常见 Agent 的检测规则（Claude Code、Claude Desktop、Codex、Gemini CLI、Grok Build、OpenCode、OpenClaw、Hermes、Pi、MiniMax Code、Antigravity），已安装的排在前面并显示可执行文件路径；选择项目目录、填写初始提示词后，点「打开终端并开始」即打开 PowerShell 新窗口并启动对应 Agent。提示词通过环境变量传入，不拼接进 shell 命令；桌面应用只打开窗口，不会假装能预填提示词。最近 6 个项目与上次使用的 Agent 会写入 `agent_launcher`。
 - 规则引擎：按来源 / 标题 / 状态自动设置优先级、静音、待确认、免打扰例外、弹窗外观、外部渠道。
 - 模板与声音：四种状态的弹窗文案、五类 WAV 提示音均可配置。
 - 外部渠道：企业微信、飞书、Telegram、Bark、ntfy、通用 Webhook；可按“离开电脑”或规则触发，失败只记日志，不影响主流程。
@@ -67,6 +70,7 @@ agentbell/
 │  ├─ policy.py           优先级、免打扰、全屏/会议/锁屏、规则与渠道决策
 │  ├─ presence.py         Windows 空闲时间、前台全屏、会议进程、锁屏/息屏检测
 │  ├─ agent_sessions.py   Claude Code / Qoder 会话扫描、记录解析与 Markdown 导出
+│  ├─ agent_launch.py     Agent 检测、项目内启动终端与提示词传递
 │  ├─ window_focus.py     Win32 窗口解析与聚焦（回到终端）
 │  ├─ channels.py         外部渠道后台投递线程
 │  ├─ hotkey.py           全局快捷键（RegisterHotKey）
@@ -84,7 +88,7 @@ agentbell/
 │     ├─ splash.py        启动过渡窗口与三行状态时间线
 │     ├─ onboarding.py    四步首次启动介绍覆盖层（自动播放、暂停、跳过）
 │     ├─ about.py         「关于 AgentBell」标志展示、尺寸/变体与 SVG 导出
-│     ├─ window.py        cc-switch 风格通知中心、搜索、统计、Agent 会话列表与阅读视图
+│     ├─ window.py        cc-switch 风格通知中心、搜索、统计、Agent 会话、Agent 启动与阅读视图
 │     ├─ settings.py      偏好设置对话框
 │     ├─ overlay_editor.py 全屏拖拽定位编辑器（真实背景预览、拖动、保存位置）
 │     ├─ toast.py         置顶弹窗、皮肤/模式、倒计时、堆叠调度、聚合摘要
@@ -97,15 +101,7 @@ agentbell/
 ├─ requirements.txt       运行依赖
 ├─ requirements-dev.txt   测试/打包依赖
 ├─ run.py                 源码启动入口
-├─ AgentBell.spec         PyInstaller 配置（AgentBell.exe）
-├─ AgentBell2.spec        PyInstaller 配置（AgentBell-2.exe，可与 1.x 并存）
-├─ AgentBell3.spec        PyInstaller 配置（AgentBell-3.exe，2.1 功能）
-├─ AgentBell4.spec        PyInstaller 配置（AgentBell-4.exe，2.2 功能）
-├─ AgentBell5.spec        PyInstaller 配置（AgentBell-5.exe，2.2.1 编码修复）
-├─ AgentBell6.spec        PyInstaller 配置（AgentBell-6.exe，2.3.0 回到终端）
-├─ AgentBell7.spec        PyInstaller 配置（AgentBell-7.exe，2.4.0 全屏显示区域）
-├─ AgentBell8.spec        PyInstaller 配置（AgentBell-8.exe，2.5.0 拖拽定位与会话阅读）
-├─ AgentBell9.spec        PyInstaller 配置（AgentBell-9.exe，2.6.0 启动过渡、首次介绍与新标志）
+├─ AgentBell10.spec       PyInstaller 配置（AgentBell-10.exe）
 └─ README.md
 ```
 
@@ -184,6 +180,10 @@ AgentBell 已就绪：http://127.0.0.1:8765（X-Token 鉴权已开启）
     "enabled": true,
     "scan_interval_seconds": 120,
     "max_sessions": 80
+  },
+  "agent_launcher": {
+    "recent_projects": [],
+    "last_agent": ""
   },
   "digest": { "enabled": true, "threshold": 4, "window_seconds": 60 },
   "escalation": {
@@ -297,6 +297,26 @@ AgentBell 已就绪：http://127.0.0.1:8765（X-Token 鉴权已开启）
 
 没有对应目录时页面显示空状态；扫描结果按更新时间倒序，可按标题、项目、会话 ID 或路径搜索，并支持打开项目目录或复制路径。
 
+### Agent 启动
+
+| 字段 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `agent_launcher.recent_projects` | 字符串数组 | `[]` | 最近从「Agent 启动」页打开过的项目目录，最多 6 个，单项最长 260 字符 |
+| `agent_launcher.last_agent` | 字符串 | `""` | 上次使用的 Agent ID，例如 `claude-code`；下次打开页面时优先选中 |
+
+「Agent 启动」页的检测顺序：
+
+- 先查 `PATH` 中的命令：`claude`、`codex`、`gemini`、`grok`、`opencode`、`openclaw`、`hermes`、`pi`、`minimax`。
+- 再查桌面应用固定安装位置：Claude Desktop（`%LOCALAPPDATA%\AnthropicClaude\claude.exe`、`%LOCALAPPDATA%\Programs\Claude\Claude.exe`）与 Antigravity（`%LOCALAPPDATA%\Programs\Antigravity\Antigravity.exe`、`%LOCALAPPDATA%\Antigravity\Antigravity.exe`）。
+- 已安装的卡片排在前两列，显示可执行文件路径；未安装的显示安装命令或提示，点右上角「重新检测」刷新。
+
+启动行为：
+
+- 终端类 Agent：在所选项目目录打开一个独立 PowerShell 新窗口，设置窗口标题为 `AgentBell · Agent 名 · 项目名`，再启动 Agent；提示词作为 Agent 的第一个参数传入，通过 `AGENTBELL_PROMPT` 环境变量交给 PowerShell，不拼接进命令行文本。
+- 桌面应用（Claude Desktop / Antigravity）：只打开应用并设置工作目录；如果填写了提示词，会先提示桌面应用不支持自动预填，确认后才继续。
+- 提示词上限 8000 字符；项目目录必须存在；启动失败会在按钮右侧显示原因，不弹额外对话框。
+- 从 AgentBell 打开的终端会记录 PID，「本次打开的终端」里可点「回到终端 / 回到窗口」精确切回；关闭终端后按钮会失效。
+
 ### 历史
 
 | 字段 | 类型 | 默认值 | 说明 |
@@ -407,7 +427,7 @@ curl http://127.0.0.1:8765/health
 ```
 
 ```json
-{"ok":true,"app":"AgentBell","version":"2.6.0","auth":true}
+{"ok":true,"app":"AgentBell","version":"2.7.0","auth":true}
 ```
 
 AgentBell 只提供 `GET /health` 和 `POST /notify` 两个接口，不提供 Web 页面或 HTTP 通知列表；记录显示在应用内的原生通知中心里。
@@ -512,6 +532,9 @@ X-Token: your-token        # 仅当 config.token 非空时必需
 ```
 
 - 服务端生成「回到终端」按钮，放在所有动作之前；请求里的 `actions` 仍按原样追加。
+- 只填 `working_dir` 也能生成按钮：服务端会取目录名作为窗口标题线索，适合无法拿到终端 PID 的 Agent；同时填 `pid` 仍是最准确的方式。
+- 通知中心里的 Agent 会话卡片、会话详情、以及「Agent 启动」页的本次终端记录都提供「回到终端」入口，不依赖通知是否带 `origin`。
+- 多个终端窗口标题同时匹配时，会弹出一个选择菜单而不是随便挑一个。
 - 点击后沿 `pid` 的父进程链查找可见窗口，也会识别 conhost / OpenConsole 子进程；找不到血缘窗口时再用 `window_title` 兜底。
 - 只做窗口级聚焦：还原最小化、置前并尝试获取前台焦点；Windows 禁止强抢焦点时会退化为仅置前，并提示「已置前，但系统未授予键盘焦点」。
 - 不会选中具体标签页，也不会执行命令或打开新终端。
@@ -742,42 +765,18 @@ PyInstaller 不能跨平台交叉编译，请在目标系统上分别打包。
 ```bash
 pip install -r requirements-dev.txt
 
-# 1.x 名称：dist\AgentBell.exe
-python -m PyInstaller --noconfirm --clean AgentBell.spec
-
-# 2.x 名称：dist\AgentBell-2.exe（可与 1.x 同时安装/运行）
-python -m PyInstaller --noconfirm --clean AgentBell2.spec
-
-# 2.1 名称：dist\AgentBell-3.exe（包含弹窗皮肤/模式、锁屏保留、Agent 会话页）
-python -m PyInstaller --noconfirm --clean AgentBell3.spec
-
-# 2.2 名称：dist\AgentBell-4.exe（整屏遮挡、自定义背景图、测试预览、启动动画）
-python -m PyInstaller --noconfirm --clean AgentBell4.spec
-
-# 2.2.1 名称：dist\AgentBell-5.exe（编码安全的接入指令、疑似乱码告警）
-python -m PyInstaller --noconfirm --clean AgentBell5.spec
-
-# 2.3.0 名称：dist\AgentBell-6.exe（origin 字段、回到终端窗口）
-python -m PyInstaller --noconfirm --clean AgentBell6.spec
-
-# 2.4.0 名称：dist\AgentBell-7.exe（全屏显示区域、卡片位置与宽度）
-python -m PyInstaller --noconfirm --clean AgentBell7.spec
-
-# 2.5.0 名称：dist\AgentBell-8.exe（全屏拖拽定位、会话记录阅读）
-python -m PyInstaller --noconfirm --clean AgentBell8.spec
-
-# 2.6.0 名称：dist\AgentBell-9.exe（启动过渡、首次介绍、新标志与关于窗口）
-python -m PyInstaller --noconfirm --clean AgentBell9.spec
+# 产物：dist\AgentBell-10.exe
+python -m PyInstaller --noconfirm --clean AgentBell10.spec
 ```
 
 把 `config.json` 复制到 exe 旁边再运行：
 
 ```bash
 copy config.json dist\config.json
-dist\AgentBell-9.exe
+dist\AgentBell-10.exe
 ```
 
-> 新旧版本默认共用单实例锁：若托盘中已有 AgentBell（1.x / 2.x）在运行，双击 AgentBell-9 只会唤醒旧实例。切换版本前先从托盘退出旧版，再启动新 exe。
+> 新旧版本默认共用单实例锁：若托盘中已有 AgentBell（1.x / 2.x）在运行，双击 AgentBell-10 只会唤醒旧实例。切换版本前先从托盘退出旧版，再启动新 exe。
 
 打包后 `config.json`、`logs/` 与 `agentbell.db` 都位于 exe 所在目录。单文件模式首次启动需要解压到临时目录，通常会有 1–3 秒延迟。
 
@@ -787,7 +786,7 @@ dist\AgentBell-9.exe
 
 ```bash
 pyinstaller --noconfirm --clean --onefile --windowed \
-  --name AgentBell-9 \
+  --name AgentBell-10 \
   --hidden-import uvicorn.logging \
   --hidden-import uvicorn.loops.asyncio \
   --hidden-import uvicorn.protocols.http.h11_impl \
@@ -809,7 +808,7 @@ $env:QT_QPA_PLATFORM="offscreen"; python -m pytest -q
 QT_QPA_PLATFORM=offscreen python -m pytest -q
 ```
 
-覆盖：鉴权与 401、字段默认值/空值/长度、非法状态、危险链接、GB18030 请求体、疑似编码丢失告警、`origin` 动作生成与上限、`focus` 参数校验、`overlay_area` 配置校验与卡片摆放、全屏拖拽编辑器的锚点换算与保存、空/坏 JSON、超大请求体、队列满、去重合并、待确认与动作、规则匹配、免打扰/全屏/会议/锁屏决策、优先级弹窗策略、弹窗模式与皮肤、全屏自定义背景图与失效回落、渠道选择、配置校验、SQLite 存取/搜索/统计/裁剪、通知中心筛选/搜索/统计/设置、Agent 会话扫描与标题提取、会话记录解析/搜索/大纲/复制与导出/缺失文件兜底、设置效果预览与清理、弹窗文案/按钮/去重更新/聚合、居中与全屏弹窗互斥、锁屏暂停、单实例唤醒、自动关闭与悬停暂停、启动自动打开与会话动画收尾、标志 SVG/像素/单色与图标尺寸、启动三行时间线与收起、首次介绍的四步导航/键盘/暂停/跳过与 `onboarding_seen` 持久化、关于窗口的尺寸变体与 SVG 导出。
+覆盖：鉴权与 401、字段默认值/空值/长度、非法状态、危险链接、GB18030 请求体、疑似编码丢失告警、`origin` 动作生成与上限、仅 `working_dir` 的目录名兜底、`focus` 参数校验、窗口选择排序与去重、`FocusRequest` 往返、`overlay_area` 配置校验与卡片摆放、全屏拖拽编辑器的锚点换算与保存、空/坏 JSON、超大请求体、队列满、去重合并、待确认与动作、规则匹配、免打扰/全屏/会议/锁屏决策、优先级弹窗策略、弹窗模式与皮肤、全屏自定义背景图与失效回落、渠道选择、配置校验、Agent 启动的检测排序、CLI 参数与环境变量、提示词不进入命令行、桌面应用不支持提示词、启动失败与项目校验、最近项目持久化、启动记录与回到终端、SQLite 存取/搜索/统计/裁剪、通知中心筛选/搜索/统计/设置、Agent 会话扫描与标题提取、会话记录解析/搜索/大纲/复制与导出/缺失文件兜底、设置效果预览与清理、弹窗文案/按钮/去重更新/聚合、居中与全屏弹窗互斥、锁屏暂停、单实例唤醒、自动关闭与悬停暂停、启动自动打开与会话动画收尾、标志 SVG/像素/单色与图标尺寸、启动三行时间线与收起、首次介绍的四步导航/键盘/暂停/跳过与 `onboarding_seen` 持久化、关于窗口的尺寸变体与 SVG 导出。
 
 ## 常见问题
 
@@ -898,11 +897,16 @@ netstat -ano | findstr :8765
 
 **点「回到终端」没有反应 / 提示未找到窗口**
 
-1. 确认通知是由 2.3.0 及以上版本接收，且 Agent 发送时带了 `origin.pid` 或 `window_title`；
+1. 确认通知是由 2.3.0 及以上版本接收，且 Agent 发送时带了 `origin.pid`、`window_title` 或至少 `working_dir`；
 2. 宿主终端必须仍在运行，窗口被关闭后无法定位；
 3. 只支持窗口级跳转，不会选中具体标签页；多标签请手动切换；
 4. Windows 可能禁止后台程序强抢焦点，此时窗口会置前但键盘焦点仍在原处，点一下窗口即可；
-5. 失败时 `working_dir` 会自动复制到剪贴板，可直接粘贴到终端。
+5. 失败时 `working_dir` 会自动复制到剪贴板，可直接粘贴到终端；
+6. 如果最近通知没有 `origin`，也可以到「Agent 会话」卡片右侧的终端图标、会话详情右上角「回到终端」，或「Agent 启动 → 本次打开的终端」里点按钮，按项目名或 PID 匹配窗口。多个候选窗口会弹出选择菜单。
+
+**Agent 启动页显示未安装 / 启动后没有输入提示词**
+
+「重新检测」只检查当前进程的 `PATH` 和固定桌面安装路径；刚安装完 Agent 需要重开 AgentBell 或确认安装目录已加入 `PATH`。桌面应用（Claude Desktop / Antigravity）无法自动预填提示词，只负责打开；终端类 Agent 会把提示词作为第一个参数传入，若 Agent 本身不支持位置参数，提示词可能被忽略，可留空后进入交互界面再粘贴。提示词只通过环境变量传递，不会拼接进 shell 命令。
 
 **重复双击会启动多个 AgentBell 吗？**
 

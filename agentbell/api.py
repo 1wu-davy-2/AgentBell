@@ -241,6 +241,9 @@ def _build_origin_action(
     pid = origin.pid if origin.pid and origin.pid > 0 else None
     title = origin.window_title.strip()
     working_dir = safe_local_path(origin.working_dir) or ""
+    if pid is None and not title and working_dir:
+        # 只有目录时用项目名兜底匹配终端标题，准确度低于 pid 但仍然可用
+        title = re.split(r"[\\/]+", working_dir.rstrip("\\/"))[-1][:200]
     if pid is None and not title:
         logger.warning("origin 缺少 pid 和 window_title，忽略回到终端动作")
         return None

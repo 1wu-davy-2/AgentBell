@@ -12,12 +12,15 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLabel
 
 from agentbell.agent_sessions import AgentSession
-from agentbell.config import AgentSessionsConfig, AppConfig
+from agentbell.agent_launch import AgentAvailability, AgentSpec, LaunchResult
+from agentbell.config import AgentLauncherConfig, AgentSessionsConfig, AppConfig, load_config
 from agentbell.models import Notification, NotificationAction
 from agentbell.store import NotificationStore
 from agentbell.ui.window import (
+    AgentPickCard,
     AgentSessionCard,
     EmptyState,
+    LaunchRecordCard,
     NotificationWindow,
     format_received_at,
     format_seconds,
@@ -40,11 +43,14 @@ def window_factory(qapp):
     def create(
         store: NotificationStore | None = None,
         token: str = "test-token",
+        config: AppConfig | None = None,
+        config_path=None,
     ) -> NotificationWindow:
         window = NotificationWindow(
-            AppConfig(port=8765, token=token),
+            config if config is not None else AppConfig(port=8765, token=token),
             store if store is not None else NotificationStore(),
             logging.getLogger("agentbell.tests"),
+            config_path=config_path,
         )
         windows.append(window)
         return window
@@ -713,3 +719,160 @@ def test_session_view_handles_missing_transcript(window_factory, tmp_path):
 
     window._close_session_view()
     assert window._session_view_stack.currentIndex() == 0
+
+
+def _availability(
+    agent_id: str,
+    name: str,
+    *,
+    kind: str = "cli",
+    executable: str = r"C:\bin\agent.exe",
+) -> AgentAvailability:
+    return AgentAvailability(
+        spec=AgentSpec(
+            id=agent_id,
+            name=name,
+            kind=kind,
+            summary=f"{name} 的说明",
+        ),
+        executable=executable,
+    )
+
+
+def test_launcher_page_lists_and_selects_installed_agents(
+    qapp, window_factory, monkeypatch
+):
+    import agentbell.ui.window as window_module
+
+    agents = [
+        _availability("alpha", "Alpha", executable=r"C:\bin\alpha.exe"),
+        _availability("beta", "Beta", kind="desktop", executable=""),
+    ]
+    monkeypatch.setattr(window_module, "discover_agents", lambda: agents)
+
+    window = window_factory()
+
+    assert len(window._agent_cards) == 2
+    assert window._selected_agent_id == "alpha"
+    assert window._launcher_start.isEnabled() is True
+    assert "Alpha" in window._launcher_status.text()
+
+    beta_card = next(
+        card
+        for card in window._agent_cards
+        if card.availability.spec.id == "beta"
+    )
+    beta_card.picked.emit(beta_card.availability)
+
+    assert window._selected_agent_id == "beta"
+    assert window._launcher_start.isEnabled() is False
+    assert "未安装" in window._launcher_status.text()
+
+    window.set_page("launcher")
+    assert window._stack.currentIndex() == 3
+    assert window._launcher_button.isChecked() is True
+
+
+def test_launcher_launches_agent_and_remembers_project(
+    qapp, window_factory, monkeypatch, tmp_path
+):
+    import agentbell.ui.window as window_module
+
+    agents = [
+        _availability("alpha", "Alpha", executable=r"C:\bin\alpha.exe")
+    ]
+    monkeypatch.setattr(window_module, "discover_agents", lambda: agents)
+    calls: list[tuple[str, str, str]] = []
+
+    def fake_launch(availability, project, prompt=""):
+        calls.append((availability.spec.id, project, prompt))
+        return LaunchResult(
+            ok=True,
+            message="已在终端启动 Alpha",
+            agent_id="alpha",
+            agent_name="Alpha",
+            agent_kind="cli",
+            pid=4321,
+            title="Alpha - demo",
+            working_dir=project,
+            executable=availability.executable,
+            prompt_sent=bool(prompt),
+        )
+
+    monkeypatch.setattr(window_module, "launch_agent", fake_launch)
+    config_path = tmp_path / "config.json"
+    window = window_factory(config_path=config_path)
+    window._launcher_project.setText(str(tmp_path))
+    window._launcher_prompt.setPlainText("先读项目结构")
+
+    window._launch_selected_agent()
+
+    assert calls == [("alpha", str(tmp_path), "先读项目结构")]
+    assert window._launcher_status.text() == "已在终端启动 Alpha"
+    assert window.config.agent_launcher.recent_projects == (str(tmp_path),)
+    assert window.config.agent_launcher.last_agent == "alpha"
+    loaded, _ = load_config(config_path)
+    assert loaded.agent_launcher.recent_projects == (str(tmp_path),)
+    assert loaded.agent_launcher.last_agent == "alpha"
+
+    assert len(window._launch_records) == 1
+    record = window._launch_records_layout.itemAt(0).widget()
+    assert isinstance(record, LaunchRecordCard)
+    assert record.focus_button.isEnabled() is True
+
+    focused = []
+    window.focus_requested.connect(focused.append)
+    record.focus_button.click()
+    assert len(focused) == 1
+    assert focused[0].pid == 4321
+    assert focused[0].window_title == "Alpha - demo"
+    assert focused[0].working_dir == str(tmp_path)
+
+
+def test_launcher_rejects_missing_project(
+    qapp, window_factory, monkeypatch, tmp_path
+):
+    import agentbell.ui.window as window_module
+
+    monkeypatch.setattr(
+        window_module,
+        "discover_agents",
+        lambda: [_availability("alpha", "Alpha")],
+    )
+    calls = []
+    monkeypatch.setattr(
+        window_module,
+        "launch_agent",
+        lambda *args, **kwargs: calls.append(args) or LaunchResult(True, "ok"),
+    )
+
+    window = window_factory()
+    window._launcher_project.setText(str(tmp_path / "missing"))
+    window._launch_selected_agent()
+
+    assert calls == []
+    assert "项目目录不存在" in window._launcher_status.text()
+    assert window._launcher_status.property("state") == "error"
+
+
+def test_session_terminal_button_and_focus_request(window_factory):
+    window = window_factory()
+    session = make_session(2, "TaskBeacon")
+
+    card = AgentSessionCard(session)
+    received = []
+    card.terminal_requested.connect(received.append)
+    card.terminal_button.click()
+    assert received == [session]
+
+    focused = []
+    window.focus_requested.connect(focused.append)
+    window._focus_session(session)
+    assert len(focused) == 1
+    assert focused[0].pid is None
+    assert focused[0].window_title == "TaskBeacon"
+    assert focused[0].working_dir == r"E:\opt\TaskBeacon"
+
+    window._session_detail_session = session
+    window._focus_detail_session()
+    assert len(focused) == 2

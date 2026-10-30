@@ -109,7 +109,7 @@ def test_origin_adds_focus_action():
     }
 
 
-def test_origin_without_pid_or_title_is_ignored(caplog):
+def test_origin_working_dir_only_uses_folder_name(caplog):
     client, inbox = build()
     with caplog.at_level(logging.WARNING):
         response = client.post(
@@ -118,6 +118,25 @@ def test_origin_without_pid_or_title_is_ignored(caplog):
                 "title": "只有目录",
                 "origin": {"working_dir": "E:\\work\\demo"},
             },
+            headers=auth_headers(),
+        )
+    assert response.status_code == 202
+    notification = inbox.get_nowait()
+    assert notification.actions[0].kind == "focus"
+    assert json.loads(notification.actions[0].value) == {
+        "pid": None,
+        "window_title": "demo",
+        "working_dir": "E:\\work\\demo",
+    }
+    assert "origin 缺少 pid 和 window_title" not in caplog.text
+
+
+def test_empty_origin_is_ignored(caplog):
+    client, inbox = build()
+    with caplog.at_level(logging.WARNING):
+        response = client.post(
+            "/notify",
+            json={"title": "空来源", "origin": {}},
             headers=auth_headers(),
         )
     assert response.status_code == 202

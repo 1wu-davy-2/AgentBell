@@ -142,6 +142,32 @@ class FocusResult:
 
 
 @dataclass(frozen=True, slots=True)
+class FocusRequest:
+    pid: int | None
+    window_title: str = ""
+    working_dir: str = ""
+
+    def to_value(self) -> str:
+        return json.dumps(
+            {
+                "pid": self.pid,
+                "window_title": self.window_title,
+                "working_dir": self.working_dir,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class FocusChoice:
+    pid: int
+    title: str
+    executable: str
+    value: str
+
+
+@dataclass(frozen=True, slots=True)
 class _WindowInfo:
     handle: int
     pid: int
@@ -277,6 +303,41 @@ def _terminal_like(window: _WindowInfo) -> bool:
         or window.class_name in _TERMINAL_CLASSES
         or "console" in window.class_name.lower()
     )
+
+
+def find_focus_choices(query: str, limit: int = 8) -> list[FocusChoice]:
+    query = " ".join((query or "").split())
+    if not query or not _IS_WINDOWS:
+        return []
+    needle = query.casefold()
+    windows = _collect_windows(_process_table())
+    matches = {
+        (window.pid, window.title): window
+        for window in windows
+        if _terminal_like(window) and needle in window.title.casefold()
+    }
+    ordered = sorted(
+        matches.values(),
+        key=lambda window: (
+            window.title.casefold() != needle,
+            len(window.title),
+            window.title.casefold(),
+        ),
+    )
+    choices: list[FocusChoice] = []
+    for window in ordered[:limit]:
+        request = FocusRequest(
+            pid=window.pid, window_title=window.title, working_dir=""
+        )
+        choices.append(
+            FocusChoice(
+                pid=window.pid,
+                title=window.title,
+                executable=window.exe,
+                value=request.to_value(),
+            )
+        )
+    return choices
 
 
 def _resolve_window(target: FocusTarget) -> _WindowInfo | None:

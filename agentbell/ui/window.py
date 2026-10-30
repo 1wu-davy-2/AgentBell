@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -35,15 +36,19 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
+    QComboBox,
     QDialog,
     QFileDialog,
     QFrame,
     QGraphicsDropShadowEffect,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMainWindow,
     QMenu,
+    QMessageBox,
+    QPlainTextEdit,
     QProgressBar,
     QPushButton,
     QScrollArea,
@@ -56,6 +61,12 @@ from PySide6.QtWidgets import (
 )
 
 from .. import __version__
+from ..agent_launch import (
+    AgentAvailability,
+    LaunchResult,
+    discover_agents,
+    launch_agent,
+)
 from ..agent_sessions import (
     AgentSession,
     SessionItem,
@@ -64,10 +75,16 @@ from ..agent_sessions import (
     parse_session_transcript,
     transcript_to_markdown,
 )
-from ..config import AppConfig
+from ..config import (
+    AgentLauncherConfig,
+    AppConfig,
+    ConfigError,
+    save_config,
+)
 from ..integration import build_agent_instructions
 from ..models import STATUS_LABELS, Notification, safe_http_url
 from ..store import NotificationStore
+from ..window_focus import FocusRequest
 from .icons import make_app_icon
 from .motion import motion_enabled
 from .onboarding import OnboardingOverlay
@@ -242,6 +259,14 @@ def _paint_icon(kind: str, color: QColor, size: int) -> QIcon:
         painter.drawLine(QPointF(4.4, 13.6), QPointF(7.0, 11.0))
         painter.drawRoundedRect(QRectF(8.8, 8.6, 6.4, 5.2), 1.8, 1.8)
         painter.drawLine(QPointF(11.2, 13.8), QPointF(11.2, 15.6))
+    elif kind == "terminal":
+        painter.drawRoundedRect(QRectF(2.4, 3.4, 13.2, 11.2), 2.0, 2.0)
+        path = QPainterPath()
+        path.moveTo(5.0, 6.8)
+        path.lineTo(7.6, 9.0)
+        path.lineTo(5.0, 11.2)
+        painter.drawPath(path)
+        painter.drawLine(QPointF(9.2, 11.2), QPointF(12.6, 11.2))
     elif kind == "settings":
         painter.drawEllipse(QRectF(3.7, 3.7, 10.6, 10.6))
         painter.setBrush(color)
@@ -717,6 +742,7 @@ class AgentSessionCard(QFrame):
     open_requested = Signal(object)
     copy_requested = Signal(object)
     view_requested = Signal(object)
+    terminal_requested = Signal(object)
 
     def __init__(
         self, session: AgentSession, parent: QWidget | None = None
@@ -779,6 +805,22 @@ class AgentSessionCard(QFrame):
         )
         root.addWidget(self.view_button, 0, Qt.AlignmentFlag.AlignVCenter)
 
+        self.terminal_button = QToolButton(self)
+        self.terminal_button.setObjectName("sessionIcon")
+        self.terminal_button.setIcon(
+            _paint_icon("terminal", QColor("#667085"), 16)
+        )
+        self.terminal_button.setIconSize(QSize(16, 16))
+        self.terminal_button.setFixedSize(30, 30)
+        self.terminal_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.terminal_button.setToolTip(
+            "回到终端：按项目名匹配并切到对应的终端或编辑器窗口"
+        )
+        self.terminal_button.clicked.connect(
+            lambda: self.terminal_requested.emit(session)
+        )
+        root.addWidget(self.terminal_button, 0, Qt.AlignmentFlag.AlignVCenter)
+
         self.open_button = QToolButton(self)
         self.open_button.setObjectName("sessionIcon")
         self.open_button.setIcon(_paint_icon("folder", QColor("#667085"), 16))
@@ -802,6 +844,122 @@ class AgentSessionCard(QFrame):
             lambda: self.copy_requested.emit(session)
         )
         root.addWidget(self.copy_button, 0, Qt.AlignmentFlag.AlignVCenter)
+
+
+class AgentPickCard(QFrame):
+    picked = Signal(object)
+
+    def __init__(
+        self, availability: AgentAvailability, parent: QWidget | None = None
+    ) -> None:
+        super().__init__(parent)
+        self.availability = availability
+        self.setObjectName("agentPickCard")
+        self.setProperty("selected", "false")
+        self.setProperty("installed", "true" if availability.installed else "false")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
+        self.setToolTip(availability.target)
+        self.setAccessibleName(availability.spec.name)
+
+        row = QHBoxLayout(self)
+        row.setContentsMargins(14, 12, 14, 12)
+        row.setSpacing(12)
+
+        tile = QLabel(self)
+        tile.setObjectName("agentPickIcon")
+        icon_kind = (
+            "agents" if availability.spec.kind == "desktop" else "terminal"
+        )
+        color = QColor("#2F6FF0" if availability.installed else "#98A0AC")
+        tile.setPixmap(_paint_icon(icon_kind, color, 16).pixmap(16, 16))
+        tile.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        tile.setFixedSize(32, 32)
+        row.addWidget(tile, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        body = QVBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(2)
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        title_row.setSpacing(8)
+        name = QLabel(availability.spec.name, self)
+        name.setObjectName("agentPickName")
+        title_row.addWidget(name)
+        chip = QLabel("已安装" if availability.installed else "未安装", self)
+        chip.setObjectName("agentPickStatus")
+        chip.setProperty(
+            "installed", "true" if availability.installed else "false"
+        )
+        chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        chip.setFixedHeight(18)
+        title_row.addWidget(chip, 0, Qt.AlignmentFlag.AlignVCenter)
+        title_row.addStretch(1)
+        kind = QLabel(availability.kind_label, self)
+        kind.setObjectName("agentPickKind")
+        title_row.addWidget(kind)
+        body.addLayout(title_row)
+
+        summary = ElidedLabel(availability.spec.summary, self)
+        summary.setObjectName("agentPickHint")
+        body.addWidget(summary)
+        row.addLayout(body, 1)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton and self.rect().contains(
+            event.position().toPoint()
+        ):
+            self.picked.emit(self.availability)
+        super().mouseReleaseEvent(event)
+
+    def set_selected(self, selected: bool) -> None:
+        self.setProperty("selected", "true" if selected else "false")
+        _repolish(self)
+
+
+class LaunchRecordCard(QFrame):
+    focus_requested = Signal(object)
+
+    def __init__(self, result: LaunchResult, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.result = result
+        self.setObjectName("launchRecord")
+        row = QHBoxLayout(self)
+        row.setContentsMargins(12, 9, 10, 9)
+        row.setSpacing(10)
+
+        text = QVBoxLayout()
+        text.setContentsMargins(0, 0, 0, 0)
+        text.setSpacing(2)
+        title = QLabel(
+            f"{result.agent_name} · {Path(result.working_dir).name}", self
+        )
+        title.setObjectName("launchRecordTitle")
+        text.addWidget(title)
+        meta = QLabel(result.message, self)
+        meta.setObjectName("launchRecordMeta")
+        text.addWidget(meta)
+        row.addLayout(text, 1)
+
+        focus = result.focus_request()
+        self.focus_button = QPushButton(
+            "回到窗口" if result.agent_kind == "desktop" else "回到终端",
+            self,
+        )
+        self.focus_button.setObjectName("launchFocus")
+        self.focus_button.setFixedHeight(26)
+        self.focus_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.focus_button.setEnabled(focus is not None)
+        if focus is not None:
+            self.focus_button.clicked.connect(
+                lambda: self.focus_requested.emit(focus)
+            )
+        row.addWidget(self.focus_button, 0, Qt.AlignmentFlag.AlignVCenter)
+
+
+
 
 
 _TURN_RENDER_LIMIT = 220
@@ -1207,6 +1365,7 @@ class NotificationWindow(QMainWindow):
     center_shown = Signal()
     onboarding_finished = Signal()
     session_refresh_requested = Signal()
+    focus_requested = Signal(object)
 
     def __init__(
         self,
@@ -1232,6 +1391,10 @@ class NotificationWindow(QMainWindow):
         self._session_detail_session: AgentSession | None = None
         self._session_transcript: SessionTranscript | None = None
         self._session_transcript_cache: dict[str, SessionTranscript] = {}
+        self._agent_availabilities: list[AgentAvailability] = []
+        self._agent_cards: list[AgentPickCard] = []
+        self._selected_agent_id = ""
+        self._launch_records: list[LaunchResult] = []
         self._turn_views: list[SessionTurnView] = []
         self._transcript_base_hint = ""
         self._transcript_hint_timer = QTimer(self)
@@ -1301,6 +1464,7 @@ class NotificationWindow(QMainWindow):
         self._stack.addWidget(self._build_list_page())
         self._stack.addWidget(self._build_stats_page())
         self._stack.addWidget(self._build_sessions_page())
+        self._stack.addWidget(self._build_launcher_page())
         body_layout.addWidget(self._stack, 1)
         content_layout.addWidget(body, 1)
 
@@ -1393,6 +1557,22 @@ class NotificationWindow(QMainWindow):
         tools_section.setObjectName("sectionLabel")
         layout.addWidget(tools_section)
         layout.addSpacing(7)
+
+        self._launcher_button = QPushButton("Agent 启动", sidebar)
+        self._launcher_button.setObjectName("navButton")
+        self._launcher_button.setCheckable(True)
+        self._launcher_button.setAutoExclusive(False)
+        self._launcher_button.setIcon(
+            _paint_icon("terminal", QColor("#667085"), 16)
+        )
+        self._launcher_button.setIconSize(QSize(16, 16))
+        self._launcher_button.setFixedHeight(38)
+        self._launcher_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._launcher_button.setToolTip(
+            "检测本机已安装的 Agent，在项目目录里直接打开终端并输入提示词"
+        )
+        self._launcher_button.clicked.connect(self._on_launcher_clicked)
+        layout.addWidget(self._launcher_button)
 
         self._stats_button = QPushButton("数据统计", sidebar)
         self._stats_button.setObjectName("navButton")
@@ -1805,6 +1985,415 @@ class NotificationWindow(QMainWindow):
         QTimer.singleShot(0, self._rebuild_session_cards)
         return page
 
+    def _build_launcher_page(self) -> QWidget:
+        page = QWidget()
+        page.setObjectName("bodyPanel")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(28, 22, 28, 20)
+        layout.setSpacing(0)
+
+        heading = QHBoxLayout()
+        heading.setContentsMargins(0, 0, 0, 0)
+        heading.setSpacing(12)
+        heading_text = QVBoxLayout()
+        heading_text.setContentsMargins(0, 0, 0, 0)
+        heading_text.setSpacing(4)
+        title = QLabel("Agent 启动", page)
+        title.setObjectName("pageTitle")
+        subtitle = QLabel(
+            "检测本机 Agent，选择项目后直接打开终端并输入提示词。",
+            page,
+        )
+        subtitle.setObjectName("pageSubtitle")
+        heading_text.addWidget(title)
+        heading_text.addWidget(subtitle)
+        heading.addLayout(heading_text)
+        heading.addStretch(1)
+        refresh = QPushButton("重新检测", page)
+        refresh.setObjectName("toolButton")
+        refresh.setFixedSize(84, 32)
+        refresh.setCursor(Qt.CursorShape.PointingHandCursor)
+        refresh.clicked.connect(lambda: self._refresh_agents())
+        heading.addWidget(refresh, 0, Qt.AlignmentFlag.AlignVCenter)
+        layout.addLayout(heading)
+
+        layout.addSpacing(14)
+
+        scroll = QScrollArea(page)
+        scroll.setObjectName("listArea")
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        scroll.viewport().setAutoFillBackground(False)
+        host = QWidget()
+        host.setObjectName("listHost")
+        self._launcher_layout = QVBoxLayout(host)
+        self._launcher_layout.setContentsMargins(0, 0, 6, 6)
+        self._launcher_layout.setSpacing(14)
+        scroll.setWidget(host)
+        layout.addWidget(scroll, 1)
+
+        self._launcher_layout.addWidget(
+            self._launcher_section(
+                host,
+                "选择 Agent",
+                "已安装的排在前面；未安装的会显示安装命令，安装后点右上角「重新检测」。",
+            )
+        )
+
+        grid_host = QWidget(host)
+        self._agent_grid = QGridLayout(grid_host)
+        self._agent_grid.setContentsMargins(0, 0, 0, 0)
+        self._agent_grid.setHorizontalSpacing(10)
+        self._agent_grid.setVerticalSpacing(10)
+        self._agent_grid.setColumnStretch(0, 1)
+        self._agent_grid.setColumnStretch(1, 1)
+        self._launcher_layout.addWidget(grid_host)
+
+        self._launcher_layout.addWidget(
+            self._launcher_section(
+                host,
+                "项目目录",
+                "终端会在这个目录启动，Agent 会把它当作当前项目。",
+            )
+        )
+        project_panel = QFrame(host)
+        project_panel.setObjectName("launchPanel")
+        project_layout = QVBoxLayout(project_panel)
+        project_layout.setContentsMargins(14, 12, 14, 12)
+        project_layout.setSpacing(9)
+        project_row = QHBoxLayout()
+        project_row.setContentsMargins(0, 0, 0, 0)
+        project_row.setSpacing(8)
+        self._launcher_project = QLineEdit(project_panel)
+        self._launcher_project.setObjectName("launchProject")
+        self._launcher_project.setFixedHeight(34)
+        self._launcher_project.setPlaceholderText(
+            "选择或粘贴项目目录，例如 E:\\work\\demo"
+        )
+        self._launcher_project.setClearButtonEnabled(True)
+        project_row.addWidget(self._launcher_project, 1)
+        browse = QPushButton("浏览…", project_panel)
+        browse.setObjectName("toolButton")
+        browse.setFixedSize(76, 34)
+        browse.setCursor(Qt.CursorShape.PointingHandCursor)
+        browse.clicked.connect(self._browse_launcher_project)
+        project_row.addWidget(browse)
+        project_layout.addLayout(project_row)
+
+        recent_row = QHBoxLayout()
+        recent_row.setContentsMargins(0, 0, 0, 0)
+        recent_row.setSpacing(8)
+        recent_label = QLabel("最近项目", project_panel)
+        recent_label.setObjectName("launchFieldLabel")
+        recent_row.addWidget(recent_label)
+        self._launcher_recent = QComboBox(project_panel)
+        self._launcher_recent.setObjectName("launchRecent")
+        self._launcher_recent.setFixedHeight(30)
+        self._launcher_recent.setMinimumWidth(240)
+        self._launcher_recent.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
+        self._launcher_recent.currentIndexChanged.connect(
+            self._on_recent_project_changed
+        )
+        recent_row.addWidget(self._launcher_recent, 1)
+        project_layout.addLayout(recent_row)
+        self._launcher_layout.addWidget(project_panel)
+
+        self._launcher_layout.addWidget(
+            self._launcher_section(
+                host,
+                "初始提示词",
+                "提示词会作为 Agent 的第一个参数传入，不拼接进命令行；留空则只打开交互界面。",
+            )
+        )
+        prompt_panel = QFrame(host)
+        prompt_panel.setObjectName("launchPanel")
+        prompt_layout = QVBoxLayout(prompt_panel)
+        prompt_layout.setContentsMargins(14, 12, 14, 12)
+        prompt_layout.setSpacing(8)
+        self._launcher_prompt = QPlainTextEdit(prompt_panel)
+        self._launcher_prompt.setObjectName("launchPrompt")
+        self._launcher_prompt.setFixedHeight(92)
+        self._launcher_prompt.setTabChangesFocus(True)
+        self._launcher_prompt.setPlaceholderText(
+            "例如：先阅读项目结构，说明当前状态，然后实现……"
+        )
+        prompt_layout.addWidget(self._launcher_prompt)
+        self._launcher_layout.addWidget(prompt_panel)
+
+        action_row = QHBoxLayout()
+        action_row.setContentsMargins(0, 0, 0, 0)
+        action_row.setSpacing(10)
+        self._launcher_start = QPushButton("打开终端并开始", host)
+        self._launcher_start.setObjectName("launchButton")
+        self._launcher_start.setFixedSize(150, 38)
+        self._launcher_start.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._launcher_start.clicked.connect(self._launch_selected_agent)
+        action_row.addWidget(self._launcher_start)
+        self._launcher_status = QLabel("", host)
+        self._launcher_status.setObjectName("launchStatus")
+        self._launcher_status.setWordWrap(True)
+        self._launcher_status.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        action_row.addWidget(self._launcher_status, 1)
+        self._launcher_layout.addLayout(action_row)
+
+        self._launcher_layout.addWidget(
+            self._launcher_section(
+                host,
+                "本次打开的终端",
+                "从 AgentBell 打开的终端可以一键切回；关闭终端后按钮会失效。",
+            )
+        )
+        self._launch_records_host = QWidget(host)
+        self._launch_records_layout = QVBoxLayout(self._launch_records_host)
+        self._launch_records_layout.setContentsMargins(0, 0, 0, 0)
+        self._launch_records_layout.setSpacing(6)
+        self._launcher_layout.addWidget(self._launch_records_host)
+        self._launcher_layout.addStretch(1)
+
+        self._refresh_recent_projects()
+        self._refresh_launch_records()
+        self._refresh_agents(choose=self.config.agent_launcher.last_agent)
+        return page
+
+    def _launcher_section(
+        self, parent: QWidget, title: str, hint: str
+    ) -> QWidget:
+        host = QWidget(parent)
+        box = QVBoxLayout(host)
+        box.setContentsMargins(0, 0, 0, 0)
+        box.setSpacing(3)
+        label = QLabel(title, host)
+        label.setObjectName("launchSection")
+        detail = QLabel(hint, host)
+        detail.setObjectName("launchSectionHint")
+        detail.setWordWrap(True)
+        box.addWidget(label)
+        box.addWidget(detail)
+        return host
+
+    def _current_agent(self) -> AgentAvailability | None:
+        for availability in self._agent_availabilities:
+            if availability.spec.id == self._selected_agent_id:
+                return availability
+        return None
+
+    def _refresh_agents(self, choose: str = "") -> None:
+        if not hasattr(self, "_agent_grid"):
+            return
+        preferred = choose or self._selected_agent_id
+        while self._agent_grid.count():
+            entry = self._agent_grid.takeAt(0)
+            widget = entry.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+        self._agent_cards = []
+        self._agent_availabilities = discover_agents()
+        for index, availability in enumerate(self._agent_availabilities):
+            card = AgentPickCard(availability, self._agent_grid.parentWidget())
+            card.picked.connect(self._select_agent)
+            self._agent_grid.addWidget(card, index // 2, index % 2)
+            self._agent_cards.append(card)
+
+        installed = [
+            item for item in self._agent_availabilities if item.installed
+        ]
+        target = next(
+            (
+                item
+                for item in installed
+                if item.spec.id == preferred
+            ),
+            installed[0] if installed else (
+                self._agent_availabilities[0] if self._agent_availabilities else None
+            ),
+        )
+        if target is not None:
+            self._select_agent(target)
+        else:
+            self._selected_agent_id = ""
+            self._sync_launcher_start()
+        if not installed:
+            self._set_launcher_status(
+                "没有检测到已安装的 Agent，请按卡片提示安装后重新检测。",
+                error=True,
+            )
+
+    def _select_agent(self, availability: AgentAvailability) -> None:
+        self._selected_agent_id = availability.spec.id
+        for card in self._agent_cards:
+            card.set_selected(
+                card.availability.spec.id == self._selected_agent_id
+            )
+        self._sync_launcher_start()
+        if availability.installed:
+            self._set_launcher_status(
+                f"已选择 {availability.spec.name} · {availability.executable}"
+            )
+        else:
+            self._set_launcher_status(
+                f"{availability.spec.name} 未安装：{availability.spec.install_hint}",
+                error=True,
+            )
+
+    def _sync_launcher_start(self) -> None:
+        if not hasattr(self, "_launcher_start"):
+            return
+        availability = self._current_agent()
+        enabled = bool(availability and availability.installed)
+        self._launcher_start.setEnabled(enabled)
+        self._launcher_start.setToolTip(
+            "" if enabled else "请先选择一个已安装的 Agent"
+        )
+
+    def _set_launcher_status(self, text: str, error: bool = False) -> None:
+        if not hasattr(self, "_launcher_status"):
+            return
+        self._launcher_status.setProperty("state", "error" if error else "info")
+        self._launcher_status.setText(text)
+        _repolish(self._launcher_status)
+
+    def _refresh_recent_projects(self) -> None:
+        if not hasattr(self, "_launcher_recent"):
+            return
+        projects = list(self.config.agent_launcher.recent_projects)
+        self._launcher_recent.blockSignals(True)
+        self._launcher_recent.clear()
+        self._launcher_recent.addItem("选择最近项目…", "")
+        for path in projects:
+            self._launcher_recent.addItem(path, path)
+        if not projects:
+            self._launcher_recent.setEnabled(False)
+        else:
+            self._launcher_recent.setEnabled(True)
+            current = self._launcher_project.text().strip()
+            if current:
+                index = self._launcher_recent.findData(current)
+                if index >= 0:
+                    self._launcher_recent.setCurrentIndex(index)
+        self._launcher_recent.blockSignals(False)
+
+    def _on_recent_project_changed(self, index: int) -> None:
+        if index <= 0 or not hasattr(self, "_launcher_project"):
+            return
+        path = self._launcher_recent.itemData(index) or ""
+        if path:
+            self._launcher_project.setText(path)
+
+    def _browse_launcher_project(self) -> None:
+        start = self._launcher_project.text().strip() or str(Path.home())
+        path = QFileDialog.getExistingDirectory(self, "选择项目目录", start)
+        if path:
+            self._launcher_project.setText(path)
+            self._set_launcher_status("")
+
+    def _launch_selected_agent(self) -> None:
+        availability = self._current_agent()
+        if availability is None or not availability.installed:
+            self._set_launcher_status("请先选择一个已安装的 Agent", error=True)
+            return
+        project = self._launcher_project.text().strip()
+        if not project or not Path(project).expanduser().is_dir():
+            self._set_launcher_status("项目目录不存在，请重新选择", error=True)
+            self._launcher_project.setFocus()
+            return
+        prompt = self._launcher_prompt.toPlainText()
+        if availability.spec.kind == "desktop" and prompt.strip():
+            choice = QMessageBox.question(
+                self,
+                "桌面应用不支持提示词",
+                f"{availability.spec.name} 是桌面应用，AgentBell 只能打开它，"
+                "无法把提示词自动填进输入框。\n\n仍要打开吗？",
+                QMessageBox.StandardButton.Yes
+                | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+            if choice != QMessageBox.StandardButton.Yes:
+                return
+        result = launch_agent(availability, project, prompt)
+        if not result.ok:
+            self._set_launcher_status(result.message, error=True)
+            self.logger.warning(
+                "启动 Agent 失败 agent=%s：%s", availability.spec.id, result.message
+            )
+            return
+        self._set_launcher_status(result.message)
+        self.logger.info(
+            "启动 Agent agent=%s project=%s pid=%s prompt=%s",
+            availability.spec.id,
+            result.working_dir,
+            result.pid,
+            "yes" if result.prompt_sent else "no",
+        )
+        self._remember_launch(availability.spec.id, project)
+        self._launch_records = ([result] + self._launch_records)[:5]
+        self._refresh_launch_records()
+
+    def _remember_launch(self, agent_id: str, project: str) -> None:
+        recent = [project] + [
+            path
+            for path in self.config.agent_launcher.recent_projects
+            if path.casefold() != project.casefold()
+        ]
+        launcher = AgentLauncherConfig(
+            recent_projects=tuple(recent[:6]),
+            last_agent=agent_id,
+        )
+        config = replace(self.config, agent_launcher=launcher)
+        self.config = config
+        if self._config_path is not None:
+            try:
+                save_config(self._config_path, config)
+            except ConfigError as exc:
+                self.logger.warning("保存最近项目失败：%s", exc)
+        self._refresh_recent_projects()
+        self._launcher_recent.setCurrentIndex(
+            self._launcher_recent.findData(project)
+        )
+
+    def _refresh_launch_records(self) -> None:
+        if not hasattr(self, "_launch_records_layout"):
+            return
+        while self._launch_records_layout.count():
+            entry = self._launch_records_layout.takeAt(0)
+            widget = entry.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+        if not self._launch_records:
+            empty = QLabel("还没有从 AgentBell 打开过终端。", self._launch_records_host)
+            empty.setObjectName("launchRecordEmpty")
+            self._launch_records_layout.addWidget(empty)
+            return
+        for result in self._launch_records:
+            card = LaunchRecordCard(result, self._launch_records_host)
+            card.focus_requested.connect(self.focus_requested.emit)
+            self._launch_records_layout.addWidget(card)
+
+    def _focus_session(self, session: AgentSession) -> None:
+        query = session.project or Path(session.project_path).name
+        if not query:
+            self.logger.warning("会话缺少项目名，无法匹配终端窗口")
+            return
+        self.focus_requested.emit(
+            FocusRequest(
+                pid=None,
+                window_title=query,
+                working_dir=session.project_path,
+            )
+        )
+
+    def _focus_detail_session(self) -> None:
+        if self._session_detail_session is not None:
+            self._focus_session(self._session_detail_session)
+
     def _make_search_box(
         self, parent: QWidget, placeholder: str, width: int = 260
     ) -> tuple[QFrame, QLineEdit]:
@@ -1938,6 +2527,22 @@ class NotificationWindow(QMainWindow):
         title_box.addWidget(self._detail_title)
         title_box.addWidget(self._detail_meta)
         header.addLayout(title_box, 1)
+
+        self._detail_terminal_button = QPushButton("回到终端", page)
+        self._detail_terminal_button.setObjectName("detailAction")
+        self._detail_terminal_button.setFixedSize(78, 28)
+        self._detail_terminal_button.setCursor(
+            Qt.CursorShape.PointingHandCursor
+        )
+        self._detail_terminal_button.setToolTip(
+            "按项目名匹配终端或编辑器窗口，只切到窗口，不选中标签页"
+        )
+        self._detail_terminal_button.clicked.connect(
+            self._focus_detail_session
+        )
+        header.addWidget(
+            self._detail_terminal_button, 0, Qt.AlignmentFlag.AlignVCenter
+        )
 
         self._outline_button = QToolButton(page)
         self._outline_button.setObjectName("detailMenu")
@@ -2086,12 +2691,12 @@ class NotificationWindow(QMainWindow):
             self._rebuild_cards()
 
     def set_page(self, page: str) -> None:
-        if page not in {"list", "stats", "sessions"}:
+        if page not in {"list", "stats", "sessions", "launcher"}:
             return
         changed = page != self._page
         self._page = page
         self._stack.setCurrentIndex(
-            {"list": 0, "stats": 1, "sessions": 2}[page]
+            {"list": 0, "stats": 1, "sessions": 2, "launcher": 3}[page]
         )
         self._stats_button.blockSignals(True)
         self._stats_button.setChecked(page == "stats")
@@ -2099,6 +2704,9 @@ class NotificationWindow(QMainWindow):
         self._sessions_button.blockSignals(True)
         self._sessions_button.setChecked(page == "sessions")
         self._sessions_button.blockSignals(False)
+        self._launcher_button.blockSignals(True)
+        self._launcher_button.setChecked(page == "launcher")
+        self._launcher_button.blockSignals(False)
         self._update_filter_controls()
         if page == "stats":
             self.refresh_stats()
@@ -2106,6 +2714,9 @@ class NotificationWindow(QMainWindow):
             self._update_session_summary()
             self._rebuild_session_cards()
             self.session_refresh_requested.emit()
+        elif page == "launcher":
+            self._sync_launcher_start()
+            self._refresh_launch_records()
         elif changed:
             self._rebuild_cards()
 
@@ -2114,6 +2725,9 @@ class NotificationWindow(QMainWindow):
 
     def _on_sessions_clicked(self, checked: bool) -> None:
         self.set_page("sessions" if checked else "list")
+
+    def _on_launcher_clicked(self, checked: bool) -> None:
+        self.set_page("launcher" if checked else "list")
 
     def _update_filter_controls(self) -> None:
         for key, button in self._nav_buttons.items():
@@ -2385,6 +2999,7 @@ class NotificationWindow(QMainWindow):
                 card.open_requested.connect(self._open_session_folder)
                 card.copy_requested.connect(self._copy_session_path)
                 card.view_requested.connect(self._open_session_view)
+                card.terminal_requested.connect(self._focus_session)
                 self._session_layout.addWidget(card)
         self._session_layout.addStretch(1)
 
@@ -2659,6 +3274,8 @@ class NotificationWindow(QMainWindow):
         self._signature = None
         self._rebuild_cards()
         self._update_session_summary()
+        self._refresh_recent_projects()
+        self._sync_launcher_start()
         if self._page == "stats":
             self.refresh_stats()
         elif self._page == "sessions":
@@ -3395,6 +4012,157 @@ QToolButton#sessionIcon {
 QToolButton#sessionIcon:hover {
     background-color: #EAF1FF;
     border-color: #C9DBFF;
+}
+QFrame#agentPickCard {
+    background-color: #FFFFFF;
+    border: 1px solid #E6E8EC;
+    border-radius: 12px;
+}
+QFrame#agentPickCard:hover {
+    border-color: #C7D4EA;
+}
+QFrame#agentPickCard[selected="true"] {
+    border-color: #2F6FF0;
+    background-color: #F7FAFF;
+}
+QFrame#agentPickCard[installed="false"] {
+    background-color: #FAFBFC;
+}
+QLabel#agentPickIcon {
+    background-color: #EEF4FF;
+    border-radius: 9px;
+}
+QLabel#agentPickName {
+    font-size: 13px;
+    font-weight: 650;
+    color: #1F2329;
+}
+QLabel#agentPickStatus {
+    border-radius: 7px;
+    font-size: 9px;
+    font-weight: 600;
+    padding: 0px 6px;
+}
+QLabel#agentPickStatus[installed="true"] {
+    background-color: #E9F8F0;
+    color: #179A62;
+}
+QLabel#agentPickStatus[installed="false"] {
+    background-color: #F1F2F5;
+    color: #8A919D;
+}
+QLabel#agentPickKind {
+    font-size: 9px;
+    color: #9AA1AC;
+}
+QLabel#agentPickHint {
+    font-size: 10px;
+    color: #6B7280;
+}
+QLabel#launchSection {
+    font-size: 12px;
+    font-weight: 650;
+    color: #323A45;
+}
+QLabel#launchSectionHint {
+    font-size: 10px;
+    color: #9AA1AC;
+}
+QFrame#launchPanel {
+    background-color: #FFFFFF;
+    border: 1px solid #E6E8EC;
+    border-radius: 12px;
+}
+QLabel#launchFieldLabel {
+    font-size: 11px;
+    color: #6B7280;
+}
+QLineEdit#launchProject, QComboBox#launchRecent, QPlainTextEdit#launchPrompt {
+    background-color: #F9FAFC;
+    border: 1px solid #E3E7ED;
+    border-radius: 8px;
+    color: #1F2329;
+    font-size: 12px;
+}
+QLineEdit#launchProject:focus, QPlainTextEdit#launchPrompt:focus {
+    border-color: #9DBBFF;
+    background-color: #FFFFFF;
+}
+QLineEdit#launchProject {
+    padding: 0px 10px;
+}
+QComboBox#launchRecent {
+    padding: 0px 8px;
+}
+QComboBox#launchRecent::drop-down {
+    border: none;
+    width: 22px;
+}
+QComboBox#launchRecent QAbstractItemView {
+    background-color: #FFFFFF;
+    border: 1px solid #E3E7ED;
+    selection-background-color: #EAF2FF;
+    selection-color: #1F2329;
+}
+QPlainTextEdit#launchPrompt {
+    padding: 8px;
+}
+QPushButton#launchButton {
+    background-color: #2F6FF0;
+    border: none;
+    border-radius: 9px;
+    color: #FFFFFF;
+    font-size: 12px;
+    font-weight: 600;
+}
+QPushButton#launchButton:hover {
+    background-color: #1F5FDF;
+}
+QPushButton#launchButton:disabled {
+    background-color: #C9D6EA;
+    color: #F3F5F8;
+}
+QLabel#launchStatus {
+    font-size: 10px;
+    color: #6B7280;
+}
+QLabel#launchStatus[state="error"] {
+    color: #C24141;
+}
+QFrame#launchRecord {
+    background-color: #FFFFFF;
+    border: 1px solid #E6E8EC;
+    border-radius: 10px;
+}
+QLabel#launchRecordTitle {
+    font-size: 11px;
+    font-weight: 600;
+    color: #1F2329;
+}
+QLabel#launchRecordMeta {
+    font-size: 10px;
+    color: #9AA1AC;
+}
+QPushButton#launchFocus {
+    background-color: #F5F6FA;
+    border: 1px solid #EAECF1;
+    border-radius: 7px;
+    color: #4B5563;
+    font-size: 10px;
+    padding: 0px 10px;
+}
+QPushButton#launchFocus:hover {
+    background-color: #EAF1FF;
+    border-color: #C9DBFF;
+    color: #2F6FF0;
+}
+QPushButton#launchFocus:disabled {
+    color: #B4BAC4;
+}
+QLabel#launchRecordEmpty {
+    font-size: 10px;
+    color: #9AA1AC;
+    padding: 4px 2px;
 }
 QLabel#detailTitle {
     font-size: 15px;

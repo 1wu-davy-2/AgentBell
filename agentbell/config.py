@@ -85,6 +85,12 @@ class AgentSessionsConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class AgentLauncherConfig:
+    recent_projects: tuple[str, ...] = ()
+    last_agent: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class OverlayAreaConfig:
     anchor: OverlayAnchor = "center"
     width: int = 0
@@ -166,6 +172,9 @@ class AppConfig:
     hold_when_locked: bool = True
     agent_sessions: AgentSessionsConfig = field(
         default_factory=AgentSessionsConfig
+    )
+    agent_launcher: AgentLauncherConfig = field(
+        default_factory=AgentLauncherConfig
     )
 
     @property
@@ -276,7 +285,7 @@ def _read_str_list(
     raw = data.get(key, list(default))
     if raw is None:
         return default
-    if not isinstance(raw, list):
+    if not isinstance(raw, (list, tuple)):
         raise ConfigError(f'"{key}" 必须是字符串数组')
     if len(raw) > maximum_items:
         raise ConfigError(f'"{key}" 最多包含 {maximum_items} 项')
@@ -402,6 +411,20 @@ def _read_agent_sessions(data: dict[str, Any]) -> AgentSessionsConfig:
     )
 
 
+def _read_agent_launcher(data: dict[str, Any]) -> AgentLauncherConfig:
+    section = _section(data, "agent_launcher")
+    return AgentLauncherConfig(
+        recent_projects=_read_str_list(
+            section,
+            "recent_projects",
+            (),
+            maximum_items=6,
+            maximum_length=260,
+        ),
+        last_agent=_read_str(section, "last_agent", "", 60),
+    )
+
+
 def _read_history(data: dict[str, Any]) -> HistoryConfig:
     section = _section(data, "history")
     return HistoryConfig(
@@ -476,7 +499,7 @@ def _read_rules(data: dict[str, Any]) -> tuple[RuleConfig, ...]:
     raw = data.get("rules", [])
     if raw is None:
         return ()
-    if not isinstance(raw, list):
+    if not isinstance(raw, (list, tuple)):
         raise ConfigError('"rules" 必须是 JSON 数组')
     if len(raw) > 50:
         raise ConfigError('"rules" 最多包含 50 条规则')
@@ -550,7 +573,7 @@ def _read_channels(data: dict[str, Any]) -> tuple[ChannelConfig, ...]:
     raw = data.get("channels", [])
     if raw is None:
         return ()
-    if not isinstance(raw, list):
+    if not isinstance(raw, (list, tuple)):
         raise ConfigError('"channels" 必须是 JSON 数组')
     if len(raw) > 20:
         raise ConfigError('"channels" 最多包含 20 个渠道')
@@ -666,6 +689,7 @@ def _parse_config(data: dict[str, Any]) -> AppConfig:
         overlay_area=_read_overlay_area(data),
         hold_when_locked=_read_bool(data, "hold_when_locked", True),
         agent_sessions=_read_agent_sessions(data),
+        agent_launcher=_read_agent_launcher(data),
     )
 
 
