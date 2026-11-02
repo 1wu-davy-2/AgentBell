@@ -13,7 +13,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from . import __version__
+from . import __version__, window_focus
 from .config import AppConfig
 from .models import (
     ActionKind,
@@ -247,6 +247,16 @@ def _build_origin_action(
     if pid is None and not title:
         logger.warning("origin 缺少 pid 和 window_title，忽略回到终端动作")
         return None
+    if pid is not None:
+        window = window_focus.snapshot_focus(pid)
+        if window is not None:
+            pid = window.pid
+            title = window.title or title
+            logger.info(
+                "origin 已绑定窗口 pid=%s title=%s",
+                window.pid,
+                _log_text(window.title, 80),
+            )
     value = json.dumps(
         {"pid": pid, "window_title": title, "working_dir": working_dir},
         ensure_ascii=False,
@@ -295,11 +305,48 @@ def _build_actions(
     return tuple(actions)
 
 
+def _detect_sender(
+    request: Request,
+    origin: OriginPayload | None,
+    logger: logging.Logger,
+) -> tuple[OriginPayload | None, str]:
+    """Fill in origin/source when the payload omits them.
+
+    The notification arrives on a loopback socket owned by the sender, so the
+    client port identifies the process even when the agent forgot to send
+    ``origin`` or ``source``.
+    """
+    client = request.client
+    if client is None:
+        return origin, ""
+    server = request.scope.get("server")
+    server_port = server[1] if server else None
+    detected = window_focus.client_pid(client.port, server_port)
+    if origin is not None and origin.pid:
+        detected = origin.pid
+    elif detected is None:
+        return origin, ""
+    elif origin is None:
+        origin = OriginPayload(pid=detected)
+        logger.info("通知未带 origin，已自动识别发送进程 pid=%s", detected)
+    else:
+        origin = OriginPayload(
+            pid=detected,
+            window_title=origin.window_title,
+            working_dir=origin.working_dir,
+        )
+        logger.info("origin 未带 pid，已自动识别发送进程 pid=%s", detected)
+    return origin, window_focus.sender_label(detected)
+
+
 def _build_notification(
     payload: NotifyPayload,
     config: AppConfig,
     logger: logging.Logger,
     now: datetime,
+    *,
+    origin: OriginPayload | None,
+    source: str,
 ) -> Notification:
     link = safe_http_url(payload.link)
     if payload.link and link is None:
@@ -307,7 +354,7 @@ def _build_notification(
 
     priority = payload.priority or default_priority(payload.status)
     actions = _build_actions(payload, config, logger)
-    origin_action = _build_origin_action(payload.origin, logger)
+    origin_action = _build_origin_action(origin, logger)
     if origin_action is not None:
         actions = (origin_action,) + actions[: MAX_ACTIONS - 1]
     notification = Notification(
@@ -321,7 +368,7 @@ def _build_notification(
         received_at=now,
         updated_at=now,
         priority=priority,
-        source=payload.source,
+        source=source,
         dedupe_key=payload.dedupe_key,
         require_ack=payload.require_ack,
         silent=payload.silent,
@@ -391,7 +438,15 @@ def create_app(
             )
 
         now = datetime.now().astimezone()
-        notification = _build_notification(payload, config, logger, now)
+        origin, auto_source = _detect_sender(request, payload.origin, logger)
+        notification = _build_notification(
+            payload,
+            config,
+            logger,
+            now,
+            origin=origin,
+            source=payload.source or auto_source,
+        )
         stored, updated = history.add(notification)
 
         lossy_fields = [

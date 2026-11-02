@@ -7,12 +7,21 @@ import queue
 import pytest
 from fastapi.testclient import TestClient
 
+import agentbell.api as api_module
+from agentbell import window_focus
 from agentbell.api import MAX_BODY_BYTES, create_app
 from agentbell.config import AppConfig
 from agentbell.models import Notification
 from agentbell.store import NotificationStore
 
 TOKEN = "test-secret"
+
+
+@pytest.fixture(autouse=True)
+def _stub_window_snapshot(monkeypatch):
+    monkeypatch.setattr(api_module.window_focus, "snapshot_focus", lambda pid: None)
+    monkeypatch.setattr(api_module.window_focus, "client_pid", lambda *args: None)
+    monkeypatch.setattr(api_module.window_focus, "sender_label", lambda pid: "")
 
 
 def build(maxsize: int = 20, store: NotificationStore | None = None):
@@ -109,6 +118,33 @@ def test_origin_adds_focus_action():
     }
 
 
+def test_origin_snapshots_host_window(monkeypatch):
+    client, inbox = build()
+    monkeypatch.setattr(
+        api_module.window_focus,
+        "snapshot_focus",
+        lambda pid: window_focus.FocusChoice(
+            pid=2468, title="Qoder", executable="qoder.exe", value=""
+        ),
+    )
+    response = client.post(
+        "/notify",
+        json={
+            "title": "清理完成",
+            "status": "succeeded",
+            "origin": {"pid": 13012, "working_dir": "E:\\code_repo\\argus"},
+        },
+        headers=auth_headers(),
+    )
+    assert response.status_code == 202
+    notification = inbox.get_nowait()
+    assert json.loads(notification.actions[0].value) == {
+        "pid": 2468,
+        "window_title": "Qoder",
+        "working_dir": "E:\\code_repo\\argus",
+    }
+
+
 def test_origin_working_dir_only_uses_folder_name(caplog):
     client, inbox = build()
     with caplog.at_level(logging.WARNING):
@@ -143,6 +179,91 @@ def test_empty_origin_is_ignored(caplog):
     notification = inbox.get_nowait()
     assert all(action.kind != "focus" for action in notification.actions)
     assert "origin 缺少 pid 和 window_title" in caplog.text
+
+
+def test_missing_origin_autodetects_sender(monkeypatch, caplog):
+    client, inbox = build()
+    monkeypatch.setattr(
+        api_module.window_focus, "client_pid", lambda port, server_port=None: 13012
+    )
+    monkeypatch.setattr(
+        api_module.window_focus,
+        "snapshot_focus",
+        lambda pid: window_focus.FocusChoice(
+            pid=12304, title="Qoder", executable="qoder.exe", value=""
+        ),
+    )
+    monkeypatch.setattr(api_module.window_focus, "sender_label", lambda pid: "Qoder")
+    with caplog.at_level(logging.INFO):
+        response = client.post(
+            "/notify",
+            json={"title": "自动识别来源", "status": "succeeded"},
+            headers=auth_headers(),
+        )
+    assert response.status_code == 202
+    notification = inbox.get_nowait()
+    assert notification.source == "Qoder"
+    assert notification.actions[0].kind == "focus"
+    assert notification.actions[0].label == "回到终端"
+    assert json.loads(notification.actions[0].value) == {
+        "pid": 12304,
+        "window_title": "Qoder",
+        "working_dir": "",
+    }
+    assert "已自动识别发送进程 pid=13012" in caplog.text
+
+
+def test_autodetect_fills_pid_for_working_dir_only_origin(monkeypatch):
+    client, inbox = build()
+    monkeypatch.setattr(
+        api_module.window_focus, "client_pid", lambda port, server_port=None: 13012
+    )
+    monkeypatch.setattr(
+        api_module.window_focus,
+        "snapshot_focus",
+        lambda pid: window_focus.FocusChoice(
+            pid=12304, title="Qoder", executable="qoder.exe", value=""
+        ),
+    )
+    monkeypatch.setattr(api_module.window_focus, "sender_label", lambda pid: "Qoder")
+    response = client.post(
+        "/notify",
+        json={
+            "title": "只有目录",
+            "origin": {"working_dir": "E:\\work\\demo"},
+        },
+        headers=auth_headers(),
+    )
+    assert response.status_code == 202
+    notification = inbox.get_nowait()
+    assert notification.source == "Qoder"
+    assert json.loads(notification.actions[0].value) == {
+        "pid": 12304,
+        "window_title": "Qoder",
+        "working_dir": "E:\\work\\demo",
+    }
+
+
+def test_explicit_source_and_origin_are_not_overridden(monkeypatch):
+    client, inbox = build()
+    monkeypatch.setattr(
+        api_module.window_focus, "client_pid", lambda port, server_port=None: 13012
+    )
+    monkeypatch.setattr(api_module.window_focus, "sender_label", lambda pid: "Qoder")
+    response = client.post(
+        "/notify",
+        json={
+            "title": "显式来源",
+            "status": "succeeded",
+            "source": "deploy-bot",
+            "origin": {"pid": 4321},
+        },
+        headers=auth_headers(),
+    )
+    assert response.status_code == 202
+    notification = inbox.get_nowait()
+    assert notification.source == "deploy-bot"
+    assert json.loads(notification.actions[0].value)["pid"] == 4321
 
 
 def test_origin_keeps_focus_action_first_and_limits_total_actions():

@@ -11,6 +11,7 @@ def _python_example(base: str, token: str) -> str:
         f"{headers}"
         '    json={"title": "生成竞品分析报告", "status": "succeeded",\n'
         '          "summary": "已完成 12 页报告", "duration": "8m30s",\n'
+        '          "source": "Qoder",\n'
         '          "origin": {"pid": os.getpid(), "working_dir": os.getcwd()}},\n'
         "    timeout=3,\n"
         ")"
@@ -23,6 +24,7 @@ def _powershell_example(base: str, token: str) -> str:
         "$payload = @{\n"
         '  title = "生成竞品分析报告"; status = "succeeded"\n'
         '  summary = "已完成 12 页报告"; duration = "8m30s"\n'
+        '  source = "Qoder"\n'
         '  origin = @{ pid = $PID; working_dir = (Get-Location).Path }\n'
         "} | ConvertTo-Json -Depth 4\n"
         f'Invoke-RestMethod -Uri "{base}" -Method Post `\n'
@@ -79,16 +81,17 @@ def build_agent_instructions(port: int, token: str = "") -> str:
   link      可选，仅支持 http/https 链接
   error     仅失败时填写，简短错误原因
   priority  可选，"low" / "normal" / "high" / "critical"；失败默认 high，critical 会一直保留直到用户确认
-  source    可选，来源标识（Agent 名或任务类型），便于规则匹配和统计
+  source    建议填写，来源标识（Agent 名或任务类型），显示在弹窗与通知中心；留空时自动识别发送进程
   dedupe_key 可选，同一任务的多轮更新使用相同的去重键，AgentBell 会原地更新卡片而不是重复弹出
   require_ack 可选，true 表示需要用户点击“知道了”才算完成，适合等你决策或失败需处理的场景
   progress  可选，0-100，配合 status="running" 和 dedupe_key 展示任务进度
   actions   可选，最多 4 个按钮，每项为 {{"kind":"open|copy|retry|path|center","label":"按钮文字","value":"参数"}}
             open/link 用 http(s) 链接；copy 用要复制的文本；path 用本地绝对路径；retry 只能用本机 http 回调地址
-  origin    可选但强烈建议每轮都填，来源位置（仅 Windows），用于生成「回到终端」按钮：
+  origin    强烈建议每轮都填，来源位置（仅 Windows），用于生成「回到终端」按钮：
             {{"pid": 12345, "window_title": "可选，终端窗口标题", "working_dir": "可选，项目目录"}}
             推荐填当前进程 PID；AgentBell 会沿父进程链找到宿主终端窗口，只聚焦窗口，不会选中具体标签页
             只填 working_dir 时，会用目录名匹配标题里含该名字的终端/编辑器窗口，准确度低于 pid
+            留空时服务端会按 HTTP 连接自动识别发送进程，尽量补出按钮；显式填写仍然更准确
   bypass_quiet_hours 可选，true 表示忽略免打扰时段（谨慎使用）
   silent    可选，true 表示只记录到通知中心，不弹窗
   popup_mode 可选，"corner" 右侧卡片 / "center" 居中确认 / "overlay" 全屏遮挡
@@ -99,7 +102,8 @@ def build_agent_instructions(port: int, token: str = "") -> str:
 示例：
   长任务每轮用同一个 dedupe_key 推送 status="running" + progress，结束后推送 status="succeeded"。
   需要用户确认时设置 require_ack=true；重要但不需要确认时设置 priority="high"。
-  每轮都带上 origin.pid 后，每条通知会出现「回到终端」按钮，点击可把宿主终端窗口切到前台；不带 origin 的通知不会出现这个按钮。
+  每轮都带上 origin.pid 后，每条通知会出现「回到终端」按钮，点击可把宿主终端窗口切到前台；不带 origin 时 AgentBell 会尝试按连接自动识别发送进程。
+  带上 source 后，弹窗和通知中心会显示来源 Agent；未填写时也会尝试自动识别。
   如果不确定终端标题，只填 origin.working_dir 也能生成按钮，但只能按项目目录名匹配窗口。
   不要把普通成功都设成 critical，也不要在每一轮都使用 require_ack。
 

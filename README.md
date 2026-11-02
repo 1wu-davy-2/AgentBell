@@ -36,9 +36,9 @@ AgentBell 是一个只做提醒的 Windows 桌面工具。AI Agent 每轮任务�
 - 四套皮肤、三种弹窗模式，以及可拖拽定位的全屏遮挡。
 - 免打扰、全屏 / 会议抑制、锁屏保留、聚合摘要与未读升级。
 - 待确认、5/15/30 分钟稍后提醒，以及回到终端、打开链接、复制、重试等动作。
-- 通知中心搜索、筛选、成功率 / 耗时统计与 7 天趋势。
+- 通知中心搜索、状态与 Agent 来源筛选、成功率 / 耗时统计与 7 天趋势。
 - 内置 11 种 Agent 的检测与启动，默认使用安装目录下的 `chat/` 工作区。
-- 便携运行环境：一键把 Node LTS 和 7 个官方 Agent CLI（Claude Code、Codex、Gemini CLI、OpenCode、OpenClaw、Hermes、Pi）装进安装目录的 `runtime/`，免管理员权限、不改系统 PATH；cc-switch 等外部工具直接跳转官方下载页；DeepSeek 作为供应商预设直接注入 Claude Code。
+- 便携运行环境：一键把 Node LTS 和 7 个官方 Agent CLI（Claude Code、Codex、Gemini CLI、OpenCode、OpenClaw、Hermes、Pi）装进安装目录的 `runtime/`，免管理员权限、不改系统 PATH；同时自动识别系统 Node 与 npm 全局安装的 CLI；cc-switch 等外部工具直接跳转官方下载页；DeepSeek 作为供应商预设直接注入 Claude Code。
 - 基于 GitHub Releases 的自身更新。
 
 ### 设计初衷
@@ -69,7 +69,7 @@ AgentBell 是一个只做提醒的 Windows 桌面工具。AI Agent 每轮任务�
 
 ![Agent 启动](docs/screenshots/agent-launcher.png)
 
-**运行环境**：Node 与 Agent CLI 一键装进安装目录，cc-switch 等外部工具跳转下载页。
+**运行环境**：Node 与 Agent CLI 一键装进安装目录，也可识别系统 Node 与 npm 全局 CLI；cc-switch 等外部工具跳转下载页。
 
 ![运行环境](docs/screenshots/toolchain.png)
 
@@ -89,9 +89,9 @@ AgentBell 是一个只做提醒的 Windows 桌面工具。AI Agent 每轮任务�
 4. 如果 Windows SmartScreen 提示“未知发布者”，点「更多信息 → 仍要运行」。程序没有代码签名，这是正常提示。
 5. 关闭窗口只是隐藏到托盘；要彻底退出，用托盘菜单或左侧栏的「退出 AgentBell」。
 
-Release 同时提供版本化文件名 `AgentBell-12.exe` 和 `SHA256SUMS.txt`。自动更新只使用稳定命名的 `AgentBell.exe`，请勿随意改名。
+Release 同时提供版本化文件名 `AgentBell-19.exe` 和 `SHA256SUMS.txt`。自动更新只使用稳定命名的 `AgentBell.exe`，请勿随意改名。
 
-**开启自动更新**：打开「偏好设置 → 常规 → 程序更新」，填写 `1wu-davy-2/AgentBell`，勾选「启动时自动检查」。打包版会在下载完成、程序退出后自动备份、替换并重启；源码模式只下载安装包，不会替换正在运行的 Python 程序。
+**开启自动更新**：安装包默认已填写 `1wu-davy-2/AgentBell` 并勾选「启动时自动检查」，启动约 9 秒后检查 Releases，也可从托盘或 Agent 启动页手动检查。打包版会在下载完成、程序退出后自动备份、替换并重启；源码模式只下载安装包，不会替换正在运行的 Python 程序。要改用其他仓库，可在「偏好设置 → 常规 → 程序更新」修改。
 
 #### 方式二：从源码运行
 
@@ -152,7 +152,7 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8765/notify" -Method Post `
 2. 把剪贴板内容粘贴给 Agent（Claude Code、Codex、Qoder 等），发一次即可。
 3. 指令包含当前端口、`X-Token`、字段说明和编码要求，并要求它**每轮任务结束都推送一次**，无论成功、失败还是取消。
 
-如果希望通知卡片带「回到终端」按钮，让 Agent 在请求里带上 `origin.pid`；`window_title` 和 `working_dir` 可作为兜底。
+如果希望通知卡片带「回到终端」按钮，让 Agent 在请求里带上 `origin.pid`；`window_title` 和 `working_dir` 可作为兜底。即使忘了填，AgentBell 也会尝试按本机连接自动识别发送进程；`source` 留空时同样会自动补出来源 Agent。
 
 #### 4. 一键装好 Agent 运行环境
 
@@ -161,6 +161,8 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8765/notify" -Method Post `
 - **Node**：官方 LTS 便携包，解压到 `runtime/node`，用官方 `SHASUMS256.txt` 校验 SHA-256。
 - **Agent CLI**：Claude Code、Codex、Gemini CLI、OpenCode、OpenClaw、Hermes、Pi 七个官方 npm 包，装到 `runtime/agents`，不写系统全局目录。
 - **cc-switch 等外部工具**：不在 AgentBell 内代装，点该行的「打开下载页」跳到 GitHub Releases 自行下载解压。
+
+页面也会自动识别系统安装：PATH 中的 Node 及其 npm 全局 CLI 会标记为「系统 v…」，不会显示卸载；需要统一管理时，可点「安装便携版」在 `runtime/` 再装一份。
 
 全程不需要管理员权限，也不修改系统 `PATH`；AgentBell 只在检测和启动 Agent 时临时把这些目录加进子进程环境。装完到「Agent 启动」页点「重新检测」，新装的 CLI 会出现在已安装列表里。DeepSeek 没有官方 CLI，可在页面底部保存 API Key，用「用 DeepSeek 启动 Claude Code」以该供应商打开终端。
 
@@ -181,11 +183,14 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8765/notify" -Method Post `
 {
   "title": "生成竞品分析报告",
   "status": "succeeded",
+  "source": "Qoder",
   "origin": { "pid": 12345, "window_title": "Qoder", "working_dir": "E:\\proj\\report" }
 }
 ```
 
 通知卡片会出现「回到终端」按钮，点击后把宿主终端或编辑器窗口切到前台。它只做窗口级聚焦，不会选中具体标签页，也不执行命令；找不到窗口时会提示并把项目路径复制到剪贴板。
+
+`source` 会显示在弹窗和通知中心。请求没带 `origin` 或 `source` 时，AgentBell 会用发起请求的本机端口找到发送进程，尽力补出「回到终端」和来源 Agent；显式填写仍然最准确。
 
 #### 7. 外观与打扰控制
 
@@ -195,14 +200,14 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8765/notify" -Method Post `
 
 ```powershell
 pip install -r requirements-dev.txt
-python -m PyInstaller --noconfirm --clean AgentBell12.spec
-# 产物：dist\AgentBell-12.exe
+python -m PyInstaller --noconfirm --clean AgentBell19.spec
+# 产物：dist\AgentBell-19.exe
 ```
 
-推送到 `develop` 会触发测试与打包；推送 `v*` 标签会校验标签与 `agentbell/__init__.py` 的 `__version__` 一致，然后自动发布 Release。
+推送到 `develop` 会触发测试与打包；推送 `v*` 标签会校验标签与 `agentbell/__init__.py` 的 `__version__` 一致，然后自动发布 Release。工作流会自动选用编号最大的 `AgentBell*.spec`，并把产物复制为稳定命名的 `AgentBell.exe`。
 
 ```bash
-git tag v2.9.1
+git tag v2.9.8
 git push origin develop --tags
 ```
 

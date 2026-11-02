@@ -193,7 +193,11 @@ def test_install_tool_uses_local_prefix_and_records_version(tmp_path: Path):
         service.agents_dir / "node_modules" / "@openai" / "codex" / "package.json"
     )
     assert package_json.exists()
-    assert service.state().tools[1].version == "9.9.9"
+    state = service.state()
+    assert state.tools[1].version == "9.9.9"
+    assert state.node.source == "portable"
+    assert state.node.managed is True
+    assert state.tools[1].source == "portable"
     assert service.manifest()["tools"]["codex"]["registry"] == tc.NPM_REGISTRY_MIRROR
 
 
@@ -237,12 +241,91 @@ def test_state_lists_node_and_seven_npm_tools(tmp_path: Path):
         tmp_path / "runtime",
         opener=FakeOpener({}),
         registry=tc.NPM_REGISTRY_OFFICIAL,
+        which=lambda _name: None,
+        exists=lambda _path: False,
     )
     state = service.state()
     assert state.node.installed is False
+    assert state.node.source == ""
     assert [tool.id for tool in state.tools] == [spec.id for spec in tc.NPM_TOOLS]
     assert len(state.tools) == 7
     assert not hasattr(state, "cc_switch")
+
+
+def _system_tool(root: Path, package: str, version: str) -> None:
+    target = root / "node_modules" / Path(*package.split("/"))
+    target.mkdir(parents=True, exist_ok=True)
+    (target / "package.json").write_text(
+        json.dumps({"name": package, "version": version}), encoding="utf-8"
+    )
+
+
+def test_state_detects_system_node_and_global_npm_tools(tmp_path: Path):
+    system_root = tmp_path / "system"
+    system_root.mkdir()
+    (system_root / "node.exe").write_bytes(b"MZ")
+    (system_root / "claude.cmd").write_text("@echo off", encoding="utf-8")
+    _system_tool(system_root, "@anthropic-ai/claude-code", "2.1.220")
+    found = {
+        "node": str(system_root / "node.exe"),
+        "npm": str(system_root / "npm.cmd"),
+        "claude": str(system_root / "claude.cmd"),
+    }
+
+    def run(command, **kwargs):  # noqa: ANN001
+        return subprocess.CompletedProcess(
+            command, 0, stdout="v22.17.0\n", stderr=""
+        )
+
+    service = tc.ToolchainService(
+        tmp_path / "runtime",
+        opener=FakeOpener({}),
+        registry=tc.NPM_REGISTRY_OFFICIAL,
+        runner=run,
+        which=found.get,
+        exists=lambda path: str(path).startswith(str(tmp_path)) and os.path.exists(path),
+    )
+
+    state = service.state()
+
+    assert state.node.installed is True
+    assert state.node.version == "v22.17.0"
+    assert state.node.path == str(system_root / "node.exe")
+    assert state.node.source == "system"
+    assert state.node.managed is False
+
+    claude = state.component("claude-code")
+    assert claude is not None
+    assert claude.installed is True
+    assert claude.version == "2.1.220"
+    assert claude.path == str(system_root / "claude.cmd")
+    assert claude.source == "system"
+    assert claude.managed is False
+
+    codex = state.component("codex")
+    assert codex is not None
+    assert codex.installed is False
+
+
+def test_state_marks_system_tool_without_version_as_installed(tmp_path: Path):
+    system_root = tmp_path / "system"
+    system_root.mkdir()
+    (system_root / "pi.cmd").write_text("@echo off", encoding="utf-8")
+
+    service = tc.ToolchainService(
+        tmp_path / "runtime",
+        opener=FakeOpener({}),
+        registry=tc.NPM_REGISTRY_OFFICIAL,
+        which={"pi": str(system_root / "pi.cmd")}.get,
+        exists=lambda path: str(path).startswith(str(tmp_path)) and os.path.exists(path),
+    )
+
+    pi = service.state().component("pi")
+    assert pi is not None
+    assert pi.installed is True
+    assert pi.version == ""
+    assert pi.path == str(system_root / "pi.cmd")
+    assert pi.source == "system"
 
 
 def test_download_allowlist_rejects_github_hosts():

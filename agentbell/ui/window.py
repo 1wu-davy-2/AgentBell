@@ -44,6 +44,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLayout,
     QLineEdit,
     QMainWindow,
     QMenu,
@@ -122,6 +123,17 @@ def _repolish(widget: QWidget) -> None:
     style.unpolish(widget)
     style.polish(widget)
     widget.update()
+
+
+def _discard_layout_widgets(layout: QLayout) -> None:
+    # Keep the parent: reparenting to None turns every card into a top-level
+    # native window, which froze the UI for seconds while rebuilding lists.
+    while layout.count():
+        entry = layout.takeAt(0)
+        widget = entry.widget()
+        if widget is not None:
+            widget.hide()
+            widget.deleteLater()
 
 
 def _clip(text: str, limit: int) -> str:
@@ -531,6 +543,14 @@ class NotificationCard(QFrame):
         title.setObjectName("cardTitle")
         title_row.addWidget(title, 1)
 
+        if notification.source:
+            source = QLabel(f"来源 {_clip(notification.source, 18)}", self)
+            source.setObjectName("sourceChip")
+            source.setToolTip(f"来源：{notification.source}")
+            source.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            source.setFixedHeight(20)
+            title_row.addWidget(source, 0, Qt.AlignmentFlag.AlignVCenter)
+
         priority_label = _PRIORITY_CHIP_LABELS.get(notification.priority)
         if priority_label:
             priority = QLabel(priority_label, self)
@@ -606,14 +626,6 @@ class NotificationCard(QFrame):
             duration.setAlignment(Qt.AlignmentFlag.AlignCenter)
             duration.setFixedHeight(20)
             meta_row.addWidget(duration, 0, Qt.AlignmentFlag.AlignVCenter)
-
-        if notification.source:
-            source = QLabel(f"来源 {_clip(notification.source, 18)}", self)
-            source.setObjectName("sourceChip")
-            source.setToolTip(notification.source)
-            source.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            source.setFixedHeight(20)
-            meta_row.addWidget(source, 0, Qt.AlignmentFlag.AlignVCenter)
 
         if notification.occurrence_count > 1:
             repeats = QLabel(f"更新 ×{notification.occurrence_count}", self)
@@ -1411,12 +1423,15 @@ class NotificationWindow(QMainWindow):
         self._config_path = Path(config_path) if config_path else None
         self._items: list[Notification] = []
         self._signature: tuple | None = None
+        self._cards_dirty = True
         self._filter = "all"
+        self._source_filter = ""
         self._query = ""
         self._search_items: list[Notification] = []
         self._page = "list"
         self._stats: dict = {}
         self._sessions: list[AgentSession] = []
+        self._sessions_signature: tuple | None = None
         self._session_scanned_at: datetime | None = None
         self._session_detail_session: AgentSession | None = None
         self._session_transcript: SessionTranscript | None = None
@@ -1733,31 +1748,6 @@ class NotificationWindow(QMainWindow):
         layout = QHBoxLayout(topbar)
         layout.setContentsMargins(22, 0, 12, 0)
         layout.setSpacing(10)
-
-        mark = QLabel(topbar)
-        mark.setPixmap(make_app_icon().pixmap(26, 26))
-        mark.setFixedSize(26, 26)
-        layout.addWidget(mark)
-
-        title = QLabel("通知中心", topbar)
-        title.setObjectName("topBarTitle")
-        layout.addWidget(title)
-
-        pill = QFrame(topbar)
-        pill.setObjectName("statusPill")
-        pill.setFixedHeight(24)
-        pill_layout = QHBoxLayout(pill)
-        pill_layout.setContentsMargins(9, 0, 10, 0)
-        pill_layout.setSpacing(5)
-        dot = QLabel("●", pill)
-        dot.setObjectName("onlineDot")
-        pill_layout.addWidget(dot)
-        self._status_address = QLabel(
-            f"127.0.0.1:{self.config.port} · 运行中", pill
-        )
-        self._status_address.setObjectName("statusPillText")
-        pill_layout.addWidget(self._status_address)
-        layout.addWidget(pill)
         layout.addStretch(1)
 
         self.copy_button = QPushButton("复制 Agent 接入指令", topbar)
@@ -1874,6 +1864,19 @@ class NotificationWindow(QMainWindow):
             self._segment_buttons[key] = button
             segment_layout.addWidget(button)
         toolbar_row.addWidget(self._segment_bar)
+
+        self._source_combo = QComboBox(toolbar)
+        self._source_combo.setObjectName("sourceFilter")
+        self._source_combo.setAccessibleName("按 Agent 来源筛选")
+        self._source_combo.setToolTip("按 Agent 来源筛选通知")
+        self._source_combo.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._source_combo.setFixedWidth(164)
+        self._source_combo.setFixedHeight(32)
+        self._source_combo.addItem("全部 Agent", "")
+        self._source_combo.currentIndexChanged.connect(
+            self._on_source_filter_changed
+        )
+        toolbar_row.addWidget(self._source_combo, 0, Qt.AlignmentFlag.AlignVCenter)
         toolbar_row.addStretch(1)
 
         search_host = QFrame(toolbar)
@@ -2299,12 +2302,7 @@ class NotificationWindow(QMainWindow):
         if not hasattr(self, "_agent_grid"):
             return
         preferred = choose or self._selected_agent_id
-        while self._agent_grid.count():
-            entry = self._agent_grid.takeAt(0)
-            widget = entry.widget()
-            if widget is not None:
-                widget.setParent(None)
-                widget.deleteLater()
+        _discard_layout_widgets(self._agent_grid)
         self._agent_cards = []
         self._agent_availabilities = discover_agents()
         for index, availability in enumerate(self._agent_availabilities):
@@ -2484,12 +2482,7 @@ class NotificationWindow(QMainWindow):
     def _refresh_launch_records(self) -> None:
         if not hasattr(self, "_launch_records_layout"):
             return
-        while self._launch_records_layout.count():
-            entry = self._launch_records_layout.takeAt(0)
-            widget = entry.widget()
-            if widget is not None:
-                widget.setParent(None)
-                widget.deleteLater()
+        _discard_layout_widgets(self._launch_records_layout)
         if not self._launch_records:
             empty = QLabel("还没有从 AgentBell 打开过终端。", self._launch_records_host)
             empty.setObjectName("launchRecordEmpty")
@@ -2787,6 +2780,7 @@ class NotificationWindow(QMainWindow):
                 item.occurrence_count,
                 item.progress,
                 item.updated_at,
+                item.source,
             )
             for item in self._items
         )
@@ -2797,26 +2791,31 @@ class NotificationWindow(QMainWindow):
         self._signature = signature
         if self._query:
             self._search_items = self._store.search(self._query, MAX_SEARCH_RESULTS)
+        self._refresh_source_options()
         self._update_counts()
-        self._rebuild_cards()
+        if self._page == "list":
+            self._rebuild_cards()
+        else:
+            self._cards_dirty = True
         if self._page == "stats":
             self.refresh_stats()
 
     def set_filter(self, key: str) -> None:
         if key not in FILTERS_LABELS:
             return
+        changed = key != self._filter
+        if changed:
+            self._filter = key
+            self._cards_dirty = True
+        self._update_filter_controls()
         if self._page != "list":
             self.set_page("list")
-        changed = key != self._filter
-        self._filter = key
-        self._update_filter_controls()
-        if changed:
+        elif changed:
             self._rebuild_cards()
 
     def set_page(self, page: str) -> None:
         if page not in {"list", "stats", "sessions", "launcher", "toolchain"}:
             return
-        changed = page != self._page
         self._page = page
         self._stack.setCurrentIndex(
             {"list": 0, "stats": 1, "sessions": 2, "launcher": 3, "toolchain": 4}[page]
@@ -2845,7 +2844,7 @@ class NotificationWindow(QMainWindow):
             self._refresh_launch_records()
         elif page == "toolchain":
             self._toolchain_page.refresh()
-        elif changed:
+        elif page == "list" and self._cards_dirty:
             self._rebuild_cards()
 
     def _on_stats_clicked(self, checked: bool) -> None:
@@ -2871,8 +2870,57 @@ class NotificationWindow(QMainWindow):
             return list(self._search_items)
         return list(self._items)
 
+    def _matches_source(self, item: Notification) -> bool:
+        return not self._source_filter or item.source.strip() == self._source_filter
+
+    def _refresh_source_options(self) -> None:
+        counts: dict[str, int] = {}
+        for item in self._items:
+            source = item.source.strip()
+            if source:
+                counts[source] = counts.get(source, 0) + 1
+        total = sum(counts.values())
+        current = self._source_filter
+        self._source_combo.blockSignals(True)
+        try:
+            self._source_combo.clear()
+            self._source_combo.addItem(
+                f"全部 Agent {total}" if total else "全部 Agent", ""
+            )
+            self._source_combo.setItemData(
+                0, "显示全部来源", Qt.ItemDataRole.ToolTipRole
+            )
+            selected = 0
+            ordered = sorted(counts.items(), key=lambda pair: (-pair[1], pair[0].lower()))
+            for index, (source, count) in enumerate(ordered, start=1):
+                self._source_combo.addItem(f"{_clip(source, 16)} {count}", source)
+                self._source_combo.setItemData(
+                    index, source, Qt.ItemDataRole.ToolTipRole
+                )
+                if source == current:
+                    selected = index
+            if selected == 0:
+                self._source_filter = ""
+            self._source_combo.setCurrentIndex(selected)
+        finally:
+            self._source_combo.blockSignals(False)
+
+    def _on_source_filter_changed(self, index: int) -> None:
+        source = str(self._source_combo.itemData(index) or "")
+        if source == self._source_filter:
+            return
+        self._source_filter = source
+        self._cards_dirty = True
+        self._update_counts()
+        if self._page != "list":
+            self.set_page("list")
+        else:
+            self._rebuild_cards()
+
     def _update_counts(self) -> None:
-        items = self._source_items()
+        items = [
+            item for item in self._source_items() if self._matches_source(item)
+        ]
         counts = {
             "all": len(items),
             "succeeded": 0,
@@ -2890,22 +2938,21 @@ class NotificationWindow(QMainWindow):
                 self._nav_buttons[key].setToolTip(f"共 {counts[key]} 条通知")
         if self._query:
             self._total_label.setText(f"搜索到 {len(items)} 条")
+        elif self._source_filter:
+            self._total_label.setText(f"筛选到 {len(items)} 条")
         else:
             self._total_label.setText(f"共 {len(items)} 条")
 
     def _filtered_items(self) -> list[Notification]:
-        items = self._source_items()
+        items = [
+            item for item in self._source_items() if self._matches_source(item)
+        ]
         if self._filter == "all":
             return items
         return [item for item in items if item.status == self._filter]
 
     def _clear_cards(self) -> None:
-        while self._list_layout.count():
-            entry = self._list_layout.takeAt(0)
-            widget = entry.widget()
-            if widget is not None:
-                widget.setParent(None)
-                widget.deleteLater()
+        _discard_layout_widgets(self._list_layout)
         self._cards = []
 
     def _rebuild_cards(self) -> None:
@@ -2952,6 +2999,7 @@ class NotificationWindow(QMainWindow):
             0,
             lambda: scrollbar.setValue(min(previous, scrollbar.maximum())),
         )
+        self._cards_dirty = False
 
     def _on_search_changed(self, _text: str) -> None:
         if not self._search_input.text().strip():
@@ -2967,10 +3015,12 @@ class NotificationWindow(QMainWindow):
             self._search_items = self._store.search(query, MAX_SEARCH_RESULTS)
         else:
             self._search_items = []
-        if self._page != "list":
-            self.set_page("list")
         self._update_counts()
-        self._rebuild_cards()
+        if self._page != "list":
+            self._cards_dirty = True
+            self.set_page("list")
+        else:
+            self._rebuild_cards()
 
     def _reset_filters(self) -> None:
         self._search_timer.stop()
@@ -2980,10 +3030,16 @@ class NotificationWindow(QMainWindow):
         self._query = ""
         self._search_items = []
         self._filter = "all"
+        self._source_filter = ""
+        self._source_combo.blockSignals(True)
+        self._source_combo.setCurrentIndex(0)
+        self._source_combo.blockSignals(False)
+        self._cards_dirty = True
+        self._update_counts()
         if self._page != "list":
             self.set_page("list")
-        self._update_counts()
-        self._rebuild_cards()
+        else:
+            self._rebuild_cards()
         self._update_filter_controls()
 
     def refresh_stats(self) -> None:
@@ -3020,6 +3076,24 @@ class NotificationWindow(QMainWindow):
         self._sessions = list(sessions)
         self._session_scanned_at = datetime.now().astimezone()
         self._update_session_summary()
+        signature = tuple(
+            (
+                session.agent,
+                session.session_id,
+                session.project,
+                session.project_path,
+                session.path,
+                session.updated_at,
+                session.created_at,
+                session.message_count,
+                session.size_bytes,
+                session.title,
+            )
+            for session in self._sessions
+        )
+        if signature == self._sessions_signature:
+            return
+        self._sessions_signature = signature
         if self._page == "sessions":
             self._rebuild_session_cards()
 
@@ -3062,12 +3136,7 @@ class NotificationWindow(QMainWindow):
         ]
 
     def _clear_session_cards(self) -> None:
-        while self._session_layout.count():
-            entry = self._session_layout.takeAt(0)
-            widget = entry.widget()
-            if widget is not None:
-                widget.setParent(None)
-                widget.deleteLater()
+        _discard_layout_widgets(self._session_layout)
 
     def _rebuild_session_cards(self) -> None:
         if not hasattr(self, "_session_layout"):
@@ -3206,12 +3275,7 @@ class NotificationWindow(QMainWindow):
         self._transcript_hint_timer.stop()
 
     def _clear_transcript_views(self) -> None:
-        while self._transcript_layout.count():
-            entry = self._transcript_layout.takeAt(0)
-            widget = entry.widget()
-            if widget is not None:
-                widget.setParent(None)
-                widget.deleteLater()
+        _discard_layout_widgets(self._transcript_layout)
         self._turn_views = []
 
     def _render_transcript(self, transcript: SessionTranscript) -> None:
@@ -3391,7 +3455,6 @@ class NotificationWindow(QMainWindow):
     def apply_config(self, config: AppConfig) -> None:
         self.config = config
         self._endpoint_label.setText(f"127.0.0.1:{config.port}")
-        self._status_address.setText(f"127.0.0.1:{config.port} · 运行中")
         self._auth_label.setText(
             "X-Token 已开启" if config.auth_enabled else "X-Token 未开启"
         )
@@ -3403,7 +3466,9 @@ class NotificationWindow(QMainWindow):
             f"快捷键 {config.hotkey}" if config.hotkey else "未设置全局快捷键"
         )
         self._signature = None
-        self._rebuild_cards()
+        self._cards_dirty = True
+        if self._page == "list":
+            self._rebuild_cards()
         self._update_session_summary()
         self._refresh_recent_projects()
         self._sync_launcher_start()
@@ -3698,24 +3763,6 @@ QFrame#topBar {
 QFrame#windowRoot[maximized="true"] QFrame#topBar {
     border-radius: 0px;
 }
-QLabel#topBarTitle {
-    font-size: 16px;
-    font-weight: 650;
-    color: #161A20;
-}
-QFrame#statusPill {
-    background-color: #F4F6F8;
-    border: 1px solid #EDF0F3;
-    border-radius: 9px;
-}
-QLabel#onlineDot {
-    color: #23B26D;
-    font-size: 8px;
-}
-QLabel#statusPillText {
-    font-size: 10px;
-    color: #6B7280;
-}
 QPushButton#copyButton {
     background-color: #2F6FF0;
     border: none;
@@ -3810,6 +3857,30 @@ QLineEdit#searchInput {
 }
 QLineEdit#searchInput:focus {
     color: #161A20;
+}
+QComboBox#sourceFilter {
+    background-color: #F5F6FA;
+    border: 1px solid #E8EBF0;
+    border-radius: 9px;
+    color: #323A45;
+    font-size: 11px;
+    padding: 0px 9px;
+}
+QComboBox#sourceFilter:hover {
+    border-color: #D5DAE3;
+}
+QComboBox#sourceFilter::drop-down {
+    border: none;
+    width: 20px;
+}
+QComboBox#sourceFilter QAbstractItemView {
+    background-color: #FFFFFF;
+    border: 1px solid #E3E7ED;
+    border-radius: 7px;
+    color: #323A45;
+    selection-background-color: #EAF2FF;
+    selection-color: #1F2329;
+    padding: 4px;
 }
 QScrollArea#listArea, QWidget#listViewport {
     background: transparent;

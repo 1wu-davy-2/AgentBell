@@ -38,6 +38,11 @@ from ..toolchain import (
 
 CC_SWITCH_URL = "https://github.com/farion1231/cc-switch/releases/latest"
 
+
+def _version_text(version: str) -> str:
+    text = version.strip()
+    return text if text[:1].lower() == "v" else f"v{text}"
+
 STYLE = """
 QFrame#toolRow {
     background-color: #FFFFFF;
@@ -234,22 +239,37 @@ class _ToolRow(QFrame):
 
     def set_state(self, state: ComponentState | None, busy: bool) -> None:
         installed = bool(state and state.installed)
+        managed = bool(state and state.managed)
         self._installed = installed
         self._openable = bool(state and state.path and state.kind in {"app", "runtime"})
-        if state is None:
+        if state is None or not installed:
             self._chip.setText("未安装")
-        elif installed:
-            self._chip.setText(f"v{state.version}" if state.version else "已安装")
+        elif state.source == "system":
+            self._chip.setText(
+                f"系统 {_version_text(state.version)}"
+                if state.version
+                else "系统已安装"
+            )
         else:
-            self._chip.setText("未安装")
+            self._chip.setText(
+                _version_text(state.version) if state.version else "已安装"
+            )
+        self._chip.setToolTip(
+            "已在系统中检测到，AgentBell 不管理该系统安装"
+            if state is not None and state.source == "system"
+            else ""
+        )
         self._chip.setProperty("installed", "true" if installed else "false")
         self._chip.style().unpolish(self._chip)
         self._chip.style().polish(self._chip)
         self._meta.setText(state.path if state and state.path else "")
         self._meta.setToolTip(state.path if state else "")
-        self._install_button.setText("重新安装" if installed else "安装")
+        if installed and not managed:
+            self._install_button.setText("安装便携版")
+        else:
+            self._install_button.setText("重新安装" if installed else "安装")
         self._install_button.setEnabled(not busy)
-        self._remove_button.setVisible(installed)
+        self._remove_button.setVisible(installed and managed)
         self._remove_button.setEnabled(not busy)
         self._open_button.setVisible(self._openable)
         self._open_button.setEnabled(not busy)
@@ -387,7 +407,7 @@ class ToolchainPage(QWidget):
 
         subtitle = QLabel(
             "把 Node 和 7 个 Agent CLI 装进安装目录的 runtime/，免管理员权限，"
-            "不修改系统 PATH；装好后可在「Agent 启动」里直接使用。",
+            "不修改系统 PATH；系统里已有的 Node / npm 全局 CLI 也会自动识别。",
             self,
         )
         subtitle.setObjectName("pageSubtitle")
@@ -580,10 +600,11 @@ class ToolchainPage(QWidget):
             if row is not None:
                 row.set_state(tool, self._busy)
         if not self._busy:
-            installed = sum(
-                1 for item in (state.node, *state.tools) if item.installed
-            )
-            self._set_status(f"已安装 {installed}/8 个组件 · {state.root}")
+            components = (state.node, *state.tools)
+            detected = sum(1 for item in components if item.installed)
+            system = sum(1 for item in components if item.source == "system")
+            suffix = f"（系统安装 {system}）" if system else ""
+            self._set_status(f"已检测 {detected}/8 个组件{suffix} · {state.root}")
 
     def _sync_provider_hint(self) -> None:
         key = reveal_secret(self._config.deepseek_key)

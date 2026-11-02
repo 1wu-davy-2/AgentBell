@@ -117,6 +117,47 @@ def test_filter_syncs_sidebar_and_segments(window_factory):
     assert [card.notification.title for card in window._cards] == ["任务 1"]
 
 
+def test_source_filter_narrows_cards_and_syncs_counts(window_factory):
+    store = NotificationStore()
+    store.add(make_notification(1, source="Qoder"))
+    store.add(make_notification(2, source="Qoder", status="failed"))
+    store.add(make_notification(3, source="Claude Code"))
+    window = window_factory(store)
+    window.refresh_items(store.snapshot())
+
+    assert window._source_combo.itemText(0) == "全部 Agent 3"
+    qoder_index = window._source_combo.findData("Qoder")
+    assert qoder_index > 0
+
+    window._source_combo.setCurrentIndex(qoder_index)
+
+    assert [card.notification.title for card in window._cards] == ["任务 2", "任务 1"]
+    assert window._total_label.text() == "筛选到 2 条"
+    assert window._segment_buttons["all"].text() == "全部 2"
+    assert window._segment_buttons["succeeded"].text() == "成功 1"
+    assert window._segment_buttons["failed"].text() == "失败 1"
+
+    window.set_filter("failed")
+    assert [card.notification.title for card in window._cards] == ["任务 2"]
+
+    window._reset_filters()
+    assert window._source_filter == ""
+    assert window._source_combo.currentData() == ""
+    assert window._total_label.text() == "共 3 条"
+    assert len(window._cards) == 3
+
+
+def test_source_filter_ignores_empty_sources(window_factory):
+    store = NotificationStore()
+    store.add(make_notification(1))
+    store.add(make_notification(2, source="Qoder"))
+    window = window_factory(store)
+    window.refresh_items(store.snapshot())
+
+    assert window._source_combo.count() == 2
+    assert window._source_combo.itemData(1) == "Qoder"
+
+
 def test_copy_button_puts_agent_instructions_on_clipboard(window_factory):
     window = window_factory()
     QTest.qWait(20)
@@ -161,6 +202,63 @@ def test_filtered_empty_state_can_return_to_all(window_factory):
     empty.action.click()
     assert window._filter == "all"
     assert len(window._cards) == 1
+
+
+def test_switching_filter_from_other_page_rebuilds_list_once(
+    window_factory, monkeypatch
+):
+    store = NotificationStore()
+    store.add(make_notification(1))
+    store.add(make_notification(2, status="failed"))
+    window = window_factory(store)
+    window.refresh_items(store.snapshot())
+    window.set_page("sessions")
+
+    calls: list[int] = []
+    original = window._rebuild_cards
+    monkeypatch.setattr(
+        window, "_rebuild_cards", lambda: (calls.append(1), original())[1]
+    )
+
+    window.set_filter("failed")
+
+    assert window._page == "list"
+    assert calls == [1]
+    assert [card.notification.status for card in window._cards] == ["failed"]
+
+
+def test_hidden_list_defers_rebuild_until_shown(window_factory, monkeypatch):
+    store = NotificationStore()
+    store.add(make_notification(1))
+    window = window_factory(store)
+    window.refresh_items(store.snapshot())
+    window.set_page("sessions")
+
+    calls: list[int] = []
+    original = window._rebuild_cards
+    monkeypatch.setattr(
+        window, "_rebuild_cards", lambda: (calls.append(1), original())[1]
+    )
+
+    store.add(make_notification(2, status="failed"))
+    window.refresh_items(store.snapshot())
+    assert calls == []
+
+    window.set_page("list")
+    assert calls == [1]
+
+
+def test_clear_cards_keeps_children_parented(window_factory):
+    store = NotificationStore()
+    store.add(make_notification(1))
+    window = window_factory(store)
+    window.refresh_items(store.snapshot())
+    card = window._cards[0]
+
+    window._clear_cards()
+
+    assert card.parent() is window._list_host
+    assert card.isHidden()
 
 
 def test_replay_button_emits_notification(window_factory):
@@ -461,6 +559,25 @@ def test_sessions_page_groups_filters_and_requests_refresh(window_factory):
     assert "E:\\opt" in QGuiApplication.clipboard().text()
 
 
+def test_unchanged_session_scan_skips_card_rebuild(window_factory, monkeypatch):
+    window = window_factory()
+    sessions = [make_session(0)]
+    window.update_sessions(sessions)
+    window.set_page("sessions")
+
+    calls: list[int] = []
+    original = window._rebuild_session_cards
+    monkeypatch.setattr(
+        window, "_rebuild_session_cards", lambda: (calls.append(1), original())[1]
+    )
+
+    window.update_sessions(list(sessions))
+    assert calls == []
+
+    window.update_sessions([make_session(1)])
+    assert calls == [1]
+
+
 def test_sessions_page_empty_states(window_factory):
     window = window_factory()
     window.set_page("sessions")
@@ -493,7 +610,6 @@ def test_apply_config_updates_service_labels(window_factory):
 
     assert window._endpoint_label.text() == "127.0.0.1:18765"
     assert window._auth_label.text() == "X-Token 未开启"
-    assert window._status_address.text() == "127.0.0.1:18765 · 运行中"
     assert window._hotkey_label.text() == "快捷键 Ctrl+Alt+A"
 
 

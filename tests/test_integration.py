@@ -23,6 +23,9 @@ def test_instructions_include_endpoint_auth_and_per_round_rule():
     assert '"origin"' in text
     assert "os.getpid()" in text
     assert "origin = @{ pid = $PID" in text
+    assert '"source": "Qoder"' in text
+    assert 'source = "Qoder"' in text
+    assert "自动识别发送进程" in text
     assert "回到终端" in text
     assert "不会选中具体标签页" in text
     assert "summary" in text

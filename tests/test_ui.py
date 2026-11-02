@@ -9,10 +9,10 @@ import pytest
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QColor, QPixmap
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QLabel
+from PySide6.QtWidgets import QApplication, QLabel, QPushButton
 
 from agentbell.config import OverlayAreaConfig
-from agentbell.models import Notification
+from agentbell.models import Notification, NotificationAction
 from agentbell.ui.toast import MAX_VISIBLE, ToastManager, ToastWindow
 
 pytest.importorskip("PySide6")
@@ -58,6 +58,24 @@ def test_toast_content_buttons_and_no_focus_flags(qapp):
         assert toast.windowFlags() & Qt.WindowType.Tool
         assert toast.testAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         assert toast.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+    finally:
+        toast.close_now()
+        toast.deleteLater()
+        QTest.qWait(20)
+
+
+def test_toast_renders_source_and_focus_action(qapp):
+    notification = make_notification(
+        2,
+        source="Qoder",
+        actions=(NotificationAction(kind="focus", label="回到终端", value="{}"),),
+    )
+    toast = ToastWindow(notification, 0, logging.getLogger("agentbell.tests"))
+    try:
+        assert "Qoder" in toast._meta_text()
+        labels = [button.text() for button in toast.findChildren(QPushButton, "action")]
+        assert labels == ["回到终端"]
+        assert not toast._actions_row.isHidden()
     finally:
         toast.close_now()
         toast.deleteLater()
@@ -409,3 +427,38 @@ def test_failed_and_canceled_headlines(qapp):
         failed.deleteLater()
         canceled.deleteLater()
         QTest.qWait(20)
+
+
+def test_toolchain_row_marks_system_installation(qapp):
+    from agentbell.toolchain import ComponentState
+    from agentbell.ui.toolchain_page import _ToolRow
+
+    row = _ToolRow("node", "Node 运行环境", "便携 Node.js LTS")
+    system = ComponentState(
+        id="node",
+        name="Node 运行环境",
+        kind="runtime",
+        summary="便携 Node.js LTS",
+        version="v22.17.0",
+        path=r"D:\nvm\node_version\nodejs\node.EXE",
+        source="system",
+    )
+    row.set_state(system, False)
+    assert row._chip.text() == "系统 v22.17.0"
+    assert row._install_button.text() == "安装便携版"
+    assert row._remove_button.isHidden()
+
+    portable = ComponentState(
+        id="node",
+        name="Node 运行环境",
+        kind="runtime",
+        summary="便携 Node.js LTS",
+        version="v22.17.0",
+        path=r"D:\agentbell\runtime\node\node.exe",
+        source="portable",
+    )
+    row.set_state(portable, False)
+    assert row._chip.text() == "v22.17.0"
+    assert row._install_button.text() == "重新安装"
+    assert not row._remove_button.isHidden()
+    row.deleteLater()

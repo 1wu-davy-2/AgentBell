@@ -146,10 +146,15 @@ class ComponentState:
     version: str = ""
     path: str = ""
     project_url: str = ""
+    source: str = "portable"
 
     @property
     def installed(self) -> bool:
-        return bool(self.version)
+        return bool(self.version or self.path)
+
+    @property
+    def managed(self) -> bool:
+        return self.source == "portable"
 
 
 @dataclass(frozen=True, slots=True)
@@ -359,6 +364,8 @@ class ToolchainService:
         opener: urllib.request.OpenerDirector | None = None,
         runner: Callable[..., subprocess.CompletedProcess] = subprocess.run,
         node_index_url: str = NODE_INDEX_URL,
+        which: Callable[[str], str | None] = shutil.which,
+        exists: Callable[[str], bool] = os.path.exists,
     ) -> None:
         self.root = Path(root) if root is not None else runtime_dir()
         self.registry = validate_registry(registry)
@@ -366,6 +373,8 @@ class ToolchainService:
         self._opener = opener or _build_opener()
         self._runner = runner
         self._node_index_url = node_index_url
+        self._which = which
+        self._exists = exists
 
     # ---------- layout ----------
 
@@ -688,23 +697,138 @@ class ToolchainService:
                 return candidate
         return None
 
+    # ---------- system detection ----------
+
+    def _path_exists(self, value: str | Path) -> bool:
+        try:
+            return bool(self._exists(str(value)))
+        except (OSError, TypeError):
+            return False
+
+    def _global_roots(self) -> list[Path]:
+        """Directories that contain node_modules for a system npm prefix."""
+        candidates: list[Path] = []
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            candidates.append(Path(appdata) / "npm")
+        for command in ("npm", "node"):
+            found = self._which(command)
+            if found:
+                parent = Path(found).parent
+                candidates.extend((parent, parent / "lib", parent.parent / "lib"))
+        candidates.append(Path.home() / ".npm-global" / "lib")
+        program_files = os.environ.get("ProgramFiles")
+        if program_files:
+            candidates.append(Path(program_files) / "nodejs")
+        roots: list[Path] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            key = os.path.normcase(os.path.abspath(candidate))
+            if key in seen or not self._path_exists(candidate / "node_modules"):
+                continue
+            seen.add(key)
+            roots.append(candidate)
+        return roots
+
+    def _probe_version(self, executable: str) -> str:
+        try:
+            result = self._runner(
+                [executable, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=PROBE_TIMEOUT_SECONDS,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except (OSError, subprocess.SubprocessError):
+            return ""
+        output = (result.stdout or "").strip()
+        if result.returncode != 0 or not output:
+            return ""
+        return output.splitlines()[0][:40]
+
+    def _detect_system_node(self) -> tuple[str, str]:
+        candidates: list[str] = []
+        found = self._which("node")
+        if found:
+            candidates.append(found)
+        if os.name == "nt":
+            for raw in (
+                r"%ProgramFiles%\nodejs\node.exe",
+                r"%ProgramFiles(x86)%\nodejs\node.exe",
+                r"%LOCALAPPDATA%\Programs\nodejs\node.exe",
+            ):
+                expanded = os.path.expandvars(raw)
+                if expanded != raw and self._path_exists(expanded):
+                    candidates.append(expanded)
+        seen: set[str] = set()
+        for candidate in candidates:
+            key = os.path.normcase(os.path.abspath(candidate))
+            if key in seen:
+                continue
+            seen.add(key)
+            return candidate, self._probe_version(candidate)
+        return "", ""
+
+    def _detect_system_tool(self, spec: NpmToolSpec) -> tuple[str, str]:
+        package = Path(*spec.package.split("/"))
+        roots = self._global_roots()
+        version = ""
+        package_root: Path | None = None
+        for root in roots:
+            data = _read_json_file(root / "node_modules" / package / "package.json")
+            candidate_version = str(data.get("version") or "")
+            if candidate_version:
+                version = candidate_version
+                package_root = root
+                break
+        executable = self._which(spec.command) or ""
+        if not executable and package_root is not None:
+            for suffix in (".cmd", ".exe", ""):
+                candidate = package_root / f"{spec.command}{suffix}"
+                if self._path_exists(candidate):
+                    executable = str(candidate)
+                    break
+        if not executable and not version:
+            return "", ""
+        return executable, version
+
     # ---------- state ----------
 
     def state(self) -> ToolchainState:
         node_version = self.node_version()
-        node = ComponentState(
-            id=NODE_ID,
-            name="Node 运行环境",
-            kind="runtime",
-            summary="便携 Node.js LTS，Agent CLI 的运行基础",
-            version=node_version,
-            path=str(self.node_exe) if node_version else "",
-            project_url="https://nodejs.org/",
-        )
+        if node_version:
+            node = ComponentState(
+                id=NODE_ID,
+                name="Node 运行环境",
+                kind="runtime",
+                summary="便携 Node.js LTS，Agent CLI 的运行基础",
+                version=node_version,
+                path=str(self.node_exe),
+                project_url="https://nodejs.org/",
+            )
+        else:
+            node_path, system_version = self._detect_system_node()
+            node = ComponentState(
+                id=NODE_ID,
+                name="Node 运行环境",
+                kind="runtime",
+                summary="便携 Node.js LTS，Agent CLI 的运行基础",
+                version=system_version,
+                path=node_path,
+                project_url="https://nodejs.org/",
+                source="system" if node_path else "",
+            )
         tools: list[ComponentState] = []
         for spec in NPM_TOOLS:
             version = self.tool_version(spec.id)
             executable = self.tool_executable(spec.id)
+            source = "portable" if version else ""
+            if not version:
+                system_path, system_version = self._detect_system_tool(spec)
+                if system_path or system_version:
+                    version = system_version
+                    executable = Path(system_path) if system_path else None
+                    source = "system"
             tools.append(
                 ComponentState(
                     id=spec.id,
@@ -714,6 +838,7 @@ class ToolchainService:
                     version=version,
                     path=str(executable) if executable else "",
                     project_url=spec.project_url,
+                    source=source,
                 )
             )
         return ToolchainState(root=str(self.root), node=node, tools=tuple(tools))

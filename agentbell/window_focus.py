@@ -18,6 +18,12 @@ _SWP_NOMOVE = 0x0002
 _SWP_NOACTIVATE = 0x0010
 _SWP_SHOWWINDOW = 0x0040
 _HWND_TOP = 0
+_AF_INET = 2
+_TCP_TABLE_OWNER_PID_CONNECTIONS = 4
+_ERROR_INSUFFICIENT_BUFFER = 122
+_MAX_PROCESS_DEPTH = 16
+_VK_MENU = 0x12
+_KEYEVENTF_KEYUP = 0x0002
 
 _TERMINAL_EXES = {
     "windowsterminal.exe",
@@ -45,9 +51,62 @@ _TERMINAL_CLASSES = {
     "PuTTY",
 }
 
+_APP_LABELS = {
+    "qoder.exe": "Qoder",
+    "cursor.exe": "Cursor",
+    "windsurf.exe": "Windsurf",
+    "trae.exe": "Trae",
+    "code.exe": "VS Code",
+    "code - insiders.exe": "VS Code",
+    "claude.exe": "Claude Code",
+    "codex.exe": "Codex",
+    "gemini.exe": "Gemini CLI",
+    "opencode.exe": "OpenCode",
+    "openclaw.exe": "OpenClaw",
+    "hermes.exe": "Hermes",
+    "pi.exe": "Pi",
+    "windowsterminal.exe": "Windows Terminal",
+    "powershell.exe": "PowerShell",
+    "pwsh.exe": "PowerShell",
+    "cmd.exe": "命令提示符",
+    "conhost.exe": "控制台",
+    "openconsole.exe": "控制台",
+    "mintty.exe": "Mintty",
+    "bash.exe": "Bash",
+    "git-bash.exe": "Git Bash",
+    "wezterm-gui.exe": "WezTerm",
+    "alacritty.exe": "Alacritty",
+    "tabby.exe": "Tabby",
+    "hyper.exe": "Hyper",
+}
+_GENERIC_LABELS = {
+    "Windows Terminal",
+    "PowerShell",
+    "命令提示符",
+    "控制台",
+    "Mintty",
+    "Bash",
+    "Git Bash",
+    "WezTerm",
+    "Alacritty",
+    "Tabby",
+    "Hyper",
+}
+
 if _IS_WINDOWS:  # pragma: no branch - platform dependent
     _user32 = ctypes.WinDLL("user32", use_last_error=True)
     _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _iphlpapi = ctypes.WinDLL("iphlpapi", use_last_error=True)
+
+    class _MibTcpRowOwnerPid(ctypes.Structure):
+        _fields_ = [
+            ("dwState", wintypes.DWORD),
+            ("dwLocalAddr", wintypes.DWORD),
+            ("dwLocalPort", wintypes.DWORD),
+            ("dwRemoteAddr", wintypes.DWORD),
+            ("dwRemotePort", wintypes.DWORD),
+            ("dwOwningPid", wintypes.DWORD),
+        ]
 
     class _ProcessEntry32W(ctypes.Structure):
         _fields_ = [
@@ -108,6 +167,17 @@ if _IS_WINDOWS:  # pragma: no branch - platform dependent
     _user32.BringWindowToTop.restype = wintypes.BOOL
     _user32.SetForegroundWindow.argtypes = [wintypes.HWND]
     _user32.SetForegroundWindow.restype = wintypes.BOOL
+    _user32.SetFocus.argtypes = [wintypes.HWND]
+    _user32.SetFocus.restype = wintypes.HWND
+    _user32.SwitchToThisWindow.argtypes = [wintypes.HWND, wintypes.BOOL]
+    _user32.SwitchToThisWindow.restype = None
+    _user32.keybd_event.argtypes = [
+        wintypes.BYTE,
+        wintypes.BYTE,
+        wintypes.DWORD,
+        ctypes.c_size_t,
+    ]
+    _user32.keybd_event.restype = None
     _user32.SetWindowPos.argtypes = [
         wintypes.HWND,
         wintypes.HWND,
@@ -124,6 +194,16 @@ if _IS_WINDOWS:  # pragma: no branch - platform dependent
         wintypes.BOOL,
     ]
     _user32.AttachThreadInput.restype = wintypes.BOOL
+
+    _iphlpapi.GetExtendedTcpTable.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(wintypes.DWORD),
+        wintypes.BOOL,
+        wintypes.ULONG,
+        ctypes.c_int,
+        wintypes.DWORD,
+    ]
+    _iphlpapi.GetExtendedTcpTable.restype = wintypes.DWORD
 
 
 @dataclass(frozen=True, slots=True)
@@ -379,6 +459,163 @@ def _resolve_window(target: FocusTarget) -> _WindowInfo | None:
     return None
 
 
+def snapshot_focus(pid: int) -> FocusChoice | None:
+    """Resolve the host window now so it survives the agent process exiting."""
+    if not _IS_WINDOWS or not isinstance(pid, int) or pid <= 0:
+        return None
+    window = _resolve_window(
+        FocusTarget(pid=pid, window_title="", working_dir="")
+    )
+    if window is None:
+        return None
+    request = FocusRequest(pid=window.pid, window_title=window.title)
+    return FocusChoice(
+        pid=window.pid,
+        title=window.title,
+        executable=window.exe,
+        value=request.to_value(),
+    )
+
+
+def _decode_net_port(raw: int) -> int:
+    # dwLocalPort/dwRemotePort hold the port in network byte order.
+    return ((raw & 0xFF) << 8) | ((raw >> 8) & 0xFF)
+
+
+def _select_owner_pid(
+    entries: list[tuple[int, int, int]],
+    local_port: int,
+    remote_port: int | None,
+) -> int | None:
+    for entry_local, entry_remote, pid in entries:
+        if entry_local != local_port:
+            continue
+        if remote_port is not None and entry_remote != remote_port:
+            continue
+        if pid > 0:
+            return pid
+    return None
+
+
+def client_pid(local_port: int, remote_port: int | None = None) -> int | None:
+    """Resolve the process that owns a local TCP client socket (Windows only).
+
+    Notifications that omit ``origin`` still arrive on a socket owned by the
+    sender, so this is used as a best-effort fallback for the focus action.
+    """
+    if not _IS_WINDOWS or not isinstance(local_port, int) or local_port <= 0:
+        return None
+    size = wintypes.DWORD(0)
+    result = _iphlpapi.GetExtendedTcpTable(
+        None,
+        ctypes.byref(size),
+        False,
+        _AF_INET,
+        _TCP_TABLE_OWNER_PID_CONNECTIONS,
+        0,
+    )
+    if result != _ERROR_INSUFFICIENT_BUFFER or size.value == 0:
+        return None
+    buffer = ctypes.create_string_buffer(size.value)
+    result = _iphlpapi.GetExtendedTcpTable(
+        buffer,
+        ctypes.byref(size),
+        False,
+        _AF_INET,
+        _TCP_TABLE_OWNER_PID_CONNECTIONS,
+        0,
+    )
+    if result != 0:
+        return None
+    count = min(
+        int(ctypes.cast(buffer, ctypes.POINTER(wintypes.DWORD)).contents.value),
+        65536,
+    )
+    rows = ctypes.cast(
+        ctypes.addressof(buffer) + ctypes.sizeof(wintypes.DWORD),
+        ctypes.POINTER(_MibTcpRowOwnerPid),
+    )
+    entries = [
+        (
+            _decode_net_port(int(rows[index].dwLocalPort)),
+            _decode_net_port(int(rows[index].dwRemotePort)),
+            int(rows[index].dwOwningPid),
+        )
+        for index in range(count)
+    ]
+    pid = _select_owner_pid(entries, local_port, remote_port)
+    if pid is None or pid == 4 or pid == os.getpid():
+        return None
+    return pid
+
+
+def sender_label(pid: int) -> str:
+    """Best-effort agent/app name for the process that sent a notification."""
+    if not _IS_WINDOWS or not isinstance(pid, int) or pid <= 0:
+        return ""
+    table = _process_table()
+    current = pid
+    fallback = ""
+    for _ in range(_MAX_PROCESS_DEPTH):
+        parent, exe = table.get(current, (0, ""))
+        if not exe:
+            break
+        label = _APP_LABELS.get(exe, "")
+        if label and label not in _GENERIC_LABELS:
+            return label
+        fallback = fallback or label
+        if parent <= 0 or parent == current:
+            break
+        current = parent
+    window = _resolve_window(FocusTarget(pid=pid, window_title="", working_dir=""))
+    if window is not None:
+        label = _APP_LABELS.get(window.exe, "")
+        if label:
+            return label
+        stem = window.exe.rsplit(".", 1)[0]
+        if stem:
+            return stem[:32]
+    return fallback
+
+
+def _foreground_is(handle: int) -> bool:
+    return _user32.GetForegroundWindow() == handle
+
+
+def _attach_and_focus(handle: int) -> bool:
+    current_thread = _kernel32.GetCurrentThreadId()
+    foreground = _user32.GetForegroundWindow()
+    foreground_thread = (
+        _user32.GetWindowThreadProcessId(foreground, None) if foreground else 0
+    )
+    target_thread = _user32.GetWindowThreadProcessId(handle, None)
+    attached: list[int] = []
+    for thread in {foreground_thread, target_thread}:
+        if thread and thread != current_thread:
+            if _user32.AttachThreadInput(thread, current_thread, True):
+                attached.append(thread)
+    try:
+        _user32.BringWindowToTop(handle)
+        _user32.SetForegroundWindow(handle)
+        _user32.SetFocus(handle)
+    finally:
+        for thread in attached:
+            _user32.AttachThreadInput(thread, current_thread, False)
+    return _foreground_is(handle)
+
+
+def _alt_tap_focus(handle: int) -> bool:
+    # Windows refuses SetForegroundWindow unless the caller recently received
+    # input. A synthetic Alt tap satisfies that check after an explicit click,
+    # so this runs only after the non-invasive attempts fail.
+    _user32.keybd_event(_VK_MENU, 0, 0, 0)
+    try:
+        _user32.SetForegroundWindow(handle)
+    finally:
+        _user32.keybd_event(_VK_MENU, 0, _KEYEVENTF_KEYUP, 0)
+    return _foreground_is(handle)
+
+
 def _activate_window(handle: int) -> tuple[bool, bool]:
     if _user32.IsIconic(handle):
         _user32.ShowWindow(handle, _SW_RESTORE)
@@ -386,23 +623,17 @@ def _activate_window(handle: int) -> tuple[bool, bool]:
         _user32.ShowWindow(handle, _SW_SHOW)
     _user32.BringWindowToTop(handle)
     _user32.SetForegroundWindow(handle)
-    if _user32.GetForegroundWindow() == handle:
+    if _foreground_is(handle):
         return True, True
 
-    foreground = _user32.GetForegroundWindow()
-    if foreground:
-        foreground_thread = _user32.GetWindowThreadProcessId(foreground, None)
-        current_thread = _kernel32.GetCurrentThreadId()
-        if foreground_thread and current_thread != foreground_thread:
-            _user32.AttachThreadInput(foreground_thread, current_thread, True)
-            try:
-                if _user32.IsIconic(handle):
-                    _user32.ShowWindow(handle, _SW_RESTORE)
-                _user32.BringWindowToTop(handle)
-                _user32.SetForegroundWindow(handle)
-            finally:
-                _user32.AttachThreadInput(foreground_thread, current_thread, False)
-    if _user32.GetForegroundWindow() == handle:
+    if _attach_and_focus(handle):
+        return True, True
+
+    _user32.SwitchToThisWindow(handle, True)
+    if _foreground_is(handle):
+        return True, True
+
+    if _alt_tap_focus(handle):
         return True, True
 
     raised = bool(
