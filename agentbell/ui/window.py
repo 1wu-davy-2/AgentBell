@@ -96,6 +96,7 @@ SIDEBAR_WIDTH = 232
 DEFAULT_SIZE = QSize(1120, 760)
 MINIMUM_SIZE = QSize(900, 580)
 MAX_VISIBLE_CARDS = 100
+MAX_LIVE_SESSIONS = 8
 MAX_SEARCH_RESULTS = 500
 SEARCH_DEBOUNCE_MS = 260
 
@@ -868,6 +869,93 @@ class AgentSessionCard(QFrame):
         root.addWidget(self.copy_button, 0, Qt.AlignmentFlag.AlignVCenter)
 
 
+class ActiveSessionCard(QFrame):
+    view_requested = Signal(object)
+    terminal_requested = Signal(object)
+
+    def __init__(
+        self, session: AgentSession, parent: QWidget | None = None
+    ) -> None:
+        super().__init__(parent)
+        self.session = session
+        self.setObjectName("activeSessionCard")
+        self.setAccessibleName(f"活跃会话 {session.display_title}")
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setToolTip(
+            f"{session.display_title}\n{session.project_path or session.folder}"
+        )
+
+        root = QHBoxLayout(self)
+        root.setContentsMargins(12, 9, 10, 9)
+        root.setSpacing(10)
+
+        dot = QLabel(self)
+        dot.setObjectName("liveDot")
+        dot.setFixedSize(8, 8)
+        dot.setToolTip("依据会话文件的最近写入自动推断")
+        root.addWidget(dot, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        body = QVBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(3)
+        root.addLayout(body, 1)
+
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        title_row.setSpacing(8)
+
+        badge = QLabel(session.agent_label, self)
+        badge.setObjectName("sessionAgent")
+        badge.setProperty("agent", session.agent)
+        badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        badge.setFixedSize(70, 20)
+        title_row.addWidget(badge, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        title = ElidedLabel(session.display_title, self)
+        title.setObjectName("sessionTitle")
+        title_row.addWidget(title, 1)
+
+        updated = QLabel(
+            f"最近活动 {format_received_at(session.updated_at)}", self
+        )
+        updated.setObjectName("sessionTime")
+        title_row.addWidget(updated, 0, Qt.AlignmentFlag.AlignVCenter)
+        body.addLayout(title_row)
+
+        meta_parts = [session.project_path or session.folder]
+        if session.message_count > 0:
+            meta_parts.append(f"{session.message_count} 条记录")
+        meta = ElidedLabel(" · ".join(meta_parts), self)
+        meta.setObjectName("sessionMeta")
+        body.addWidget(meta)
+
+        self.view_button = QPushButton("查看记录", self)
+        self.view_button.setObjectName("sessionView")
+        self.view_button.setFixedSize(78, 28)
+        self.view_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.view_button.setToolTip("打开该会话的对话记录")
+        self.view_button.clicked.connect(
+            lambda: self.view_requested.emit(session)
+        )
+        root.addWidget(self.view_button, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        self.terminal_button = QToolButton(self)
+        self.terminal_button.setObjectName("sessionIcon")
+        self.terminal_button.setIcon(
+            _paint_icon("terminal", QColor("#667085"), 16)
+        )
+        self.terminal_button.setIconSize(QSize(16, 16))
+        self.terminal_button.setFixedSize(30, 30)
+        self.terminal_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.terminal_button.setToolTip(
+            "回到终端：按项目名匹配并切到对应的终端或编辑器窗口"
+        )
+        self.terminal_button.clicked.connect(
+            lambda: self.terminal_requested.emit(session)
+        )
+        root.addWidget(self.terminal_button, 0, Qt.AlignmentFlag.AlignVCenter)
+
+
 class AgentPickCard(QFrame):
     picked = Signal(object)
     activated = Signal(object)
@@ -1432,6 +1520,7 @@ class NotificationWindow(QMainWindow):
         self._stats: dict = {}
         self._sessions: list[AgentSession] = []
         self._sessions_signature: tuple | None = None
+        self._live_signature: tuple | None = None
         self._session_scanned_at: datetime | None = None
         self._session_detail_session: AgentSession | None = None
         self._session_transcript: SessionTranscript | None = None
@@ -2807,6 +2896,7 @@ class NotificationWindow(QMainWindow):
         if changed:
             self._filter = key
             self._cards_dirty = True
+            self._update_counts()
         self._update_filter_controls()
         if self._page != "list":
             self.set_page("list")
@@ -2917,10 +3007,72 @@ class NotificationWindow(QMainWindow):
         else:
             self._rebuild_cards()
 
+    def _live_session_window_seconds(self) -> int:
+        interval = int(self.config.agent_sessions.scan_interval_seconds)
+        return max(120, interval * 2)
+
+    def _live_sessions(self) -> list[AgentSession]:
+        if not self.config.agent_sessions.enabled:
+            return []
+        cutoff = datetime.now().astimezone() - timedelta(
+            seconds=self._live_session_window_seconds()
+        )
+        source = self._source_filter.strip().casefold()
+        query = self._query.strip().casefold()
+        items: list[AgentSession] = []
+        for session in self._sessions:
+            if session.updated_at < cutoff:
+                continue
+            if source:
+                label = session.agent_label.casefold()
+                if source not in {label, session.agent.casefold()}:
+                    continue
+            if query:
+                haystack = " ".join(
+                    (
+                        session.project,
+                        session.title,
+                        session.agent_label,
+                        session.session_id,
+                        session.project_path,
+                        session.path,
+                    )
+                ).casefold()
+                if query not in haystack:
+                    continue
+            items.append(session)
+        items.sort(key=lambda item: item.updated_at, reverse=True)
+        return items
+
+    def _sync_live_sessions(self) -> None:
+        if not hasattr(self, "_segment_buttons"):
+            return
+        signature = tuple(
+            (
+                session.agent,
+                session.session_id,
+                session.updated_at,
+                session.title,
+                session.project,
+                session.project_path,
+                session.message_count,
+                session.size_bytes,
+            )
+            for session in self._live_sessions()
+        )
+        if signature == self._live_signature:
+            return
+        self._live_signature = signature
+        self._cards_dirty = True
+        self._update_counts()
+        if self._page == "list" and self._filter == "running":
+            self._rebuild_cards()
+
     def _update_counts(self) -> None:
         items = [
             item for item in self._source_items() if self._matches_source(item)
         ]
+        live = self._live_sessions()
         counts = {
             "all": len(items),
             "succeeded": 0,
@@ -2931,17 +3083,30 @@ class NotificationWindow(QMainWindow):
         for item in items:
             if item.status in counts:
                 counts[item.status] += 1
+        running_notifications = counts["running"]
+        if live:
+            counts["running"] += len(live)
         for key, label, _ in FILTERS:
             if key in self._segment_buttons:
                 self._segment_buttons[key].setText(f"{label} {counts[key]}")
             if key in self._nav_buttons:
-                self._nav_buttons[key].setToolTip(f"共 {counts[key]} 条通知")
+                if key == "running" and live:
+                    tip = (
+                        f"进行中通知 {running_notifications} 条"
+                        f" · 活跃会话 {len(live)} 个"
+                    )
+                else:
+                    tip = f"共 {counts[key]} 条通知"
+                self._nav_buttons[key].setToolTip(tip)
         if self._query:
-            self._total_label.setText(f"搜索到 {len(items)} 条")
+            text = f"搜索到 {len(items)} 条"
         elif self._source_filter:
-            self._total_label.setText(f"筛选到 {len(items)} 条")
+            text = f"筛选到 {len(items)} 条"
         else:
-            self._total_label.setText(f"共 {len(items)} 条")
+            text = f"共 {len(items)} 条"
+        if live and self._filter == "running":
+            text += f" · {len(live)} 个活跃会话"
+        self._total_label.setText(text)
 
     def _filtered_items(self) -> list[Notification]:
         items = [
@@ -2955,13 +3120,60 @@ class NotificationWindow(QMainWindow):
         _discard_layout_widgets(self._list_layout)
         self._cards = []
 
+    def _add_live_section(self, sessions: list[AgentSession]) -> None:
+        header = QWidget(self._list_host)
+        header_row = QHBoxLayout(header)
+        header_row.setContentsMargins(2, 2, 2, 2)
+        header_row.setSpacing(8)
+
+        title = QLabel("活跃会话", header)
+        title.setObjectName("liveSectionTitle")
+        header_row.addWidget(title)
+
+        count = QLabel(str(len(sessions)), header)
+        count.setObjectName("liveSectionCount")
+        count.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        header_row.addWidget(count)
+
+        minutes = max(1, round(self._live_session_window_seconds() / 60))
+        hint = QLabel(
+            f"最近 {minutes} 分钟内仍有写入，自动推断，可能包含刚结束的会话",
+            header,
+        )
+        hint.setObjectName("liveSectionHint")
+        header_row.addWidget(hint)
+        header_row.addStretch(1)
+        self._list_layout.addWidget(header)
+
+        for session in sessions[:MAX_LIVE_SESSIONS]:
+            card = ActiveSessionCard(session, self._list_host)
+            card.view_requested.connect(self._open_live_session)
+            card.terminal_requested.connect(self._focus_session)
+            self._list_layout.addWidget(card)
+
+        if len(sessions) > MAX_LIVE_SESSIONS:
+            more = QPushButton(
+                f"还有 {len(sessions) - MAX_LIVE_SESSIONS} 个活跃会话，"
+                "到「Agent 会话」查看全部",
+                self._list_host,
+            )
+            more.setObjectName("liveSectionMore")
+            more.setCursor(Qt.CursorShape.PointingHandCursor)
+            more.clicked.connect(lambda: self.set_page("sessions"))
+            self._list_layout.addWidget(
+                more, 0, Qt.AlignmentFlag.AlignLeft
+            )
+
     def _rebuild_cards(self) -> None:
         scrollbar = self._scroll.verticalScrollBar()
         previous = scrollbar.value()
         self._clear_cards()
 
         filtered = self._filtered_items()
-        if not filtered:
+        live = self._live_sessions() if self._filter == "running" else []
+        if live:
+            self._add_live_section(live)
+        if not filtered and not live:
             empty = EmptyState(
                 bool(self._source_items()),
                 parent=self._list_host,
@@ -3076,6 +3288,7 @@ class NotificationWindow(QMainWindow):
         self._sessions = list(sessions)
         self._session_scanned_at = datetime.now().astimezone()
         self._update_session_summary()
+        self._sync_live_sessions()
         signature = tuple(
             (
                 session.agent,
@@ -3217,6 +3430,10 @@ class NotificationWindow(QMainWindow):
         target = self._session_target(session)
         QGuiApplication.clipboard().setText(target)
         self.logger.info("复制会话路径 %s", _clip(target, 200))
+
+    def _open_live_session(self, session: AgentSession) -> None:
+        self.set_page("sessions")
+        self._open_session_view(session)
 
     def _open_session_view(self, session: AgentSession) -> None:
         key = f"{session.path}|{int(session.updated_at.timestamp())}"
@@ -3466,7 +3683,9 @@ class NotificationWindow(QMainWindow):
             f"快捷键 {config.hotkey}" if config.hotkey else "未设置全局快捷键"
         )
         self._signature = None
+        self._live_signature = None
         self._cards_dirty = True
+        self._update_counts()
         if self._page == "list":
             self._rebuild_cards()
         self._update_session_summary()
@@ -4157,6 +4376,46 @@ QLabel#sessionGroupTitle {
 QLabel#sessionGroupCount {
     font-size: 10px;
     color: #9AA1AC;
+}
+QFrame#activeSessionCard {
+    background-color: #FBFDFF;
+    border: 1px solid #D8E6FB;
+    border-radius: 12px;
+}
+QFrame#activeSessionCard:hover {
+    border-color: #AFCCF6;
+}
+QLabel#liveDot {
+    background-color: #22B573;
+    border-radius: 4px;
+}
+QLabel#liveSectionTitle {
+    font-size: 12px;
+    font-weight: 650;
+    color: #323A45;
+}
+QLabel#liveSectionCount {
+    background-color: #EAF2FF;
+    border-radius: 7px;
+    padding: 1px 7px;
+    color: #2F6FF0;
+    font-size: 10px;
+    font-weight: 650;
+}
+QLabel#liveSectionHint {
+    font-size: 10px;
+    color: #9AA1AC;
+}
+QPushButton#liveSectionMore {
+    background: transparent;
+    border: none;
+    color: #2F6FF0;
+    font-size: 10px;
+    text-align: left;
+    padding: 2px;
+}
+QPushButton#liveSectionMore:hover {
+    color: #1F5FDF;
 }
 QFrame#sessionCard {
     background-color: #FFFFFF;

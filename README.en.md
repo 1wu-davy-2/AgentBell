@@ -57,7 +57,7 @@ AgentBell does one thing well: **tell you the moment a round ends, and let you g
 4. If SmartScreen warns about an unknown publisher, choose **More info → Run anyway**. The build is not code-signed.
 5. Closing the window hides it to the tray. Use the tray menu or **退出 AgentBell** in the sidebar to quit.
 
-The release also includes a versioned `AgentBell-19.exe` and `SHA256SUMS.txt`. The updater only consumes the stable `AgentBell.exe` asset, so do not rename it.
+The release also includes a versioned `AgentBell-20.exe` and `SHA256SUMS.txt`. The updater only consumes the stable `AgentBell.exe` asset, so do not rename it.
 
 **Enable self-update**: packaged builds ship with `1wu-davy-2/AgentBell` filled in and the startup check enabled. AgentBell checks Releases about 9 seconds after launch; the tray menu and the Agent launcher page can also trigger a manual check. Packaged builds download, verify, back up, replace, and restart automatically after exit. Source mode only downloads the installer and never replaces the running Python process. Change the repository under **Preferences → General → Program update**.
 
@@ -93,7 +93,7 @@ A successful call returns HTTP 202 and a card appears in the top-right corner. C
 
 ### 2. Use the notification center
 
-Filter by status and agent source in the toolbar, search by title, summary, or source, and double-click the title bar to maximize or restore. Closing the window keeps the service in the tray; press `Ctrl+Alt+A` or use the tray menu to reopen it. History keeps 1,000 entries by default and powers the statistics page.
+Filter by status and agent source in the toolbar, search by title, summary, or source; the running tab also surfaces recently active agent sessions detected by the local session scanner. Double-click the title bar to maximize or restore. Closing the window keeps the service in the tray; press `Ctrl+Alt+A` or use the tray menu to reopen it. History keeps 1,000 entries by default and powers the statistics page.
 
 ### 3. Let agents notify you automatically
 
@@ -144,14 +144,14 @@ Preferences cover skins, popup modes, fullscreen background and card placement, 
 
 ```powershell
 pip install -r requirements-dev.txt
-python -m PyInstaller --noconfirm --clean AgentBell19.spec
-# Output: dist\AgentBell-19.exe
+python -m PyInstaller --noconfirm --clean AgentBell20.spec
+# Output: dist\AgentBell-20.exe
 ```
 
 Pushing to `develop` runs tests and packaging. Pushing a `v*` tag verifies that the tag matches `__version__` in `agentbell/__init__.py`, then publishes a GitHub Release automatically. The workflow picks the highest-numbered `AgentBell*.spec` and copies its output to the stable `AgentBell.exe` name.
 
 ```bash
-git tag v2.9.8
+git tag v2.9.9
 git push origin develop --tags
 ```
 

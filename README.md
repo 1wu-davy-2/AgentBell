@@ -36,7 +36,7 @@ AgentBell 是一个只做提醒的 Windows 桌面工具。AI Agent 每轮任务�
 - 四套皮肤、三种弹窗模式，以及可拖拽定位的全屏遮挡。
 - 免打扰、全屏 / 会议抑制、锁屏保留、聚合摘要与未读升级。
 - 待确认、5/15/30 分钟稍后提醒，以及回到终端、打开链接、复制、重试等动作。
-- 通知中心搜索、状态与 Agent 来源筛选、成功率 / 耗时统计与 7 天趋势。
+- 通知中心搜索、状态与 Agent 来源筛选、进行中自动汇入近期活跃的 Agent 会话，以及成功率 / 耗时统计与 7 天趋势。
 - 内置 11 种 Agent 的检测与启动，默认使用安装目录下的 `chat/` 工作区。
 - 便携运行环境：一键把 Node LTS 和 7 个官方 Agent CLI（Claude Code、Codex、Gemini CLI、OpenCode、OpenClaw、Hermes、Pi）装进安装目录的 `runtime/`，免管理员权限、不改系统 PATH；同时自动识别系统 Node 与 npm 全局安装的 CLI；cc-switch 等外部工具直接跳转官方下载页；DeepSeek 作为供应商预设直接注入 Claude Code。
 - 基于 GitHub Releases 的自身更新。
@@ -89,7 +89,7 @@ AgentBell 是一个只做提醒的 Windows 桌面工具。AI Agent 每轮任务�
 4. 如果 Windows SmartScreen 提示“未知发布者”，点「更多信息 → 仍要运行」。程序没有代码签名，这是正常提示。
 5. 关闭窗口只是隐藏到托盘；要彻底退出，用托盘菜单或左侧栏的「退出 AgentBell」。
 
-Release 同时提供版本化文件名 `AgentBell-19.exe` 和 `SHA256SUMS.txt`。自动更新只使用稳定命名的 `AgentBell.exe`，请勿随意改名。
+Release 同时提供版本化文件名 `AgentBell-20.exe` 和 `SHA256SUMS.txt`。自动更新只使用稳定命名的 `AgentBell.exe`，请勿随意改名。
 
 **开启自动更新**：安装包默认已填写 `1wu-davy-2/AgentBell` 并勾选「启动时自动检查」，启动约 9 秒后检查 Releases，也可从托盘或 Agent 启动页手动检查。打包版会在下载完成、程序退出后自动备份、替换并重启；源码模式只下载安装包，不会替换正在运行的 Python 程序。要改用其他仓库，可在「偏好设置 → 常规 → 程序更新」修改。
 
@@ -200,14 +200,14 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8765/notify" -Method Post `
 
 ```powershell
 pip install -r requirements-dev.txt
-python -m PyInstaller --noconfirm --clean AgentBell19.spec
-# 产物：dist\AgentBell-19.exe
+python -m PyInstaller --noconfirm --clean AgentBell20.spec
+# 产物：dist\AgentBell-20.exe
 ```
 
 推送到 `develop` 会触发测试与打包；推送 `v*` 标签会校验标签与 `agentbell/__init__.py` 的 `__version__` 一致，然后自动发布 Release。工作流会自动选用编号最大的 `AgentBell*.spec`，并把产物复制为稳定命名的 `AgentBell.exe`。
 
 ```bash
-git tag v2.9.8
+git tag v2.9.9
 git push origin develop --tags
 ```
 

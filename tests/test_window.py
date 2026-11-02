@@ -18,6 +18,7 @@ from agentbell.config import AgentLauncherConfig, AgentSessionsConfig, AppConfig
 from agentbell.models import Notification, NotificationAction
 from agentbell.store import NotificationStore
 from agentbell.ui.window import (
+    ActiveSessionCard,
     AgentPickCard,
     AgentSessionCard,
     EmptyState,
@@ -345,6 +346,120 @@ def test_running_filter_and_progress(window_factory):
     card = window._cards[0]
     assert card.progress_bar is not None
     assert card.progress_bar.value() == 60
+
+
+def test_running_tab_shows_live_sessions_from_scan(window_factory):
+    store = NotificationStore()
+    store.add(make_notification(1))
+    store.add(make_notification(2, status="running", progress=30))
+    window = window_factory(store)
+    window.refresh_items(store.snapshot())
+    window.update_sessions(
+        [
+            make_session(0, "TaskBeacon", agent="qoder"),
+            make_session(8, "OldProject", agent="claude"),
+        ]
+    )
+
+    assert window._segment_buttons["running"].text() == "进行中 2"
+    assert (
+        window._nav_buttons["running"].toolTip()
+        == "进行中通知 1 条 · 活跃会话 1 个"
+    )
+    window.set_filter("running")
+
+    live_cards = window._list_host.findChildren(ActiveSessionCard)
+    assert [card.session.project for card in live_cards] == ["TaskBeacon"]
+    assert [card.notification.title for card in window._cards] == ["任务 2"]
+    assert not window._list_host.findChildren(EmptyState)
+    assert window._total_label.text() == "共 2 条 · 1 个活跃会话"
+
+
+def test_live_sessions_without_running_notification(window_factory):
+    window = window_factory()
+    window.update_sessions([make_session(1, "EmoChat", agent="qoder")])
+    window.set_filter("running")
+
+    assert window._cards == []
+    assert len(window._list_host.findChildren(ActiveSessionCard)) == 1
+    assert not window._list_host.findChildren(EmptyState)
+    assert window._segment_buttons["running"].text() == "进行中 1"
+
+
+def test_live_sessions_respect_source_and_search(window_factory):
+    store = NotificationStore()
+    store.add(make_notification(1, source="Qoder"))
+    store.add(make_notification(2, source="Claude Code"))
+    window = window_factory(store)
+    window.refresh_items(store.snapshot())
+    window.update_sessions(
+        [
+            make_session(0, "TaskBeacon", agent="qoder"),
+            make_session(0, "EmoChat", agent="claude"),
+        ]
+    )
+    window.set_filter("running")
+    assert len(window._list_host.findChildren(ActiveSessionCard)) == 2
+
+    window._source_combo.setCurrentIndex(window._source_combo.findData("Qoder"))
+    QTest.qWait(30)
+    live_cards = window._list_host.findChildren(ActiveSessionCard)
+    assert [card.session.project for card in live_cards] == ["TaskBeacon"]
+    assert window._segment_buttons["running"].text() == "进行中 1"
+    assert window._total_label.text() == "筛选到 1 条 · 1 个活跃会话"
+
+    window._source_combo.setCurrentIndex(0)
+    window._search_input.setText("EmoChat")
+    window._perform_search()
+    QTest.qWait(30)
+    live_cards = window._list_host.findChildren(ActiveSessionCard)
+    assert [card.session.project for card in live_cards] == ["EmoChat"]
+    assert window._total_label.text() == "搜索到 0 条 · 1 个活跃会话"
+
+
+def test_live_sessions_expire_after_scan_window(window_factory):
+    window = window_factory()
+    window.update_sessions([make_session(0)])
+    window.set_filter("running")
+    assert len(window._list_host.findChildren(ActiveSessionCard)) == 1
+
+    window.update_sessions([make_session(10)])
+    QTest.qWait(30)
+    assert window._list_host.findChildren(ActiveSessionCard) == []
+    assert window._segment_buttons["running"].text() == "进行中 0"
+    empty = window._list_layout.itemAt(0).widget()
+    assert isinstance(empty, EmptyState)
+
+
+def test_live_sessions_hidden_when_scan_disabled(window_factory):
+    config = AppConfig(
+        port=8765,
+        token="test-token",
+        agent_sessions=AgentSessionsConfig(enabled=False),
+    )
+    window = window_factory(config=config)
+    window.update_sessions([make_session(0)])
+    window.set_filter("running")
+
+    assert window._list_host.findChildren(ActiveSessionCard) == []
+    assert window._segment_buttons["running"].text() == "进行中 0"
+
+
+def test_live_session_view_opens_sessions_page(window_factory, monkeypatch):
+    window = window_factory()
+    session = make_session(0, "TaskBeacon", agent="qoder")
+    window.update_sessions([session])
+    window.set_filter("running")
+
+    opened: list[AgentSession] = []
+    monkeypatch.setattr(
+        window, "_open_session_view", lambda item: opened.append(item)
+    )
+    card = window._list_host.findChildren(ActiveSessionCard)[0]
+    card.view_button.click()
+
+    assert window._page == "sessions"
+    assert opened == [session]
 
 
 def test_search_filters_cards_and_can_reset(window_factory):

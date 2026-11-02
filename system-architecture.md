@@ -38,6 +38,8 @@
 
 2.9.8 优化通知来源展示与筛选：「来源 Agent」从摘要下方移到卡片标题行；通知中心在状态标签右侧新增 Agent 来源下拉，可与状态、搜索叠加，计数和总条数同步变化，重置筛选时一并恢复。安装包与示例配置预填更新仓库 `1wu-davy-2/AgentBell`，启动约 9 秒后自动检查，托盘与 Agent 启动页仍可手动检查；GitHub Actions 改为自动选用编号最大的 spec，不再写死旧版文件名。
 
+2.9.9 让「进行中」不再只等显式通知：会话扫描结果中最近 2 个扫描周期（至少 120 秒，默认 240 秒）内仍有写入的会话，会以「活跃会话」卡片自动出现在「进行中」页，标注 Agent、项目、最近活动时间与记录数，可直接查看记录或回到终端。活跃会话是只读推断，不写入 SQLite、不进入「全部」计数，但会计入「进行中」标签，并随来源筛选与搜索收窄；扫描关闭时自动隐藏。
+
 ## 特性
 
 - 只监听 `127.0.0.1:8765`（可在 `config.json` 改端口），不暴露到局域网。
@@ -70,7 +72,7 @@
 - 模板与声音：四种状态的弹窗文案、五类 WAV 提示音均可配置。
 - 外部渠道：企业微信、飞书、Telegram、Bark、ntfy、通用 Webhook；可按“离开电脑”或规则触发，失败只记日志，不影响主流程。
 - Agent 会话：只读扫描本机 Claude Code / Qoder 的会话，可在软件内直接阅读完整记录（轮次、工具调用、结果与思考过程）、跳转大纲、会话内搜索、复制或导出 Markdown，支持按项目、标题与路径筛选。
-- 可选 SQLite 历史：通知中心支持搜索、状态与 Agent 来源筛选、成功率 / 平均耗时 / 待确认统计和 7 天趋势图。
+- 可选 SQLite 历史：通知中心支持搜索、状态与 Agent 来源筛选、进行中活跃会话推断、成功率 / 平均耗时 / 待确认统计和 7 天趋势图。
 - 全局快捷键（默认 `Ctrl+Alt+A`）打开通知中心；托盘显示未读数。
 - 常驻托盘、单实例启动、可复制 Agent 接入指令、滚动日志、PyInstaller 单文件打包。
 
@@ -129,7 +131,7 @@ agentbell/
 ├─ requirements.txt       运行依赖
 ├─ requirements-dev.txt   测试/打包依赖
 ├─ run.py                 源码启动入口
-├─ AgentBell19.spec       PyInstaller 配置（AgentBell-19.exe）
+├─ AgentBell20.spec       PyInstaller 配置（AgentBell-20.exe）
 ├─ LICENSE                MIT 许可证
 ├─ README.md              项目介绍、截图、安装与使用教程
 └─ system-architecture.md 本文件：架构、配置、API 与打包手册
@@ -719,6 +721,7 @@ X-Token: your-token        # 仅当 config.token 非空时必需
 - 全屏拖拽定位：点「全屏拖拽定位…」进入与真实弹窗一致的全屏预览，卡片可自由拖动，顶部实时显示坐标、尺寸、最近锚点和偏移；点「保存位置」自动写回设置并保存配置，点「取消」不改动原值。
 - 效果预览：设置对话框底部「测试」按钮按当前选择的模式、皮肤和背景图弹出一条预览。预览使用临时通知，不写入 SQLite 历史；`overlay` 预览会实际铺满屏幕，点「知道了」即可返回设置。
 - Agent 会话页：左侧侧栏切换到「Agent 会话」，按项目分组显示本机会话；点「查看记录」进入阅读视图，支持轮次折叠、工具过程、大纲跳转、会话内搜索、复制全文和导出 Markdown；数据只读，不进入通知历史。
+- 进行中活跃会话：扫描结果中最近 2 个扫描周期（至少 120 秒）内仍有写入的会话，会以「活跃会话」卡片出现在「进行中」页，显示 Agent、项目路径、记录数与最近活动时间；可查看记录或回到终端。它属于只读推断，不写入 SQLite，也不计入「全部」通知数，但会计入「进行中」标签，并随来源筛选与搜索收窄。扫描关闭或会话停止写入超过窗口后自动消失。
 - 关闭窗口只是隐藏到托盘，程序继续接收通知；`Ctrl+Alt+A` 可随时唤出。
 
 ## 托盘与弹窗行为
@@ -885,18 +888,18 @@ PyInstaller 不能跨平台交叉编译，请在目标系统上分别打包。
 ```bash
 pip install -r requirements-dev.txt
 
-# 产物：dist\AgentBell-19.exe
-python -m PyInstaller --noconfirm --clean AgentBell19.spec
+# 产物：dist\AgentBell-20.exe
+python -m PyInstaller --noconfirm --clean AgentBell20.spec
 ```
 
 把 `config.json` 复制到 exe 旁边再运行：
 
 ```bash
 copy config.json dist\config.json
-dist\AgentBell-19.exe
+dist\AgentBell-20.exe
 ```
 
-> 新旧版本默认共用单实例锁：若托盘中已有 AgentBell 在运行，双击 AgentBell-19 只会唤醒旧实例。切换版本前先从托盘退出旧版，再启动新 exe。
+> 新旧版本默认共用单实例锁：若托盘中已有 AgentBell 在运行，双击 AgentBell-20 只会唤醒旧实例。切换版本前先从托盘退出旧版，再启动新 exe。
 
 打包后 `config.json`、`logs/`、`agentbell.db`、`chat/` 与 `updates/` 都位于 exe 所在目录。单文件模式首次启动需要解压到临时目录，通常会有 1–3 秒延迟。
 
@@ -911,11 +914,11 @@ dist\AgentBell-19.exe
 发布新版本：
 
 ```bash
-# 1. 修改 agentbell/__init__.py 的 __version__，例如 2.9.8
+# 1. 修改 agentbell/__init__.py 的 __version__，例如 2.9.9
 # 2. 提交并打同版本 tag（tag 去掉 v 后必须与 __version__ 完全一致）
 git add -A
-git commit -m "feat: 升级 AgentBell 2.9.8 ..."
-git tag v2.9.8
+git commit -m "feat: 升级 AgentBell 2.9.9 ..."
+git tag v2.9.9
 git push origin develop --tags
 ```
 
@@ -927,7 +930,7 @@ git push origin develop --tags
 
 ```bash
 pyinstaller --noconfirm --clean --onefile --windowed \
-  --name AgentBell-19 \
+  --name AgentBell-20 \
   --hidden-import uvicorn.logging \
   --hidden-import uvicorn.loops.asyncio \
   --hidden-import uvicorn.protocols.http.h11_impl \
