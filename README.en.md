@@ -31,9 +31,16 @@ AgentBell does one thing well: **tell you the moment a round ends, and let you g
 - **Local first**: loopback-only HTTP, on-device SQLite history, read-only session parsing, no cloud.
 - **Stay small**: no agent orchestration, no workflow changes, no web UI. It waits in the tray and rings when it should.
 
+## Recent updates
+
+- **v2.9.9**: Running now auto-collects recently active agent sessions as read-only cards showing agent, project, last activity, and record count; they follow source filters and search.
+- **v2.9.8**: The agent-source filter stacks with status and search; program updates can check for new versions about 9 seconds after launch.
+- **v2.9.7**: **Back to terminal** now falls back to attaching the input queue and `SwitchToThisWindow` when Windows foreground lock refuses a plain raise, so keyboard focus actually lands.
+- **v2.9.5–2.9.6**: Fixed a ~10-second freeze when switching status filters; missing `origin` / `source` is now resolved by tracing the local connection to the sender process.
+
 ## Screenshots
 
-> Screenshots use a separate debug port (`18776`). The default production port is `127.0.0.1:8765`.
+> Screenshots use demo data. The default port is `127.0.0.1:8765` and can be changed in Preferences.
 
 | Notification center | Statistics |
 | --- | --- |
@@ -57,9 +64,9 @@ AgentBell does one thing well: **tell you the moment a round ends, and let you g
 4. If SmartScreen warns about an unknown publisher, choose **More info → Run anyway**. The build is not code-signed.
 5. Closing the window hides it to the tray. Use the tray menu or **退出 AgentBell** in the sidebar to quit.
 
-The release also includes a versioned `AgentBell-20.exe` and `SHA256SUMS.txt`. The updater only consumes the stable `AgentBell.exe` asset, so do not rename it.
+The release ships `AgentBell.exe` and `SHA256SUMS.txt`. The updater only uses `AgentBell.exe`, so do not rename it. A build-numbered `AgentBell-*.exe` is a byte-identical copy; downloading `AgentBell.exe` is enough.
 
-**Enable self-update**: packaged builds ship with `1wu-davy-2/AgentBell` filled in and the startup check enabled. AgentBell checks Releases about 9 seconds after launch; the tray menu and the Agent launcher page can also trigger a manual check. Packaged builds download, verify, back up, replace, and restart automatically after exit. Source mode only downloads the installer and never replaces the running Python process. Change the repository under **Preferences → General → Program update**.
+**Enable self-update**: In **Preferences → General → Program update**, enter `1wu-davy-2/AgentBell` and enable the startup check. AgentBell checks Releases about 9 seconds after launch; the tray menu and the Agent launcher page can also trigger a manual check. Packaged builds download, verify, back up, replace, and restart automatically after exit. Source mode only downloads the installer and never replaces the running Python process. Change the repository in the same place.
 
 ### From source
 
