@@ -43,6 +43,7 @@ AgentBell 是一个只做提醒的 Windows 桌面工具。AI Agent 每轮任务�
 
 ### 最近更新
 
+- **v2.9.10**：首次运行生成的 `config.json` 默认填入 `1wu-davy-2/AgentBell` 并保持启动检查，下载后约 9 秒即可检查新版本。
 - **v2.9.9**：「进行中」自动汇集近期活跃的 Agent 会话，只读展示 Agent、项目、最近活动与记录数，并随来源筛选与搜索收窄。
 - **v2.9.8**：Agent 来源筛选与状态、搜索叠加；程序更新支持在启动约 9 秒后自动检查新版本。
 - **v2.9.7**：「回到终端」在 Windows 前台锁拒绝普通置前时，继续尝试附加输入队列与 `SwitchToThisWindow`，确保键盘焦点真正落下。
@@ -98,7 +99,7 @@ AgentBell 是一个只做提醒的 Windows 桌面工具。AI Agent 每轮任务�
 
 Release 提供稳定命名的 `AgentBell.exe` 和 `SHA256SUMS.txt`；自动更新只使用 `AgentBell.exe`，请勿改名。带构建编号的 `AgentBell-*.exe` 是同一文件的版本化副本，下载时选 `AgentBell.exe` 即可。
 
-**开启自动更新**：在「偏好设置 → 常规 → 程序更新」填写 `1wu-davy-2/AgentBell`，并勾选「启动时自动检查」；启动约 9 秒后检查 Releases，也可从托盘或 Agent 启动页手动检查。打包版会在下载完成、程序退出后自动备份、替换并重启；源码模式只下载安装包，不会替换正在运行的 Python 程序。要改用其他仓库，可在同一处修改。
+**开启自动更新**：首次运行生成的 `config.json` 默认填入 `1wu-davy-2/AgentBell` 并勾选「启动时自动检查」，启动约 9 秒后检查 Releases，也可从托盘或 Agent 启动页手动检查。打包版会在下载完成、程序退出后自动备份、替换并重启；源码模式只下载安装包，不会替换正在运行的 Python 程序。从旧版本升级且仓库为空时，在「偏好设置 → 常规 → 程序更新」填写即可。
 
 #### 方式二：从源码运行
 
@@ -207,14 +208,14 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8765/notify" -Method Post `
 
 ```powershell
 pip install -r requirements-dev.txt
-python -m PyInstaller --noconfirm --clean AgentBell20.spec
-# 产物：dist\AgentBell-20.exe
+python -m PyInstaller --noconfirm --clean AgentBell21.spec
+# 产物：dist\AgentBell-21.exe
 ```
 
 推送到 `develop` 会触发测试与打包；推送 `v*` 标签会校验标签与 `agentbell/__init__.py` 的 `__version__` 一致，然后自动发布 Release。工作流会自动选用编号最大的 `AgentBell*.spec`，并把产物复制为稳定命名的 `AgentBell.exe`。
 
 ```bash
-git tag v2.9.9
+git tag v2.9.10
 git push origin develop --tags
 ```
 

@@ -32,6 +32,7 @@ DEFAULT_PORT = 8765
 DEFAULT_AUTO_CLOSE_SECONDS = 30
 MAX_AUTO_CLOSE_SECONDS = 3600
 DEFAULT_HISTORY_LIMIT = 1000
+DEFAULT_UPDATE_REPO = "1wu-davy-2/AgentBell"
 DEFAULT_MEETING_PROCESSES = (
     "zoom.exe",
     "teams.exe",
@@ -100,7 +101,7 @@ class ToolchainConfig:
 @dataclass(frozen=True, slots=True)
 class UpdateConfig:
     enabled: bool = True
-    repo: str = ""
+    repo: str = DEFAULT_UPDATE_REPO
     check_on_start: bool = True
 
 

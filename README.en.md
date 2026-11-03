@@ -33,6 +33,7 @@ AgentBell does one thing well: **tell you the moment a round ends, and let you g
 
 ## Recent updates
 
+- **v2.9.10**: The first-run `config.json` now defaults to `1wu-davy-2/AgentBell` with the startup check enabled, so a fresh download checks Releases about 9 seconds after launch.
 - **v2.9.9**: Running now auto-collects recently active agent sessions as read-only cards showing agent, project, last activity, and record count; they follow source filters and search.
 - **v2.9.8**: The agent-source filter stacks with status and search; program updates can check for new versions about 9 seconds after launch.
 - **v2.9.7**: **Back to terminal** now falls back to attaching the input queue and `SwitchToThisWindow` when Windows foreground lock refuses a plain raise, so keyboard focus actually lands.
@@ -66,7 +67,7 @@ AgentBell does one thing well: **tell you the moment a round ends, and let you g
 
 The release ships `AgentBell.exe` and `SHA256SUMS.txt`. The updater only uses `AgentBell.exe`, so do not rename it. A build-numbered `AgentBell-*.exe` is a byte-identical copy; downloading `AgentBell.exe` is enough.
 
-**Enable self-update**: In **Preferences → General → Program update**, enter `1wu-davy-2/AgentBell` and enable the startup check. AgentBell checks Releases about 9 seconds after launch; the tray menu and the Agent launcher page can also trigger a manual check. Packaged builds download, verify, back up, replace, and restart automatically after exit. Source mode only downloads the installer and never replaces the running Python process. Change the repository in the same place.
+**Enable self-update**: the first-run `config.json` defaults to `1wu-davy-2/AgentBell` with the startup check enabled. AgentBell checks Releases about 9 seconds after launch; the tray menu and the Agent launcher page can also trigger a manual check. Packaged builds download, verify, back up, replace, and restart automatically after exit. Source mode only downloads the installer and never replaces the running Python process. If you upgraded from an older version with an empty repo, fill it in under **Preferences → General → Program update**.
 
 ### From source
 
@@ -151,14 +152,14 @@ Preferences cover skins, popup modes, fullscreen background and card placement, 
 
 ```powershell
 pip install -r requirements-dev.txt
-python -m PyInstaller --noconfirm --clean AgentBell20.spec
-# Output: dist\AgentBell-20.exe
+python -m PyInstaller --noconfirm --clean AgentBell21.spec
+# Output: dist\AgentBell-21.exe
 ```
 
 Pushing to `develop` runs tests and packaging. Pushing a `v*` tag verifies that the tag matches `__version__` in `agentbell/__init__.py`, then publishes a GitHub Release automatically. The workflow picks the highest-numbered `AgentBell*.spec` and copies its output to the stable `AgentBell.exe` name.
 
 ```bash
-git tag v2.9.9
+git tag v2.9.10
 git push origin develop --tags
 ```
 

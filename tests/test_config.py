@@ -328,7 +328,7 @@ def test_update_defaults_repo_normalization_and_round_trip(tmp_path):
     path = tmp_path / "config.json"
     config, _ = load_config(path)
     assert config.update.enabled is True
-    assert config.update.repo == ""
+    assert config.update.repo == "1wu-davy-2/AgentBell"
     assert config.update.check_on_start is True
 
     updated = replace(
@@ -358,6 +358,13 @@ def test_update_defaults_repo_normalization_and_round_trip(tmp_path):
     }
     restored = config_from_dict(payload)
     assert restored.update.repo == "acme/AgentBell"
+
+    payload["update"] = {
+        "enabled": True,
+        "repo": "",
+        "check_on_start": True,
+    }
+    assert config_from_dict(payload).update.repo == ""
 
 
 @pytest.mark.parametrize(

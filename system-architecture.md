@@ -36,9 +36,11 @@
 
 2.9.7 修复「终端窗口已置前，但系统未授予键盘焦点」：Windows 前台锁会拒绝普通 `SetForegroundWindow`，现在依次尝试附加前台与目标线程输入队列、`SwitchToThisWindow`，最后用一次短暂的 Alt 输入满足前台锁；仍失败才退回仅置前并提示。该兜底只在用户明确点击「回到终端」后触发。
 
-2.9.8 优化通知来源展示与筛选：「来源 Agent」从摘要下方移到卡片标题行；通知中心在状态标签右侧新增 Agent 来源下拉，可与状态、搜索叠加，计数和总条数同步变化，重置筛选时一并恢复。安装包与示例配置预填更新仓库 `1wu-davy-2/AgentBell`，启动约 9 秒后自动检查，托盘与 Agent 启动页仍可手动检查；GitHub Actions 改为自动选用编号最大的 spec，不再写死旧版文件名。
+2.9.8 优化通知来源展示与筛选：「来源 Agent」从摘要下方移到卡片标题行；通知中心在状态标签右侧新增 Agent 来源下拉，可与状态、搜索叠加，计数和总条数同步变化，重置筛选时一并恢复。更新设置支持填写仓库并在启动约 9 秒后自动检查，托盘与 Agent 启动页仍可手动检查；GitHub Actions 改为自动选用编号最大的 spec，不再写死旧版文件名。
 
 2.9.9 让「进行中」不再只等显式通知：会话扫描结果中最近 2 个扫描周期（至少 120 秒，默认 240 秒）内仍有写入的会话，会以「活跃会话」卡片自动出现在「进行中」页，标注 Agent、项目、最近活动时间与记录数，可直接查看记录或回到终端。活跃会话是只读推断，不写入 SQLite、不进入「全部」计数，但会计入「进行中」标签，并随来源筛选与搜索收窄；扫描关闭时自动隐藏。
+
+2.9.10 补齐首次运行的更新配置：生成的 `config.json` 默认填入 `1wu-davy-2/AgentBell` 并保持「启动时自动检查」，下载后约 9 秒即可查询 Releases；从旧版本升级且仓库为空的配置不会被覆盖，仍可在偏好设置中填写。
 
 ## 特性
 
@@ -131,7 +133,7 @@ agentbell/
 ├─ requirements.txt       运行依赖
 ├─ requirements-dev.txt   测试/打包依赖
 ├─ run.py                 源码启动入口
-├─ AgentBell20.spec       PyInstaller 配置（AgentBell-20.exe）
+├─ AgentBell21.spec       PyInstaller 配置（AgentBell-21.exe）
 ├─ LICENSE                MIT 许可证
 ├─ README.md              项目介绍、截图、安装与使用教程
 └─ system-architecture.md 本文件：架构、配置、API 与打包手册
@@ -416,12 +418,12 @@ runtime/
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `update.enabled` | 布尔 | `true` | 是否允许检查与下载 AgentBell 自身更新；关闭后完全离线 |
-| `update.repo` | 字符串 | `""` | GitHub 仓库，格式 `owner/repo`；也可填完整仓库 URL，读取时会自动归一化。代码默认留空，安装包与示例配置预填 `1wu-davy-2/AgentBell`；清空表示不联网 |
+| `update.repo` | 字符串 | `"1wu-davy-2/AgentBell"` | GitHub 仓库，格式 `owner/repo`；也可填完整仓库 URL，读取时会自动归一化。代码、安装包与示例配置默认填入 `1wu-davy-2/AgentBell`；清空表示不联网 |
 | `update.check_on_start` | 布尔 | `true` | 启动约 9 秒后自动检查；打包版发现新版本会自动下载并在退出时替换重启 |
 
 行为：
 
-- 仓库为空时不会发出任何网络请求；安装包与示例配置默认预填 `1wu-davy-2/AgentBell`，清空后手动点「检查更新」会提示去「偏好设置 → 常规 → 程序更新」填写。
+- 仓库为空时不会发出任何网络请求；首次运行默认填入 `1wu-davy-2/AgentBell`，清空后手动点「检查更新」会提示去「偏好设置 → 常规 → 程序更新」填写。
 - 只更新 AgentBell 自身，不会执行 npm / pip 等 Agent 安装或升级命令。
 - 版本来自 `GET https://api.github.com/repos/{owner}/{repo}/releases/latest` 的 `tag_name`，去掉 `v` 后按数字比较；`2.8.0-beta` 低于 `2.8.0`。
 - 安装包优先选稳定命名 `AgentBell.exe`，否则选名称含 `agentbell` 的 `.exe`；Release 没有 `.exe` 时只能打开 Release 页面。
@@ -888,18 +890,18 @@ PyInstaller 不能跨平台交叉编译，请在目标系统上分别打包。
 ```bash
 pip install -r requirements-dev.txt
 
-# 产物：dist\AgentBell-20.exe
-python -m PyInstaller --noconfirm --clean AgentBell20.spec
+# 产物：dist\AgentBell-21.exe
+python -m PyInstaller --noconfirm --clean AgentBell21.spec
 ```
 
 把 `config.json` 复制到 exe 旁边再运行：
 
 ```bash
 copy config.json dist\config.json
-dist\AgentBell-20.exe
+dist\AgentBell-21.exe
 ```
 
-> 新旧版本默认共用单实例锁：若托盘中已有 AgentBell 在运行，双击 AgentBell-20 只会唤醒旧实例。切换版本前先从托盘退出旧版，再启动新 exe。
+> 新旧版本默认共用单实例锁：若托盘中已有 AgentBell 在运行，双击 AgentBell-21 只会唤醒旧实例。切换版本前先从托盘退出旧版，再启动新 exe。
 
 打包后 `config.json`、`logs/`、`agentbell.db`、`chat/` 与 `updates/` 都位于 exe 所在目录。单文件模式首次启动需要解压到临时目录，通常会有 1–3 秒延迟。
 
@@ -914,11 +916,11 @@ dist\AgentBell-20.exe
 发布新版本：
 
 ```bash
-# 1. 修改 agentbell/__init__.py 的 __version__，例如 2.9.9
+# 1. 修改 agentbell/__init__.py 的 __version__，例如 2.9.10
 # 2. 提交并打同版本 tag（tag 去掉 v 后必须与 __version__ 完全一致）
 git add -A
-git commit -m "feat: 升级 AgentBell 2.9.9 ..."
-git tag v2.9.9
+git commit -m "feat: 升级 AgentBell 2.9.10 ..."
+git tag v2.9.10
 git push origin develop --tags
 ```
 
@@ -930,7 +932,7 @@ git push origin develop --tags
 
 ```bash
 pyinstaller --noconfirm --clean --onefile --windowed \
-  --name AgentBell-20 \
+  --name AgentBell-21 \
   --hidden-import uvicorn.logging \
   --hidden-import uvicorn.loops.asyncio \
   --hidden-import uvicorn.protocols.http.h11_impl \
