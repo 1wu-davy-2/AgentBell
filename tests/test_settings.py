@@ -51,6 +51,7 @@ def test_save_validates_and_writes_config(qapp, tmp_path):
         dialog._overlay_margin_spin.setValue(44)
         dialog._overlay_offset_x_spin.setValue(-18)
         dialog._overlay_offset_y_spin.setValue(26)
+        dialog._overlay_primary_only_check.setChecked(True)
         dialog._quiet_enabled_check.setChecked(True)
         dialog._quiet_start_edit.setTime(QTime.fromString("21:30", "HH:mm"))
         dialog._quiet_end_edit.setTime(QTime.fromString("07:15", "HH:mm"))
@@ -109,6 +110,7 @@ def test_save_validates_and_writes_config(qapp, tmp_path):
         assert loaded.overlay_area.margin == 44
         assert loaded.overlay_area.offset_x == -18
         assert loaded.overlay_area.offset_y == 26
+        assert loaded.overlay_area.card_on_primary_only is True
         assert loaded.quiet_hours.enabled is True
         assert loaded.quiet_hours.start == "21:30"
         assert loaded.quiet_hours.end == "07:15"
@@ -244,6 +246,7 @@ def test_preview_uses_selected_appearance_and_cleans_up(qapp, tmp_path):
         dialog._overlay_margin_spin.setValue(40)
         dialog._overlay_offset_x_spin.setValue(12)
         dialog._overlay_offset_y_spin.setValue(-6)
+        dialog._overlay_primary_only_check.setChecked(True)
         dialog._preview_popup()
 
         preview = dialog._preview
@@ -257,6 +260,8 @@ def test_preview_uses_selected_appearance_and_cleans_up(qapp, tmp_path):
         assert preview._overlay_area.margin == 40
         assert preview._overlay_area.offset_x == 12
         assert preview._overlay_area.offset_y == -6
+        assert preview._overlay_area.card_on_primary_only is True
+        assert preview._show_card is True
 
         preview.dismiss("ack")
         QTest.qWait(260)

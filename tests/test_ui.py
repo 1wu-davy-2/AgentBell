@@ -6,7 +6,7 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtCore import QPoint, Qt
+from PySide6.QtCore import QPoint, QRect, Qt
 from PySide6.QtGui import QColor, QPixmap
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton
@@ -232,6 +232,89 @@ def test_overlay_fills_screen_and_backdrop_dismisses(qapp):
         toast.close_now()
         toast.deleteLater()
         QTest.qWait(20)
+
+
+class _FakeScreen:
+    def __init__(self, geometry: QRect) -> None:
+        self._geometry = geometry
+
+    def geometry(self) -> QRect:
+        return self._geometry
+
+
+def test_overlay_covers_every_screen_and_dismisses_together(qapp, monkeypatch):
+    manager = ToastManager(30, logging.getLogger("agentbell.tests"))
+    screens = [
+        _FakeScreen(QRect(0, 0, 800, 600)),
+        _FakeScreen(QRect(800, 0, 1024, 768)),
+    ]
+    monkeypatch.setattr(manager, "_overlay_screens", lambda: screens)
+    try:
+        manager.enqueue(make_notification(57, popup_mode="overlay"))
+        QTest.qWait(150)
+        assert len(manager._active) == 2
+        assert [toast._screen for toast in manager._active] == screens
+
+        manager._active[1].dismiss("ack")
+        QTest.qWait(400)
+        assert manager._active == []
+    finally:
+        manager.close_all()
+        QTest.qWait(50)
+
+
+def test_overlay_update_reaches_all_screens(qapp, monkeypatch):
+    manager = ToastManager(30, logging.getLogger("agentbell.tests"))
+    screens = [
+        _FakeScreen(QRect(0, 0, 800, 600)),
+        _FakeScreen(QRect(800, 0, 1024, 768)),
+    ]
+    monkeypatch.setattr(manager, "_overlay_screens", lambda: screens)
+    try:
+        manager.enqueue(make_notification(58, popup_mode="overlay"))
+        QTest.qWait(120)
+        manager.enqueue(
+            make_notification(58, popup_mode="overlay", summary="进度更新")
+        )
+        QTest.qWait(120)
+        assert len(manager._active) == 2
+        assert all(
+            toast.notification.summary == "进度更新"
+            for toast in manager._active
+        )
+    finally:
+        manager.close_all()
+        QTest.qWait(50)
+
+
+def test_overlay_card_can_stay_on_primary_screen(qapp, monkeypatch):
+    manager = ToastManager(
+        30,
+        logging.getLogger("agentbell.tests"),
+        overlay_area=OverlayAreaConfig(card_on_primary_only=True),
+    )
+    screens = [
+        _FakeScreen(QRect(0, 0, 800, 600)),
+        _FakeScreen(QRect(800, 0, 1024, 768)),
+    ]
+    monkeypatch.setattr(manager, "_overlay_screens", lambda: screens)
+    try:
+        manager.enqueue(make_notification(59, popup_mode="overlay"))
+        QTest.qWait(150)
+        assert len(manager._active) == 2
+        primary, secondary = manager._active
+        assert primary._show_card is True
+        assert primary.card.isHidden() is False
+        assert secondary._show_card is False
+        assert secondary.card.isHidden() is True
+        assert secondary._overlay_backdrop is not None
+
+        QTest.mouseClick(secondary, Qt.MouseButton.LeftButton, pos=QPoint(4, 4))
+        QTest.qWait(400)
+        assert manager._active == []
+    finally:
+        manager.close_all()
+        QTest.qWait(50)
 
 
 def test_overlay_update_keeps_fullscreen_geometry(qapp):

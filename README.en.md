@@ -26,6 +26,7 @@ The starting point was concrete: when Claude Code, Codex, or another agent runs 
 AgentBell does one thing well: **tell you the moment a round ends, and let you get back to the scene immediately.**
 
 - **Notice the wait**: when an agent stalls on a permission prompt, question, rate limit, or context limit, cards show the reason; a **Waiting** sub-filter sits under Running.
+- **Install reminders in one click**: the Runtime page writes waiting and finish hooks for Claude Code, Gemini CLI, and Grok into their user configs; Codex gets finish-only reminders. Every write is previewed, backed up, and reversible.
 - **Replay the run**: events sharing one `run_id` (start, wait, resume, finish) form an append-only timeline; cards open a timeline dialog, and statistics break down run success, P50/P90 duration, and total waiting time.
 - **Walk away**: do something else while the agent works. One ring and one card when it finishes.
 - **Close the loop**: a notification can focus the terminal (`origin.pid`), open the local session record or run timeline, retry a failed task, or remind you later. Read-only actions never approve permissions or continue an agent.
@@ -36,6 +37,8 @@ AgentBell does one thing well: **tell you the moment a round ends, and let you g
 
 ## Recent updates
 
+- **v2.15.0**: Fullscreen alerts can keep the card on the primary display only. Every monitor still gets the backdrop and scrim, but secondary screens show just the background image; clicking any screen still dismisses the alert everywhere. Toggle it under Preferences → Popup appearance → Fullscreen area, or set `overlay_area.card_on_primary_only` (off by default).
+- **v2.14.0**: One-click reminder hooks. The Runtime page can install waiting, question, and round-finish hooks into Claude Code (`~/.claude/settings.json`), Gemini CLI (`~/.gemini/settings.json`), and Grok (`~/.grok/hooks/agentbell.json`); Codex uses the top-level `notify` key for finish-only reminders. Every change is previewed and backed up, only marked entries are appended, existing hooks stay untouched, and an existing custom Codex `notify` is never overwritten.
 - **v2.13.0**: Fine-grained rules. `rules` gain `wait_reason`, `needs_input`, `min_duration_seconds` / `max_duration_seconds`, and `project` conditions, so permission waits, test projects, or runs longer than 10 minutes can be routed to different priorities and channels. Projects match the last segment of the working directory case-insensitively; durations come from `duration` with inclusive bounds, and a rule with duration bounds does not match when it is missing. Rule changes take effect on save, and locally inferred waiting notifications participate too. Hover tips are now shown only for truncated text, wrap at 32 characters, and use the light UI style instead of a full-card tooltip covering the next row.
 - **v2.12.0**: Read-only actions. A notification can declare `session` / `timeline` actions, giving the popup and notification center **View record** and **Timeline** buttons that open local session data or the current run. Both read only the notification's own `session_id` / `run_id`, ignore `value`, and never run external commands. There is deliberately no approve-permission, auto-continue, or send-prompt action.
 - **v2.11.0**: Run timelines. Events sharing one `run_id` are appended to `run_events`; a **Timeline** button on each card replays start, waiting, resume, and finish with relative timings. Session detail shows the latest run, and statistics add run count, run success rate, P50/P90 duration, and total waiting time. Pass an explicit `/notify` `phase`, or let AgentBell infer transitions from status changes.
@@ -116,9 +119,20 @@ Filter by status and agent source in the toolbar, search by title, summary, or s
 2. Paste it into your agent (Claude Code, Codex, Qoder, etc.) once.
 3. The instructions include the current port, `X-Token`, field reference, and the rule to notify **after every round**, including failures and cancellations.
 
-Ask the agent to include `origin.pid` so notification cards can offer a **back to terminal** button. To add **View record** or **Timeline**, declare the read-only actions described in section 5.
+Ask the agent to include `origin.pid` so notification cards can offer a **back to terminal** button. To add **View record** or **Timeline**, declare the read-only actions described in section 6.
 
-### 4. Report a waiting agent (optional)
+### 4. Install reminders with one click (optional)
+
+Instead of asking the agent to push after every round, open **Runtime → Reminder hooks** to write the agent's own hooks:
+
+- **Claude Code**: user-level `~/.claude/settings.json` with `UserPromptSubmit`, `Notification`, and `Stop`.
+- **Gemini CLI**: user-level `~/.gemini/settings.json` with `BeforeAgent`, `Notification`, and `AfterAgent`.
+- **Grok**: user-level `~/.grok/hooks/agentbell.json` with `UserPromptSubmit`, `Notification`, `Stop`, `StopFailure`, and `StopCancelled`.
+- **Codex**: only supports the top-level `notify` key, so it can report round completion but not waiting states; an existing custom `notify` is never overwritten.
+
+The page previews every event and the full resulting configuration, then makes a timestamped backup before appending entries marked `agentbell-hook`; existing hooks, MCP servers, and keys are preserved. **Remove** only deletes AgentBell entries. Notifications carry the source, working directory, session id, and read-only **View record / Timeline** actions. Hooks only call the local AgentBell endpoint; they never approve permissions, continue the agent, or send prompts. Codex waits still require returning to the terminal. Restart the agent or start a new session for the hooks to take effect. JSON files are rewritten with two-space indentation, so existing indentation and blank lines may change. Backups are complete copies of the original files and may contain secrets; treat them as sensitive.
+
+### 5. Report a waiting agent (optional)
 
 When an agent stops and waits for you, send a `status="running"` notification with `needs_input`:
 
@@ -139,7 +153,7 @@ When an agent stops and waits for you, send a `status="running"` notification wi
 
 If you prefer not to report explicitly, enable local inference under **Preferences → Agent**. It only reads the tail of recent Claude Code / Qoder transcripts, requires two consecutive scans plus an idle threshold, and labels inferred cards with **Inferred**. It never writes to session files and never logs transcript content; disable it to keep explicit reporting only.
 
-### 5. Replay a run (optional)
+### 6. Replay a run (optional)
 
 Events sharing one `run_id` form one run. AgentBell derives the id in this order: request `run_id` → `session:<session_id>` → `notify:<dedupe_key>` → `single:<notification id>`. Without a `phase`, the first `running` becomes **Started**, a terminal status becomes **Finished**, and wait/resume transitions are inferred automatically:
 
@@ -172,7 +186,7 @@ To put **View record** and **Timeline** buttons on the popup and in the notifica
 
 `session` requires `session_id`; `timeline` requires `run_id` (or falls back to `session_id` / `dedupe_key`). Both ignore `value` and only open read-only records inside AgentBell. A missing session or run produces a non-blocking notice and never runs an external command. AgentBell deliberately offers no approve-permission, auto-continue, or send-prompt action; approve in the terminal.
 
-### 6. Install the agent runtime
+### 7. Install the agent runtime
 
 Open the **Runtime** page and click **Install all**, or install only what you need:
 
@@ -182,7 +196,7 @@ Open the **Runtime** page and click **Install all**, or install only what you ne
 
 No administrator rights are required, and the system `PATH` is left untouched; AgentBell only prepends these folders for agent detection and spawned terminals. Afterwards, click **Refresh** on the launcher page to pick up the new CLIs. DeepSeek has no official CLI, so save an API key at the bottom of the page and use **Launch Claude Code with DeepSeek** to start it with that provider.
 
-### 7. Launch agents (optional)
+### 8. Launch agents (optional)
 
 The **Agent 启动** page detects Claude Code, Claude Desktop, Codex, Gemini CLI, Grok Build, OpenCode, OpenClaw, Hermes, Pi, MiniMax Code, and Antigravity.
 
@@ -191,7 +205,7 @@ The **Agent 启动** page detects Claude Code, Claude Desktop, Codex, Gemini CLI
 - Prompts are passed through an environment variable, never concatenated into a shell command. Desktop apps can only be opened, not pre-filled.
 - **项目主页** opens the agent's official site or GitHub repository.
 
-### 8. Return to the terminal
+### 9. Return to the terminal
 
 Include the source process in the request:
 
@@ -205,16 +219,16 @@ Include the source process in the request:
 
 The card gets a **回到终端** button that brings the host terminal or editor window to the foreground. It focuses the window only — no tab selection, no command execution. If no window is found, the working directory is copied to the clipboard.
 
-### 9. Tune appearance and interruptions
+### 10. Tune appearance and interruptions
 
 Preferences cover skins, popup modes, fullscreen background and card placement, quiet hours, fullscreen/meeting suppression, lock-screen holding, digest, acknowledgements, and snooze. The **测试** button previews the current configuration without writing history.
 
-### 10. Build and release
+### 11. Build and release
 
 ```powershell
 pip install -r requirements-dev.txt
-python -m PyInstaller --noconfirm --clean AgentBell22.spec
-# Output: dist\AgentBell-22.exe
+python -m PyInstaller --noconfirm --clean AgentBell26.spec
+# Output: dist\AgentBell-26.exe
 ```
 
 Pushing to `develop` runs tests and packaging. Pushing a `v*` tag verifies that the tag matches `__version__` in `agentbell/__init__.py`, then publishes a GitHub Release automatically. The workflow picks the highest-numbered `AgentBell*.spec` and copies its output to the stable `AgentBell.exe` name.

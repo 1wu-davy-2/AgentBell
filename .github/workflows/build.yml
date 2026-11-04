@@ -96,7 +96,18 @@ jobs:
         with:
           name: AgentBell-windows
           path: release
+      - name: Publish release with curated notes
+        if: hashFiles(format('docs/releases/{0}.md', github.ref_name)) != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/AgentBell.exe
+            release/AgentBell-*.exe
+            release/SHA256SUMS.txt
+          body_path: docs/releases/${{ github.ref_name }}.md
+          fail_on_unmatched_files: true
       - name: Publish release
+        if: hashFiles(format('docs/releases/{0}.md', github.ref_name)) == ''
         uses: softprops/action-gh-release@v2
         with:
           files: |

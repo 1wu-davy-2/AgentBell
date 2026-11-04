@@ -35,6 +35,7 @@ from ..toolchain import (
     protect_secret,
     reveal_secret,
 )
+from .hooks_panel import CONFIRM, HooksPanel
 
 CC_SWITCH_URL = "https://github.com/farion1231/cc-switch/releases/latest"
 
@@ -62,6 +63,10 @@ QLabel#toolMeta {
     font-size: 10px;
     color: #9AA1AC;
 }
+QLabel#toolProblem {
+    font-size: 10px;
+    color: #C24141;
+}
 QLabel#toolChip {
     font-size: 10px;
     font-weight: 600;
@@ -73,6 +78,14 @@ QLabel#toolChip {
 QLabel#toolChip[installed="true"] {
     color: #1D7A4C;
     background-color: #E8F6EE;
+}
+QLabel#toolChip[tone="partial"] {
+    color: #9A6A1C;
+    background-color: #FCF2DF;
+}
+QLabel#toolChip[state="error"] {
+    color: #C24141;
+    background-color: #FBEAEA;
 }
 QLabel#toolHint {
     font-size: 10px;
@@ -326,12 +339,17 @@ class ToolchainPage(QWidget):
         config: ToolchainConfig,
         logger: logging.Logger,
         parent: QWidget | None = None,
+        *,
+        hooks_home: Path | None = None,
+        hooks_confirm: CONFIRM | None = None,
     ) -> None:
         super().__init__(parent)
         self.setObjectName("bodyPanel")
         self._root = Path(root)
         self._config = config
         self._logger = logger
+        self._hooks_home = hooks_home
+        self._hooks_confirm = hooks_confirm
         self._service = self._make_service(config)
         self._rows: dict[str, _ToolRow] = {}
         self._busy = False
@@ -445,6 +463,18 @@ class ToolchainPage(QWidget):
         for spec in NPM_TOOLS:
             row = self._add_row(host_layout, spec.id, spec.name, spec.summary)
             host_layout.addWidget(row)
+
+        host_layout.addSpacing(8)
+        host_layout.addWidget(self._section(host, "提醒接入"))
+        self._hooks_panel = HooksPanel(
+            self._root.parent,
+            self._logger,
+            self,
+            home=self._hooks_home,
+            confirm=self._hooks_confirm,
+        )
+        self._hooks_panel.status_message.connect(self._on_hooks_status)
+        host_layout.addWidget(self._hooks_panel)
 
         host_layout.addSpacing(8)
         host_layout.addWidget(
@@ -599,6 +629,7 @@ class ToolchainPage(QWidget):
             row = self._rows.get(tool.id)
             if row is not None:
                 row.set_state(tool, self._busy)
+        self._hooks_panel.refresh()
         if not self._busy:
             components = (state.node, *state.tools)
             detected = sum(1 for item in components if item.installed)
@@ -700,6 +731,9 @@ class ToolchainPage(QWidget):
         self._set_busy(False)
         self._set_status(message, error=True)
         self.refresh()
+
+    def _on_hooks_status(self, message: str, error: bool) -> None:
+        self._set_status(message, error=error)
 
     def _set_busy(self, busy: bool) -> None:
         self._busy = busy

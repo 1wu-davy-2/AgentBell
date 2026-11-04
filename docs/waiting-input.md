@@ -25,7 +25,13 @@ AgentBell 用 `running` 通知上的 `needs_input` 表示「Agent 正在等你�
 - 同一 `session_id` 的新通知会结束上一次等待；也可以显式发送 `needs_input=false`。
 - 未填写 `priority` 时，等待通知默认 `high`。
 
-## Claude Code Hook
+## 一键接入（推荐）
+
+打开 AgentBell 的「运行环境 → 提醒接入」，点 Claude Code、Gemini CLI 或 Grok 右侧的「接入」即可。安装器会预览配置、按时间戳备份，只追加带 `agentbell-hook` 标记的条目，并支持随时撤销；Codex 只支持结束提醒。具体事件、写入位置与排查方式见 [system-architecture.md](../system-architecture.md) 的「一键接入 Agent Hook」。
+
+下面的手动脚本适合需要自定义行为，或想了解 Hook 数据格式的场景。
+
+## 手动接入示例（Claude Code）
 
 Claude Code 的 `Notification` 事件在需要权限或等待输入时触发，`UserPromptSubmit` 在用户提交新输入时触发。把下面的脚本保存为 `agentbell_wait_hook.py`，再把 Hook 写进项目或用户级 `.claude/settings.json`。
 

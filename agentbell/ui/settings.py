@@ -593,6 +593,18 @@ class SettingsDialog(QDialog):
         self._overlay_margin_spin.setValue(self.config.overlay_area.margin)
         area_form.addRow("与屏幕边缘距离", self._overlay_margin_spin)
 
+        self._overlay_primary_only_check = QCheckBox(
+            "仅在主屏显示提醒卡片", area_group
+        )
+        self._overlay_primary_only_check.setChecked(
+            self.config.overlay_area.card_on_primary_only
+        )
+        self._overlay_primary_only_check.setToolTip(
+            "勾选后，副屏仍显示全屏背景，但不绘制提醒卡片；"
+            "点击任意副屏可关闭提醒。默认每块屏幕都显示卡片。"
+        )
+        area_form.addRow("多屏显示", self._overlay_primary_only_check)
+
         self._overlay_offset_x_spin = QSpinBox(area_group)
         self._overlay_offset_x_spin.setRange(-OVERLAY_OFFSET_LIMIT, OVERLAY_OFFSET_LIMIT)
         self._overlay_offset_x_spin.setSuffix(" px")
@@ -618,8 +630,9 @@ class SettingsDialog(QDialog):
         area_form.addRow("", self._overlay_drag_button)
 
         area_hint = QLabel(
-            "仅「全屏遮挡」模式生效。卡片高度随内容自动；可点「全屏拖拽定位」"
-            "直接拖动卡片，保存后立即写入配置。",
+            "仅「全屏遮挡」模式生效。卡片高度随内容自动；多显示器默认每屏都显示"
+            "卡片，勾选「仅在主屏显示提醒卡片」后副屏只保留背景。"
+            "可点「全屏拖拽定位」直接拖动卡片，保存后立即写入配置。",
             area_group,
         )
         area_hint.setObjectName("editorHint")
@@ -641,6 +654,7 @@ class SettingsDialog(QDialog):
             offset_x=self._overlay_offset_x_spin.value(),
             offset_y=self._overlay_offset_y_spin.value(),
             margin=self._overlay_margin_spin.value(),
+            card_on_primary_only=self._overlay_primary_only_check.isChecked(),
         )
 
     def _edit_overlay_area_fullscreen(self) -> None:
@@ -1152,6 +1166,9 @@ class SettingsDialog(QDialog):
                     "offset_x": self._overlay_offset_x_spin.value(),
                     "offset_y": self._overlay_offset_y_spin.value(),
                     "margin": self._overlay_margin_spin.value(),
+                    "card_on_primary_only": (
+                        self._overlay_primary_only_check.isChecked()
+                    ),
                 },
                 "agent_sessions": {
                     "enabled": self._agent_enabled_check.isChecked(),

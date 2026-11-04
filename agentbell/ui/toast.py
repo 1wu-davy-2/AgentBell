@@ -29,6 +29,7 @@ from PySide6.QtGui import (
     QLinearGradient,
     QPainter,
     QPixmap,
+    QScreen,
 )
 from PySide6.QtWidgets import (
     QFrame,
@@ -229,6 +230,8 @@ class ToastWindow(QWidget):
         popup_skin: str | None = None,
         overlay_image: str = "",
         overlay_area: OverlayAreaConfig | None = None,
+        screen: QScreen | None = None,
+        show_card: bool = True,
         parent: QWidget | None = None,
     ) -> None:
         flags = (
@@ -248,6 +251,8 @@ class ToastWindow(QWidget):
         self.popup_skin = _normalized_skin(popup_skin or notification.popup_skin)
         self._overlay_image = overlay_image
         self._overlay_area = overlay_area or OverlayAreaConfig()
+        self._screen = screen
+        self._show_card = bool(show_card)
         if self.popup_mode == "overlay":
             self._card_width = self._configured_overlay_width()
         else:
@@ -304,6 +309,8 @@ class ToastWindow(QWidget):
         self._build_ui()
         self._apply_style()
         self._refresh_summary_height()
+        if self.popup_mode == "overlay" and not self._show_card:
+            self.card.setVisible(False)
 
         self._tick_timer = QTimer(self)
         self._tick_timer.setInterval(100)
@@ -768,6 +775,9 @@ class ToastWindow(QWidget):
     def pulse(self) -> None:
         if self._closing:
             return
+        if not self._show_card:
+            self.raise_()
+            return
         self.card.setProperty("alert", True)
         self.card.style().unpolish(self.card)
         self.card.style().polish(self.card)
@@ -828,8 +838,8 @@ class ToastWindow(QWidget):
             self._tick_timer.start()
 
     def show_overlay(self) -> None:
-        # 显式落到主屏，避免 showFullScreen 在多显示器下选中窗口管理器默认的那块屏幕
-        screen = QGuiApplication.primaryScreen()
+        # 显式落到目标屏，避免 showFullScreen 在多显示器下选中窗口管理器默认的那块屏幕
+        screen = self._screen or QGuiApplication.primaryScreen()
         if screen is not None:
             self.setGeometry(screen.geometry())
         self.setWindowOpacity(0.0)
@@ -850,7 +860,7 @@ class ToastWindow(QWidget):
 
     def _place_overlay_card(self) -> None:
         backdrop = self._overlay_backdrop
-        if backdrop is None:
+        if backdrop is None or not self._show_card:
             return
         bounds = backdrop.rect()
         if bounds.width() <= 0 or bounds.height() <= 0:
@@ -900,8 +910,11 @@ class ToastWindow(QWidget):
         if (
             self.popup_mode == "overlay"
             and event.button() == Qt.MouseButton.LeftButton
-            and not self.card.rect().contains(
-                self.card.mapFromGlobal(event.globalPosition().toPoint())
+            and (
+                not self._show_card
+                or not self.card.rect().contains(
+                    self.card.mapFromGlobal(event.globalPosition().toPoint())
+                )
             )
         ):
             if self.notification.require_ack:
@@ -935,6 +948,8 @@ class ToastWindow(QWidget):
     # ---------- countdown ----------
 
     def _cursor_over_card(self) -> bool:
+        if not self._show_card:
+            return False
         local = self.card.mapFromGlobal(QCursor.pos())
         return self.card.rect().contains(local)
 
@@ -1096,9 +1111,10 @@ class ToastManager(QObject):
     def enqueue(self, notification: Notification) -> bool:
         if self._shutting_down:
             return False
-        existing = self._find_active(notification.id)
-        if existing is not None:
-            existing.update_notification(notification)
+        existing = self._find_all_active(notification.id)
+        if existing:
+            for toast in existing:
+                toast.update_notification(notification)
             self._reposition()
             return True
         for index, (item, digest_titles) in enumerate(self._pending):
@@ -1152,29 +1168,30 @@ class ToastManager(QObject):
         return True
 
     def pulse(self, notification_id: str) -> bool:
-        toast = self._find_active(notification_id)
-        if toast is None:
+        toasts = self._find_all_active(notification_id)
+        if not toasts:
             return False
-        toast.pulse()
+        for toast in toasts:
+            toast.pulse()
         return True
 
     def dismiss_toast(self, notification_id: str, reason: str = "ack") -> None:
-        toast = self._find_active(notification_id)
-        if toast is not None:
+        for toast in self._find_all_active(notification_id):
             toast.dismiss(reason)
         self._pending = deque(
             item for item in self._pending if item[0].id != notification_id
         )
 
     def _find_active(self, notification_id: str) -> ToastWindow | None:
-        return next(
-            (
-                toast
-                for toast in self._active
-                if toast.notification.id == notification_id
-            ),
-            None,
-        )
+        toasts = self._find_all_active(notification_id)
+        return toasts[0] if toasts else None
+
+    def _find_all_active(self, notification_id: str) -> list[ToastWindow]:
+        return [
+            toast
+            for toast in self._active
+            if toast.notification.id == notification_id
+        ]
 
     def _present(
         self, notification: Notification, digest_titles: tuple[str, ...] | None
@@ -1190,39 +1207,58 @@ class ToastManager(QObject):
             if is_digest
             else (notification.popup_skin or self._popup_skin)
         )
-        toast = ToastWindow(
-            notification,
-            self._auto_close_seconds,
-            self._logger,
-            templates=self._templates,
-            digest_titles=digest_titles,
-            popup_mode=mode,
-            popup_skin=skin,
-            overlay_image=self._overlay_image,
-            overlay_area=self._overlay_area,
+        screens: list[QScreen | None] = (
+            list(self._overlay_screens()) if mode == "overlay" else [None]
         )
-        toast.dismissed.connect(self._on_dismissed)
-        toast.acknowledged.connect(self.acknowledged)
-        toast.snooze_requested.connect(self.snooze_requested)
-        toast.action_requested.connect(self.action_requested)
-        toast.center_requested.connect(self.center_requested)
-        self._active.append(toast)
+        if not screens:
+            screens = [None]
+        card_primary_only = (
+            mode == "overlay"
+            and self._overlay_area.card_on_primary_only
+            and len(screens) > 1
+        )
+        card_screens = 0
+        for index, screen in enumerate(screens):
+            show_card = not card_primary_only or index == 0
+            if show_card:
+                card_screens += 1
+            toast = ToastWindow(
+                notification,
+                self._auto_close_seconds,
+                self._logger,
+                templates=self._templates,
+                digest_titles=digest_titles,
+                popup_mode=mode,
+                popup_skin=skin,
+                overlay_image=self._overlay_image,
+                overlay_area=self._overlay_area,
+                screen=screen,
+                show_card=show_card,
+            )
+            toast.dismissed.connect(self._on_dismissed)
+            toast.acknowledged.connect(self.acknowledged)
+            toast.snooze_requested.connect(self.snooze_requested)
+            toast.action_requested.connect(self.action_requested)
+            toast.center_requested.connect(self.center_requested)
+            self._active.append(toast)
 
-        if mode == "center":
-            target = self._center_position(toast)
-        elif mode == "overlay":
-            target = QPoint(0, 0)
-        else:
-            target = QPoint(*self._next_position())
-        if self._paused:
-            toast.set_paused(True)
-        toast.show_at(target)
+            if mode == "center":
+                target = self._center_position(toast)
+            elif mode == "overlay":
+                target = QPoint(0, 0)
+            else:
+                target = QPoint(*self._next_position())
+            if self._paused:
+                toast.set_paused(True)
+            toast.show_at(target)
         self._logger.info(
-            "弹窗显示 id=%s status=%s 模式=%s 皮肤=%s 可见=%d 排队=%d",
+            "弹窗显示 id=%s status=%s 模式=%s 皮肤=%s 屏幕=%d 卡片屏=%d 可见=%d 排队=%d",
             notification.id,
             notification.status,
             mode,
             skin,
+            len(screens),
+            card_screens,
             len(self._active),
             len(self._pending),
         )
@@ -1241,6 +1277,16 @@ class ToastManager(QObject):
         if screen is None:
             return None
         return screen.availableGeometry()
+
+    def _overlay_screens(self) -> list[QScreen]:
+        screens = list(QGuiApplication.screens())
+        if not screens:
+            return []
+        primary = QGuiApplication.primaryScreen()
+        if primary is not None and primary in screens:
+            screens.remove(primary)
+            screens.insert(0, primary)
+        return screens
 
     def _next_position(self) -> tuple[int, int]:
         geometry = self._screen_geometry()
@@ -1270,11 +1316,19 @@ class ToastManager(QObject):
             y += toast.height() + TOAST_GAP
 
     def _on_dismissed(self, notification: Notification, reason: str) -> None:
-        toast = self._find_active(notification.id)
+        sender = self.sender()
+        toast = (
+            sender
+            if isinstance(sender, ToastWindow) and sender in self._active
+            else self._find_active(notification.id)
+        )
         if toast is None:
             return
         self._active.remove(toast)
         toast.deleteLater()
+        for other in self._find_all_active(notification.id):
+            if not other._closing:
+                other.dismiss(reason)
 
         reason_text = {
             "ack": "用户点击知道了",
@@ -1322,7 +1376,8 @@ class ToastManager(QObject):
         if self._shutting_down:
             return
         self._shutting_down = True
-        count = len(self._active) + len(self._pending)
+        count = len({toast.notification.id for toast in self._active})
+        count += len(self._pending)
         for toast in self._active:
             toast.close_now()
             toast.deleteLater()

@@ -126,6 +126,7 @@ class OverlayAreaConfig:
     offset_x: int = 0
     offset_y: int = 0
     margin: int = OVERLAY_MARGIN_DEFAULT
+    card_on_primary_only: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -450,6 +451,9 @@ def _read_overlay_area(data: dict[str, Any]) -> OverlayAreaConfig:
         offset_x=_int("offset_x", 0, -OVERLAY_OFFSET_LIMIT, OVERLAY_OFFSET_LIMIT),
         offset_y=_int("offset_y", 0, -OVERLAY_OFFSET_LIMIT, OVERLAY_OFFSET_LIMIT),
         margin=_int("margin", OVERLAY_MARGIN_DEFAULT, 0, OVERLAY_MARGIN_MAX),
+        card_on_primary_only=_read_bool(
+            section, "card_on_primary_only", False
+        ),
     )
 
 

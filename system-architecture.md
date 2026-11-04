@@ -48,6 +48,10 @@
 
 2.12.0 新增只读动作：`/notify` 的 `actions` 接受 `session` 与 `timeline`，分别打开内置会话记录与本次运行时间线。两类动作只读取通知自身的 `session_id` / `run_id`，忽略 `value`，不执行任何外部命令；未知标识或缺少标识时给出非阻塞提示。动作顺序固定为 `focus` → `session` → `timeline` → 其他，弹窗与通知中心的首个按钮因此总是「回到终端」或「查看记录」。不提供批准权限、自动继续或发送提示词的动作，审批必须回到终端完成。
 
+2.15.0 新增「仅在主屏显示提醒卡片」：全屏遮挡仍逐屏铺满所有显示器并覆盖任务栏，启用 `overlay_area.card_on_primary_only` 后只有主屏绘制卡片，副屏仅保留背景图与遮罩；点击任意屏幕仍会关闭全部提醒，必须确认的通知仍按脉冲提示处理。设置页「全屏显示区域」提供同名开关，默认关闭以保持每屏显示卡片的行为；旧配置缺少该字段时按 `false` 解析。
+
+2.14.0 新增「一键接入提醒」：运行环境页可把本机 Agent 的 Hook 写入各自用户配置，Claude Code 使用 `~/.claude/settings.json` 的 `UserPromptSubmit` / `Notification` / `Stop`，Gemini CLI 使用 `~/.gemini/settings.json` 的 `BeforeAgent` / `Notification` / `AfterAgent`，Grok 使用 `~/.grok/hooks/agentbell.json` 的 `UserPromptSubmit` / `Notification` / `Stop` / `StopFailure` / `StopCancelled`；Codex 只支持顶层 `notify`，因此仅提醒每轮结束。写入前展示完整预览，按时间戳备份，使用配置锁与原子替换，只追加带 `agentbell-hook` 标记的条目；撤销只移除自己的条目，已有 Hook / MCP / 密钥保持不变，已有 Codex `notify` 不会被覆盖。Hook 脚本读取本机 `config.json` 的端口与 token，按会话维护最小状态（轮次、是否等待、更新时间），只向环回接口上报；不批准权限、不自动继续、不发送提示词。
+
 2.13.0 规则精细化：`rules` 在来源 / 标题 / 状态之外新增 `needs_input`、`wait_reason`、`project`、`min_duration_seconds`、`max_duration_seconds`。项目名取自 `origin.working_dir` 目录名或本地会话项目名，支持通配符；时长条件按通知的 `duration` 解析，缺失或不合法时不匹配。`/notify` 改为读取实时配置，设置页保存规则后立即对新通知生效；本地推断的等待提醒也走同一套规则。规则仍按顺序匹配、后匹配覆盖标量字段，最多 50 条。通知中心的悬停提示同步收紧：仅在文字被截断时出现，按 32 字换行并统一浅色样式，避免遮挡相邻卡片。
 
 ## 特性
@@ -56,13 +60,14 @@
 - 弹窗置顶、不抢键盘焦点，打字不会被打断。
 - 状态：成功 / 失败 / 取消 / 进行中；进行中通知可带 0–100 进度并在原卡片更新。
 - 等待输入：进行中通知可带 `needs_input` 与等待原因（权限、提问、限流、上下文超限、其他），卡片与「进行中」页的活跃会话同步标记；「待输入」子筛选只显示等待中的通知与会话。显式上报为主，Claude Code / Qoder 尾部只读推断为可关闭的兜底。
+- 一键接入提醒：在运行环境页写入 Claude Code / Gemini CLI / Grok 的等待与结束 Hook，Codex 支持结束提醒；写入前预览，按时间戳备份，使用配置锁与原子替换，只追加带标记的条目，可随时撤销。
 - 运行时间线：同一 `run_id` 的事件写入只追加的 `run_events`，卡片「时间线」按钮展示阶段、相对耗时、状态与来源；会话详情显示最近一次运行摘要，统计页增加运行数、运行成功率、P50/P90 耗时与累计等待。
 - 只读动作：通知可带「查看记录」「时间线」按钮，直接打开本地会话与运行时间线；不包含审批、自动继续、发送提示词或任意命令。
 - 优先级：`low` / `normal` / `high` / `critical`；紧急通知常驻，必须点「知道了」才消失。
 - 弹窗外观：`midnight` 午夜蓝 / `light` 晨光白 / `ocean` 深海青 / `amber` 琥珀暖四套皮肤，可按全局配置、规则或单条通知指定。
-- 弹窗模式：`corner` 右侧小卡片、`center` 居中弹窗（必须确认）、`overlay` 全屏遮挡；全屏模式真正铺满整块屏幕并覆盖任务栏，可搭配自定义背景图。同一时刻只显示一种弹窗，避免卡片与全屏层互相干扰。
+- 弹窗模式：`corner` 右侧小卡片、`center` 居中弹窗（必须确认）、`overlay` 全屏遮挡；全屏模式在每块显示器逐屏铺满并覆盖任务栏，可搭配自定义背景图。同一时刻只显示一种弹窗，避免卡片与全屏层互相干扰。
 - 全屏背景图：`overlay` 支持 PNG / JPG / BMP / WebP，自动等比裁剪铺满并叠加半透明压暗层；留空或图片失效时回落到内置渐变。
-- 全屏显示区域：`overlay_area` 可把卡片放到九宫格的任意位置（居中、上下左右、四角），设置宽度、屏幕边距与水平/垂直微调；卡片高度随内容自动，设置页「测试」可即时预览。
+- 全屏显示区域：`overlay_area` 可把卡片放到九宫格的任意位置（居中、上下左右、四角），设置宽度、屏幕边距与水平/垂直微调；卡片高度随内容自动，设置页「测试」可即时预览。多显示器默认每屏都显示卡片，勾选「仅在主屏显示提醒卡片」后副屏只保留背景与遮罩，点击副屏任意位置仍可关闭提醒。
 - 全屏拖拽定位：设置页「全屏拖拽定位…」打开真实全屏预览（背景图与皮肤同步），拖动卡片即可摆放，顶部实时显示坐标与尺寸，点「保存位置」自动换算成锚点与偏移并立即生效。
 - 效果预览：偏好设置底部「测试」按钮，按当前选择的模式、皮肤与背景图立即弹出一条预览，不写入历史、不影响真实通知。
 - 启动过渡：双击后先显示白底启动卡片，铃形标志播放一次铃声（双圈扩散 + 轻微摆动），约 2.2 秒内依次显示「正在唤起本机服务」「127.0.0.1:端口 · 已连接」和下一步状态；支持系统「减少动画」设置。
@@ -108,6 +113,7 @@ agentbell/
 │  ├─ attention.py        等待输入推断：尾部增量读取、信号识别、去重与恢复
 │  ├─ agent_launch.py     Agent 检测、项目内启动终端与提示词传递
 │  ├─ toolchain.py        便携 Node / Agent CLI 安装、校验与清单
+│  ├─ hooks.py            Agent Hook 检测、预览、备份、原子写入与撤销
 │  ├─ updater.py          GitHub Release 检查、下载校验、替换脚本与重启
 │  ├─ window_focus.py     Win32 窗口解析与聚焦（回到终端）
 │  ├─ channels.py         外部渠道后台投递线程
@@ -128,7 +134,8 @@ agentbell/
 │     ├─ about.py         「关于 AgentBell」标志展示、尺寸/变体与 SVG 导出
 │     ├─ window.py        cc-switch 风格通知中心、搜索、统计、Agent 会话、Agent 启动与阅读视图
 │     ├─ timeline.py      运行时间线弹窗（阶段、相对耗时、状态与来源）
-│     ├─ toolchain_page.py 「运行环境」页面（安装、卸载、进度、DeepSeek 预设）
+│     ├─ toolchain_page.py 「运行环境」页面（安装、卸载、进度、提醒接入、DeepSeek 预设）
+│     ├─ hooks_panel.py   「提醒接入」行、预览确认、批量接入与撤销
 │     ├─ settings.py      偏好设置对话框
 │     ├─ overlay_editor.py 全屏拖拽定位编辑器（真实背景预览、拖动、保存位置）
 │     ├─ toast.py         置顶弹窗、皮肤/模式、倒计时、堆叠调度、聚合摘要
@@ -136,17 +143,19 @@ agentbell/
 ├─ tests/                 API、策略、存储、配置、会话扫描、启动、更新与标志测试
 ├─ assets/agentbell.ico   打包用多尺寸图标（16–256）
 ├─ assets/agentbell.svg   标志 SVG 源文件
+├─ assets/hooks/agentbell-hook.ps1  Hook 上报脚本（PowerShell 5.1，UTF-8 BOM）
 ├─ docs/screenshots/      README 使用的界面截图
 ├─ config.json            当前配置
 ├─ config.example.json    配置示例
 ├─ chat/                  运行后自动创建：Agent 启动的默认工作目录（不提交）
 ├─ runtime/               运行后自动创建：便携 Node、Agent CLI 与 tools.json（不提交）
+├─ hooks/                 运行后自动创建：Hook 脚本副本与 state/ 会话状态（不提交）
 ├─ updates/               运行后自动创建：更新包与替换脚本（不提交）
 ├─ .github/workflows/build.yml  测试、打包、artifact 与 Release 发布
 ├─ requirements.txt       运行依赖
 ├─ requirements-dev.txt   测试/打包依赖
 ├─ run.py                 源码启动入口
-├─ AgentBell25.spec       PyInstaller 配置（AgentBell-25.exe）
+├─ AgentBell26.spec       PyInstaller 配置（AgentBell-26.exe，含 Hook 脚本资源）
 ├─ LICENSE                MIT 许可证
 ├─ README.md              项目介绍、截图、安装与使用教程
 └─ system-architecture.md 本文件：架构、配置、API 与打包手册
@@ -220,7 +229,8 @@ AgentBell 已就绪：http://127.0.0.1:8765（X-Token 鉴权已开启）
     "width": 0,
     "offset_x": 0,
     "offset_y": 0,
-    "margin": 32
+    "margin": 32,
+    "card_on_primary_only": false
   },
   "hold_when_locked": true,
   "agent_sessions": {
@@ -316,10 +326,11 @@ AgentBell 已就绪：http://127.0.0.1:8765（X-Token 鉴权已开启）
 | `overlay_area.width` | 整数 | `0` | 卡片宽度像素，`0` 使用默认 540；有效范围 240–1600，超出屏幕时自动收窄 |
 | `overlay_area.margin` | 整数 | `32` | 靠边位置与屏幕边缘的距离，0–600；居中时只影响可用宽度与高度 |
 | `overlay_area.offset_x` / `offset_y` | 整数 | `0` | 在锚点基础上的水平/垂直微调，-2000–2000；最终位置会被限制在屏幕内 |
+| `overlay_area.card_on_primary_only` | 布尔 | `false` | 为 `true` 时仅主屏绘制提醒卡片，其余屏幕只显示全屏背景与遮罩；任意屏幕仍可点击关闭 |
 
 - `corner`：出现在主屏右侧，多张卡片自上而下堆叠，保留原有的不抢焦点行为。
 - `center`：屏幕中央单张弹窗，必须点「知道了」（或稍后提醒）才消失；该模式会强制 `require_ack`。
-- `overlay`：真正铺满整块屏幕（含任务栏区域）的遮挡层 + 可定位卡片，适合必须马上看到的提醒；点击遮罩空白处可关闭，待确认时点击会轻微脉冲提示。
+- `overlay`：在每块显示器铺满（含任务栏区域）的遮挡层 + 可定位卡片，适合必须马上看到的提醒；任意屏幕点击遮罩空白处可关闭全部，待确认时点击会轻微脉冲提示。
 - `overlay_area`：卡片高度随标题、摘要、错误与动作按钮自动调整；位置先按九宫格锚点，再叠加微调。推荐点「偏好设置 → 弹窗外观 → 全屏显示区域 → 全屏拖拽定位…」，在真实全屏预览里直接把卡片拖到想要的位置，点「保存位置」即按最近锚点自动换算并保存；也可手动调整锚点、宽度、边距与偏移，再用底部「测试」预览最终效果。
 - `overlay_image`：图片按屏幕比例等比裁剪铺满，并叠加半透明黑色压暗层，保证卡片文字清晰；推荐使用与屏幕同比例的高分辨率图片。设置里可用「选择图片 / 清除」维护，并点击底部「测试」立即预览。
 - 三种模式互斥：同一时刻只显示一种模式的弹窗，其余通知继续排队；进行中通知更新时保持原模式与原尺寸。
@@ -774,7 +785,7 @@ X-Token: your-token        # 仅当 config.token 非空时必需
 
 - `corner`（默认）：主屏右侧小卡片，不抢焦点、逐条堆叠，保留冷却/聚合/暂停倒计时等行为。
 - `center`：居中单张弹窗，强制确认，不自动关闭；多个待确认通知按队列依次展示。点击「知道了」或稍后提醒后释放给下一条。
-- `overlay`：真正铺满整块屏幕（覆盖任务栏）的不透明遮挡层，按 `overlay_area` 摆放卡片（默认居中）；使用自定义背景图时等比裁剪铺满并叠加压暗层，未设置或加载失败时使用皮肤渐变。点击遮罩空白处即关闭，若该通知必须确认则改为脉冲提示，仍需点「知道了」。
+- `overlay`：真正铺满每块显示器（含任务栏）的不透明遮挡层，多显示器时默认逐屏显示同一卡片，按 `overlay_area` 摆放（默认居中）；启用 `overlay_area.card_on_primary_only` 后只在主屏绘制卡片，副屏只保留背景与遮罩。使用自定义背景图时逐屏等比裁剪铺满并叠加压暗层，未设置或加载失败时使用皮肤渐变。任意屏幕点击遮罩空白处（副屏无卡片时点击任意位置）即关闭全部屏幕，若该通知必须确认则改为脉冲提示，仍需点「知道了」。
 - 同一条通知更新（`dedupe_key`）时不会切换已显示的皮肤/模式；新推送可用 `popup_mode` / `popup_skin` 覆盖全局设置，规则命中时以规则为准。
 - 四套皮肤同时作用于通知卡片与通知中心，可在「偏好设置 → 弹窗外观」中选择。
 
@@ -813,7 +824,7 @@ X-Token: your-token        # 仅当 config.token 非空时必需
 - 卡片：标题行显示状态、优先级、来源 Agent、`更新 ×N`、`待确认/已确认`、时间，摘要下方显示进度条、耗时、错误与动作按钮、重新弹出、确认、稍后提醒。
 - 数据统计：总通知数、成功率（成功 / 已结束）、平均耗时（可解析的 `duration`）、待确认数，以及最近 7 天每日总量/失败量柱状图；「运行时间线」卡片按 `run_id` 统计运行数、运行成功率、P50/P90 运行时长与累计等待时长，等待中未结束的区段计入当前时刻。
 - 运行时间线：有 `run_id` 的卡片右侧显示「时间线」按钮，弹窗按时间顺序列出阶段、相对耗时、绝对时间、状态、来源与关联会话；一次包含等待的运行会显示开始 → 等待输入 → 已继续 → 完成。会话详情页顶部显示最近一次运行的摘要，可直接打开同一时间线。
-- 偏好设置：端口、token、自启、启动打开通知中心、自动关闭、冷却、成功弹窗、默认确认、快捷键、免打扰、全屏抑制、锁屏保留、弹窗模式与皮肤、全屏背景图与显示区域（含全屏拖拽定位）、Agent 会话扫描、会议进程、离开判定、聚合、升级、模板、声音、规则与渠道 JSON，以及「关于」入口。所有标签页均可滚动，小窗口下不会裁切内容。保存后立即应用可热更新的项（含规则）并写回 `config.json`；端口、token 等监听相关配置需重启。
+- 偏好设置：端口、token、自启、启动打开通知中心、自动关闭、冷却、成功弹窗、默认确认、快捷键、免打扰、全屏抑制、锁屏保留、弹窗模式与皮肤、全屏背景图与显示区域（含全屏拖拽定位与仅主屏卡片）、Agent 会话扫描、会议进程、离开判定、聚合、升级、模板、声音、规则与渠道 JSON，以及「关于」入口。所有标签页均可滚动，小窗口下不会裁切内容。保存后立即应用可热更新的项（含规则）并写回 `config.json`；端口、token 等监听相关配置需重启。
 - 全屏拖拽定位：点「全屏拖拽定位…」进入与真实弹窗一致的全屏预览，卡片可自由拖动，顶部实时显示坐标、尺寸、最近锚点和偏移；点「保存位置」自动写回设置并保存配置，点「取消」不改动原值。
 - 效果预览：设置对话框底部「测试」按钮按当前选择的模式、皮肤和背景图弹出一条预览。预览使用临时通知，不写入 SQLite 历史；`overlay` 预览会实际铺满屏幕，点「知道了」即可返回设置。
 - Agent 会话页：左侧侧栏切换到「Agent 会话」，按项目分组显示本机会话；点「查看记录」进入阅读视图，支持轮次折叠、工具过程、大纲跳转、会话内搜索、复制全文和导出 Markdown；数据只读，不进入通知历史。
@@ -911,6 +922,43 @@ Python 的 `requests.post(..., json=...)` 会自动按 UTF-8 编码，是最省�
 
 > 修改 `config.json` 的端口或 token 后需要重启 AgentBell，并重新点击复制。复制动作会把 token 写入系统剪贴板，请勿在不受信任的环境粘贴。
 
+## 一键接入 Agent Hook（2.14.0）
+
+「运行环境 → 提醒接入」提供内置安装器，不用手写脚本。支持级别与写入位置：
+
+| Agent | 支持级别 | 配置文件 | 事件 |
+| --- | --- | --- | --- |
+| Claude Code | 完整：等待 + 结束 | `~/.claude/settings.json` | `UserPromptSubmit` / `Notification` / `Stop` |
+| Gemini CLI | 完整：等待 + 结束 | `~/.gemini/settings.json` | `BeforeAgent` / `Notification` / `AfterAgent` |
+| Grok | 完整：等待 + 结束 | `~/.grok/hooks/agentbell.json` | `UserPromptSubmit` / `Notification` / `Stop` / `StopFailure` / `StopCancelled` |
+| Codex | 部分：仅结束 | `~/.codex/config.toml` | 顶层 `notify` |
+
+写入规则：
+
+- JSON 配置只追加 `hooks.<Event>` 数组中的 command handler，命令指向安装目录的 `hooks/agentbell-hook.ps1`，带 `timeout: 10`；已有 handler 原样保留。
+- Codex 在第一个 `[table]` 之前写入带 `# agentbell-hook` 注释的 `notify = [...]`；若已存在其他 `notify`，接入页显示「需处理」，不会覆盖。
+- 接入和撤销共用标记检测：只有 command 中包含 `agentbell-hook.ps1` 的 handler 会被删除；Grok 的独立文件撤销后为空时删除该文件。
+- 每次实际修改前创建同目录备份 `<文件名>.agentbell-backup-<时间戳>`；配置锁 `<文件名>.agentbell.lock` 超时 2 秒，30 秒视为陈旧，写入使用临时文件加 `os.replace`。重复接入不会重复写，也不会产生备份。
+- JSON 配置写回时统一为 2 空格缩进，键顺序保留；原有缩进、空行等排版会变化。备份是原文件的原样拷贝，可能包含 MCP / API 密钥，请按敏感文件处理。
+
+Hook 脚本行为：
+
+- 从 `<安装目录>/config.json` 读取 `port` / `token`，也支持 `AGENTBELL_PORT` / `AGENTBELL_TOKEN` 环境变量覆盖；只 POST 到 `http://127.0.0.1:<port>/notify`。非法 `AGENTBELL_PORT` 会被忽略；配置文件缺失且没有有效端口时直接以 0 退出，不会回退到默认 8765 误发到其他实例。
+- 每次新轮次生成随机 `turn`，状态保存在 `<安装目录>/hooks/state/<agent>-<session>.json`，只含 `turn` / `waiting` / `updated`；不上传、不写会话文件。
+- `UserPromptSubmit` / `BeforeAgent`：`running` + `phase=started`，静默写入时间线；`Notification`：`needs_input=true` + `waiting_input`，按提示文字归类 permission / question / rate_limit / context_limit；`Stop` / `AfterAgent`：`succeeded` + `finished`；Grok 的 `StopFailure` / `StopCancelled` 分别为 failed / canceled；Codex `agent-turn-complete` 为 succeeded。
+- 通知带 `source`、`origin.pid` / `origin.working_dir`、`session_id`、`dedupe_key=agentbell-hook:<agent>:<session>:<turn>`、`run_id=hook:<agent>:<session>:<turn>`，并声明只读 `session` / `timeline` 动作。等待与结束时卡片原地更新，时间线可回看同一轮。
+- 所有网络错误、配置解析错误与状态写入错误都被吞掉并以 0 退出，不会阻塞 Agent；`-DryRun` 只输出目标地址与 payload，不发送、不打印 token。
+
+排查：
+
+```powershell
+# 手工模拟一次等待事件（不会发送）
+'{"hook_event_name":"Notification","session_id":"test","message":"需要允许执行 npm test"}' |
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -File "<安装目录>\hooks\agentbell-hook.ps1" -Agent claude -DryRun
+```
+
+若服务端没有记录：确认 AgentBell 正在运行、`config.json` 的端口与 token 一致、Hook 配置中的脚本路径存在。Codex 的自定义 `notify` 冲突需要手动移除旧配置后再接入。移动 AgentBell 安装目录后，已有 Hook 仍指向旧路径，请撤销后重新接入或手动更新配置中的脚本路径。
+
 ## Agent 侧调用
 
 ### Python
@@ -984,18 +1032,18 @@ PyInstaller 不能跨平台交叉编译，请在目标系统上分别打包。
 ```bash
 pip install -r requirements-dev.txt
 
-# 产物：dist\AgentBell-25.exe
-python -m PyInstaller --noconfirm --clean AgentBell25.spec
+# 产物：dist\AgentBell-26.exe
+python -m PyInstaller --noconfirm --clean AgentBell26.spec
 ```
 
 把 `config.json` 复制到 exe 旁边再运行：
 
 ```bash
 copy config.json dist\config.json
-dist\AgentBell-25.exe
+dist\AgentBell-26.exe
 ```
 
-> 新旧版本默认共用单实例锁：若托盘中已有 AgentBell 在运行，双击 AgentBell-25 只会唤醒旧实例。切换版本前先从托盘退出旧版，再启动新 exe。
+> 新旧版本默认共用单实例锁：若托盘中已有 AgentBell 在运行，双击 AgentBell-26 只会唤醒旧实例。切换版本前先从托盘退出旧版，再启动新 exe。
 
 打包后 `config.json`、`logs/`、`agentbell.db`、`chat/` 与 `updates/` 都位于 exe 所在目录。单文件模式首次启动需要解压到临时目录，通常会有 1–3 秒延迟。
 
@@ -1026,7 +1074,7 @@ git push origin develop --tags
 
 ```bash
 pyinstaller --noconfirm --clean --onefile --windowed \
-  --name AgentBell-25 \
+  --name AgentBell-26 \
   --hidden-import uvicorn.logging \
   --hidden-import uvicorn.loops.asyncio \
   --hidden-import uvicorn.protocols.http.h11_impl \
@@ -1048,7 +1096,7 @@ $env:QT_QPA_PLATFORM="offscreen"; python -m pytest -q
 QT_QPA_PLATFORM=offscreen python -m pytest -q
 ```
 
-覆盖：鉴权与 401、字段默认值/空值/长度、非法状态、危险链接、GB18030 请求体、疑似编码丢失告警、`origin` 动作生成与上限、仅 `working_dir` 的目录名兜底、`focus` 参数校验、窗口选择排序与去重、`FocusRequest` 往返、`overlay_area` 配置校验与卡片摆放、全屏拖拽编辑器的锚点换算与保存、空/坏 JSON、超大请求体、队列满、去重合并、待确认与动作、规则匹配、等待原因/`needs_input`/时长/项目条件、规则实时配置、规则字段往返与非法时长、免打扰/全屏/会议/锁屏决策、优先级弹窗策略、弹窗模式与皮肤、全屏自定义背景图与失效回落、渠道选择、配置校验、Agent 启动的检测排序、CLI 参数与环境变量、提示词不进入命令行、桌面应用不支持提示词、启动失败与项目校验、最近项目持久化、启动记录与回到终端、SQLite 存取/搜索/统计/裁剪、通知中心筛选/搜索/统计/设置、通知来源筛选与计数联动、Agent 会话扫描与标题提取、会话记录解析/搜索/大纲/复制与导出/缺失文件兜底、设置效果预览与清理、弹窗文案/按钮/去重更新/聚合、居中与全屏弹窗互斥、锁屏暂停、单实例唤醒、自动关闭与悬停暂停、启动自动打开与会话动画收尾、标志 SVG/像素/单色与图标尺寸、启动三行时间线与收起、首次介绍的四步导航/键盘/暂停/跳过与 `onboarding_seen` 持久化、关于窗口的尺寸变体与 SVG 导出、更新仓库归一化与版本比较、Release 解析与稳定资产选择、404/网络错误映射、下载域名白名单/大小/SHA-256 校验与残留清理、源码模式拒绝替换、更新脚本环境变量与不插值路径、`chat/` 自动创建与默认项目回落、Agent 项目主页按钮、Agent 卡片双击启动、`run_events` 追加与同阶段 5 秒合并、`run_id` 生成优先级、阶段推断（开始/等待/继续/完成）、旧库迁移与孤儿事件清理、会话运行时间线读取、时间线弹窗与卡片入口、会话详情「本次运行」摘要、运行次数/成功率/P50/P90/累计等待统计、`session` / `timeline` 动作的标识校验与排序、只读动作忽略 `value`、未知动作类型 422、存储往返、通知中心按会话 ID / 运行 ID 打开成功与失败、弹窗只读动作按钮。
+覆盖：鉴权与 401、字段默认值/空值/长度、非法状态、危险链接、GB18030 请求体、疑似编码丢失告警、`origin` 动作生成与上限、仅 `working_dir` 的目录名兜底、`focus` 参数校验、窗口选择排序与去重、`FocusRequest` 往返、`overlay_area` 配置校验与卡片摆放、全屏拖拽编辑器的锚点换算与保存、空/坏 JSON、超大请求体、队列满、去重合并、待确认与动作、规则匹配、等待原因/`needs_input`/时长/项目条件、规则实时配置、规则字段往返与非法时长、免打扰/全屏/会议/锁屏决策、优先级弹窗策略、弹窗模式与皮肤、全屏自定义背景图与失效回落、渠道选择、配置校验、Agent 启动的检测排序、CLI 参数与环境变量、提示词不进入命令行、桌面应用不支持提示词、启动失败与项目校验、最近项目持久化、启动记录与回到终端、SQLite 存取/搜索/统计/裁剪、通知中心筛选/搜索/统计/设置、通知来源筛选与计数联动、Agent 会话扫描与标题提取、会话记录解析/搜索/大纲/复制与导出/缺失文件兜底、设置效果预览与清理、弹窗文案/按钮/去重更新/聚合、居中与全屏弹窗互斥、锁屏暂停、单实例唤醒、自动关闭与悬停暂停、启动自动打开与会话动画收尾、标志 SVG/像素/单色与图标尺寸、启动三行时间线与收起、首次介绍的四步导航/键盘/暂停/跳过与 `onboarding_seen` 持久化、关于窗口的尺寸变体与 SVG 导出、更新仓库归一化与版本比较、Release 解析与稳定资产选择、404/网络错误映射、下载域名白名单/大小/SHA-256 校验与残留清理、源码模式拒绝替换、更新脚本环境变量与不插值路径、`chat/` 自动创建与默认项目回落、Agent 项目主页按钮、Agent 卡片双击启动、`run_events` 追加与同阶段 5 秒合并、`run_id` 生成优先级、阶段推断（开始/等待/继续/完成）、旧库迁移与孤儿事件清理、会话运行时间线读取、时间线弹窗与卡片入口、会话详情「本次运行」摘要、运行次数/成功率/P50/P90/累计等待统计、`session` / `timeline` 动作的标识校验与排序、只读动作忽略 `value`、未知动作类型 422、存储往返、通知中心按会话 ID / 运行 ID 打开成功与失败、弹窗只读动作按钮、Hook 检测与 JSON 合并/撤销、Grok 独立文件、Codex `notify` 插入与精确撤销、备份与幂等、坏 JSON 不覆盖、PowerShell 脚本的权限/问题/完成分类与轮次状态、Codex 参数式 JSON 输入、真实环回 POST 的 token 与请求体、运行环境页的接入/撤销/批量接入与 Codex 冲突提示。
 
 ## 常见问题
 
@@ -1102,7 +1150,7 @@ netstat -ano | findstr :8765
 
 **全屏提醒没有铺满屏幕 / 背景图没显示？**
 
-确认 `popup_mode` 为 `overlay`（或单条通知指定了 `popup_mode=overlay`）。全屏模式覆盖主屏整块屏幕，多显示器时其他屏幕不受影响；全屏独占游戏可能盖住任何置顶窗口。自定义背景图支持 PNG / JPG / BMP / WebP，路径失效时自动回落为皮肤渐变，可在「偏好设置 → 弹窗外观」里选择图片并点「测试」预览。卡片位置和宽度可在同一页「全屏显示区域」手动调整，或点「全屏拖拽定位…」在真实全屏预览里拖动卡片后点「保存位置」；若看起来仍在中央，确认保存后重新测试。
+确认 `popup_mode` 为 `overlay`（或单条通知指定了 `popup_mode=overlay`）。全屏模式会在每块显示器上各铺一层，默认每块屏幕显示同一张卡片；勾选「仅在主屏显示提醒卡片」后副屏只显示背景，任意屏幕关闭后全部关闭。全屏独占游戏可能盖住任何置顶窗口。自定义背景图支持 PNG / JPG / BMP / WebP，路径失效时自动回落为皮肤渐变，可在「偏好设置 → 弹窗外观」里选择图片并点「测试」预览。卡片位置和宽度可在同一页「全屏显示区域」手动调整，或点「全屏拖拽定位…」在真实全屏预览里拖动卡片后点「保存位置」；若看起来仍在中央，确认保存后重新测试。
 
 **待确认通知为什么一直不消失？**
 
@@ -1184,6 +1232,7 @@ PyInstaller 单文件包常见现象。可将 exe 加入信任目录，或改用
 - 「复制 Agent 接入指令」会把当前 `X-Token` 写入系统剪贴板；剪贴板可能被本机其他程序读取，请在可信环境中使用。
 - 通知动作有白名单：链接仅 `http/https`；`retry` 只允许回环地址；`path` 默认关闭，开启后也只打开指定文件；`copy` 只写入剪贴板，不执行命令；`focus` 只校验参数并置前窗口，不执行命令、不打开新终端。
 - 外部渠道由你自己配置 URL/token，通知内容会发送到对应服务；启用前请确认接收方可信。
+- Hook 接入只写用户级 Agent 配置，写入前展示预览并创建同目录备份，撤销只移除带 `agentbell-hook.ps1` 标记的 handler；不会执行配置中的其他命令。备份文件可能包含原有 MCP / API 密钥，请按敏感文件处理。Hook 脚本读取本机 `config.json` 获取端口与 token，只向环回地址发送通知，不输出 token，状态文件只保存轮次、等待标记与更新时间。
 - 单实例通道只接受「打开通知中心」请求，不执行任意命令；通道使用当前用户的本地套接字 / 命名管道。
 - 更新下载只接受 HTTPS 的 GitHub 域名与 GitHub 发布资源域名，拒绝非 GitHub 重定向；安装包受 300 MB 上限、Release 记录的 `size` 与 `sha256:` digest 校验。替换脚本从环境变量读取路径与参数，不把外部文本拼接进 PowerShell 代码；旧版会备份，替换失败自动回滚。
 - 更新仓库默认指向本项目公开仓库，可改为其他仓库或清空；程序不会下载或执行 Release 中的任何脚本，也不会执行 npm / pip 安装命令；源码模式不自动替换。

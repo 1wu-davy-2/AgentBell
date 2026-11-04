@@ -34,8 +34,9 @@ AgentBell 是一个只做提醒的 Windows 桌面工具。AI Agent 每轮任务�
 
 - 成功 / 失败 / 取消 / 进行中四种状态，支持进度、去重更新与优先级。
 - 等待输入提醒：Agent 卡在权限确认、提问、限流或上下文超限时，卡片标出原因；支持显式上报与本地只读推断，并在「进行中」下提供「待输入」子筛选。
+- 一键接入提醒：在「运行环境」页把 Claude Code、Gemini CLI、Grok 的等待与结束 Hook 写进各自用户配置；Codex 支持每轮结束提醒。写入前预览并备份，可随时撤销。
 - 运行时间线：同一 `run_id` 的开始、等待、继续、完成会串成一条只追加的事件线；卡片可直接打开时间线弹窗，统计页按运行查看成功率、P50/P90 耗时与累计等待时长。
-- 四套皮肤、三种弹窗模式，以及可拖拽定位的全屏遮挡。
+- 四套皮肤、三种弹窗模式，以及可拖拽定位、多显示器逐屏呈现的全屏遮挡；可让副屏只保留背景。
 - 规则分流：可按等待原因、`needs_input`、运行时长和项目 glob 匹配，分别覆盖优先级、是否静音、确认、自动关闭、弹窗与额外通道；后匹配规则覆盖标量字段，设置保存后立即生效。
 - 免打扰、全屏 / 会议抑制、锁屏保留、聚合摘要与未读升级。
 - 待确认、5/15/30 分钟稍后提醒，以及回到终端、查看记录、打开时间线、打开链接、复制、重试等动作；查看记录与时间线只读，不包含审批或自动继续。
@@ -46,6 +47,8 @@ AgentBell 是一个只做提醒的 Windows 桌面工具。AI Agent 每轮任务�
 
 ### 最近更新
 
+- **v2.15.0**：全屏提醒支持「仅在主屏显示卡片」。多显示器仍逐屏铺满背景与遮罩，勾选后只有主屏绘制提醒卡片，副屏保留背景图；点击任意屏幕仍会关闭全部提醒。设置页「全屏显示区域」新增开关，配置项为 `overlay_area.card_on_primary_only`，默认关闭。
+- **v2.14.0**：一键接入提醒。运行环境页新增「提醒接入」，可把 Claude Code（`~/.claude/settings.json`）、Gemini CLI（`~/.gemini/settings.json`）和 Grok（`~/.grok/hooks/agentbell.json`）的等待确认、提问与每轮结束 Hook 写入用户配置；Codex 通过顶层 `notify` 支持每轮结束提醒。写入前展示完整改动并备份，只追加带标记的条目，已有 Hook 保持不变，可随时撤销；已存在的 Codex 自定义 `notify` 不会被覆盖。
 - **v2.13.0**：规则精细化。`rules` 新增 `wait_reason`、`needs_input`、`min_duration_seconds` / `max_duration_seconds` 与 `project` 条件，可把「等待权限」「测试项目」或「超过 10 分钟」的任务分流到不同优先级和通道；项目按工作目录名取末级、忽略大小写，时长从 `duration` 解析且边界包含，缺失时该条件不匹配。规则随设置保存立即生效，本地推断的等待通知同样参与匹配。通知中心的悬停提示同步收紧：仅在文字被截断时出现，限制为 32 字宽并统一浅色样式，不再用整卡大提示遮挡相邻记录。
 - **v2.12.0**：新增只读动作。通知可声明 `session` / `timeline`，弹窗与通知中心会显示「查看记录」「时间线」按钮，直接打开本地会话或本次运行；两类动作只读取通知自身的 `session_id` / `run_id`，忽略 `value`，不执行外部命令。明确不提供批准权限、自动继续或发送提示词的动作。
 - **v2.11.0**：新增运行时间线。同一 `run_id` 的开始、等待、继续、完成会写入只追加的 `run_events`，卡片「时间线」按钮可回看阶段与耗时；会话详情显示「本次运行」，统计页增加运行数、运行成功率、P50/P90 耗时与累计等待。支持 `/notify` 显式 `phase`，未传时按状态变化自动推断。
@@ -167,9 +170,20 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8765/notify" -Method Post `
 2. 把剪贴板内容粘贴给 Agent（Claude Code、Codex、Qoder 等），发一次即可。
 3. 指令包含当前端口、`X-Token`、字段说明和编码要求，并要求它**每轮任务结束都推送一次**，无论成功、失败还是取消。
 
-如果希望通知卡片带「回到终端」按钮，让 Agent 在请求里带上 `origin.pid`；`window_title` 和 `working_dir` 可作为兜底。即使忘了填，AgentBell 也会尝试按本机连接自动识别发送进程；`source` 留空时同样会自动补出来源 Agent。需要「查看记录」或「时间线」按钮时，按第 5 节在 `actions` 中声明只读动作。
+如果希望通知卡片带「回到终端」按钮，让 Agent 在请求里带上 `origin.pid`；`window_title` 和 `working_dir` 可作为兜底。即使忘了填，AgentBell 也会尝试按本机连接自动识别发送进程；`source` 留空时同样会自动补出来源 Agent。需要「查看记录」或「时间线」按钮时，按第 6 节在 `actions` 中声明只读动作。
 
-#### 4. 提醒等待输入（可选）
+#### 4. 一键接入提醒（可选）
+
+除让 Agent 主动推送外，也可以在「运行环境 → 提醒接入」直接写入 Agent 自己的 Hook：
+
+- **Claude Code**：用户级 `~/.claude/settings.json`，接入 `UserPromptSubmit`、`Notification`、`Stop`。
+- **Gemini CLI**：用户级 `~/.gemini/settings.json`，接入 `BeforeAgent`、`Notification`、`AfterAgent`。
+- **Grok**：用户级 `~/.grok/hooks/agentbell.json`，接入 `UserPromptSubmit`、`Notification`、`Stop`、`StopFailure`、`StopCancelled`。
+- **Codex**：只支持顶层 `notify`，因此仅能感知每轮结束，无法感知等待确认；已有自定义 `notify` 时不会覆盖。
+
+接入前会展示将写入的事件和完整配置，确认后先按时间戳备份，再只追加带 `agentbell-hook` 标记的条目；已有 Hook、MCP 和密钥保持不变。点「撤销」只会移除 AgentBell 自己的条目。等待与结束通知都带来源、工作目录、会话 ID 和只读的「查看记录 / 时间线」动作；Hook 只调用本机 AgentBell，不会批准权限、自动继续或发送提示词。Codex 的等待确认仍需回到终端处理。写入后重启对应 Agent 或新开会话生效；JSON 配置会按 2 空格缩进重写，原有缩进与空行可能变化。备份是原文件的完整拷贝，可能包含密钥，请按敏感文件处理。
+
+#### 5. 提醒等待输入（可选）
 
 Agent 停下来等你处理时，可以让它显式上报一条 `status="running"` 的通知，并带上 `needs_input`：
 
@@ -190,7 +204,7 @@ Agent 停下来等你处理时，可以让它显式上报一条 `status="running
 
 没有显式上报时，AgentBell 也可以在「偏好设置 → Agent」中开启本地推断：只读取最近 10 分钟内 Claude Code / Qoder 会话文件的尾部，连续两次扫描命中且闲置达到阈值才提醒，结果标记为「推断」。推断不写入会话文件，也不会把会话正文写进日志；关闭推断后只保留显式上报。Claude Code Hook、通用脚本与 Python 片段见 [docs/waiting-input.md](docs/waiting-input.md)。
 
-#### 5. 查看运行时间线（可选）
+#### 6. 查看运行时间线（可选）
 
 同一个 `run_id` 的事件会聚成一次运行。AgentBell 按以下顺序确定运行编号：请求里的 `run_id` → `session:<session_id>` → `notify:<dedupe_key>` → `single:<通知 id>`。未传 `phase` 时，首次 `running` 记为「开始」，终态记为「完成」，并自动补出「等待输入 / 已继续」：
 
@@ -223,7 +237,7 @@ Agent 停下来等你处理时，可以让它显式上报一条 `status="running
 
 `session` 需要 `session_id`，`timeline` 需要 `run_id`（或可回落到 `session_id` / `dedupe_key`）；两类动作都不读取 `value`，只打开 AgentBell 内的只读记录。找不到会话或运行时会给出非阻塞提示，不执行任何外部命令。AgentBell 不提供“批准权限”“自动继续”或“发送提示词”动作，审批请回到终端完成。
 
-#### 6. 一键装好 Agent 运行环境
+#### 7. 一键装好 Agent 运行环境
 
 打开「运行环境」页，点「一键安装全部」即装好 Node 与 7 个 CLI，也可只安装需要的组件：
 
@@ -235,7 +249,7 @@ Agent 停下来等你处理时，可以让它显式上报一条 `status="running
 
 全程不需要管理员权限，也不修改系统 `PATH`；AgentBell 只在检测和启动 Agent 时临时把这些目录加进子进程环境。装完到「Agent 启动」页点「重新检测」，新装的 CLI 会出现在已安装列表里。DeepSeek 没有官方 CLI，可在页面底部保存 API Key，用「用 DeepSeek 启动 Claude Code」以该供应商打开终端。
 
-#### 7. 启动 Agent（可选）
+#### 8. 启动 Agent（可选）
 
 打开「Agent 启动」页，AgentBell 会检测本机安装的 Claude Code、Claude Desktop、Codex、Gemini CLI、Grok Build、OpenCode、OpenClaw、Hermes、Pi、MiniMax Code、Antigravity。
 
@@ -244,7 +258,7 @@ Agent 停下来等你处理时，可以让它显式上报一条 `status="running
 - 提示词通过环境变量传入，不拼接进 shell 命令。桌面应用只能打开窗口，无法预填提示词。
 - 每张卡片右上角的「项目主页」可打开对应官网或 GitHub 仓库。
 
-#### 8. 回到终端
+#### 9. 回到终端
 
 通知请求带上来源进程信息：
 
@@ -261,22 +275,22 @@ Agent 停下来等你处理时，可以让它显式上报一条 `status="running
 
 `source` 会显示在弹窗和通知中心。请求没带 `origin` 或 `source` 时，AgentBell 会用发起请求的本机端口找到发送进程，尽力补出「回到终端」和来源 Agent；显式填写仍然最准确。
 
-#### 9. 外观与打扰控制
+#### 10. 外观与打扰控制
 
 在偏好设置里可以调整弹窗皮肤、弹窗模式、全屏背景与卡片位置，配置免打扰时段、全屏 / 会议抑制、锁屏保留、聚合摘要、待确认和稍后提醒。设置页底部的「测试」按钮会按当前配置弹出一条预览，不写入历史。
 
-#### 10. 构建与发布
+#### 11. 构建与发布
 
 ```powershell
 pip install -r requirements-dev.txt
-python -m PyInstaller --noconfirm --clean AgentBell22.spec
-# 产物：dist\AgentBell-22.exe
+python -m PyInstaller --noconfirm --clean AgentBell26.spec
+# 产物：dist\AgentBell-26.exe
 ```
 
 推送到 `develop` 会触发测试与打包；推送 `v*` 标签会校验标签与 `agentbell/__init__.py` 的 `__version__` 一致，然后自动发布 Release。工作流会自动选用编号最大的 `AgentBell*.spec`，并把产物复制为稳定命名的 `AgentBell.exe`。
 
 ```bash
-git tag v2.9.10
+git tag v2.14.0
 git push origin develop --tags
 ```
 
