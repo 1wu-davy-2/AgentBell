@@ -83,13 +83,21 @@ from ..config import (
     save_config,
 )
 from ..integration import build_agent_instructions
-from ..models import STATUS_LABELS, Notification, safe_http_url
+from ..models import (
+    RUN_EVENT_LABELS,
+    STATUS_LABELS,
+    WAIT_REASON_LABELS,
+    Notification,
+    RunEvent,
+    safe_http_url,
+)
 from ..paths import default_project_dir, runtime_dir
 from ..store import NotificationStore
 from ..window_focus import FocusRequest
 from .icons import make_app_icon
 from .motion import motion_enabled
 from .onboarding import OnboardingOverlay
+from .timeline import RunTimelineDialog, format_run_span
 from .toolchain_page import ToolchainPage
 
 SIDEBAR_WIDTH = 232
@@ -179,6 +187,73 @@ def format_bytes(value: int) -> str:
     return f"{size / (1024 * 1024):.1f} MB"
 
 
+def _run_summary_text(events: list[RunEvent]) -> str:
+    if not events:
+        return ""
+    parts: list[str] = []
+    waiting_since: datetime | None = None
+    for event in events:
+        label = RUN_EVENT_LABELS.get(event.kind, event.kind)
+        if event.kind == "waiting_input":
+            if waiting_since is None:
+                waiting_since = event.occurred_at
+        elif event.kind in {"resumed", "finished"} and waiting_since is not None:
+            waited = (event.occurred_at - waiting_since).total_seconds()
+            if waited >= 1 and parts and parts[-1] == RUN_EVENT_LABELS["waiting_input"]:
+                parts[-1] = f"{parts[-1]} {format_run_span(waited)}"
+            elif waited >= 1:
+                parts.append(f"等待 {format_run_span(waited)}")
+            waiting_since = None
+        if label not in parts[-1:]:
+            parts.append(label)
+    if waiting_since is not None and parts and parts[-1] == RUN_EVENT_LABELS["waiting_input"]:
+        waited = (datetime.now().astimezone() - waiting_since).total_seconds()
+        if waited >= 1:
+            parts[-1] = f"{parts[-1]} {format_run_span(waited)}"
+    started = next(
+        (
+            event.occurred_at
+            for event in events
+            if event.kind == "started"
+        ),
+        events[0].occurred_at,
+    )
+    finished = next(
+        (
+            event.occurred_at
+            for event in reversed(events)
+            if event.kind == "finished"
+        ),
+        None,
+    )
+    summary = " → ".join(parts)
+    if finished is not None:
+        summary += f" · 用时 {format_run_span((finished - started).total_seconds())}"
+    elif waiting_since is not None:
+        summary += " · 等待中"
+    return summary
+
+
+def _wrap_tooltip(text: str, width: int = 32) -> str:
+    lines: list[str] = []
+    for raw in text.splitlines() or [""]:
+        start = 0
+        while start < len(raw):
+            end = min(len(raw), start + width)
+            if end < len(raw):
+                breaks = (
+                    raw.rfind(" ", start, end),
+                    raw.rfind("/", start, end),
+                    raw.rfind("\\", start, end),
+                )
+                cut = max(breaks)
+                if cut > start + width // 2:
+                    end = cut + 1
+            lines.append(raw[start:end])
+            start = end
+    return "\n".join(lines)
+
+
 class ElidedLabel(QLabel):
     """Single-line label that ellipsizes its text to the available width."""
 
@@ -191,7 +266,6 @@ class ElidedLabel(QLabel):
 
     def set_full_text(self, text: str) -> None:
         self._full_text = text
-        self.setToolTip(text)
         self._apply_elision()
 
     def resizeEvent(self, event: QResizeEvent) -> None:
@@ -213,6 +287,9 @@ class ElidedLabel(QLabel):
         )
         if self.text() != elided:
             super().setText(elided)
+        tooltip = _wrap_tooltip(self._full_text) if elided != self._full_text else ""
+        if self.toolTip() != tooltip:
+            self.setToolTip(tooltip)
 
 
 def _paint_icon(kind: str, color: QColor, size: int) -> QIcon:
@@ -268,6 +345,14 @@ def _paint_icon(kind: str, color: QColor, size: int) -> QIcon:
         painter.drawLine(QPointF(4.2, 14.4), QPointF(4.2, 9.4))
         painter.drawLine(QPointF(9.0, 14.4), QPointF(9.0, 4.2))
         painter.drawLine(QPointF(13.8, 14.4), QPointF(13.8, 7.0))
+    elif kind == "timeline":
+        painter.drawLine(QPointF(5.0, 3.4), QPointF(5.0, 14.6))
+        painter.drawEllipse(QRectF(3.4, 2.2, 3.2, 3.2))
+        painter.drawEllipse(QRectF(3.4, 7.4, 3.2, 3.2))
+        painter.drawEllipse(QRectF(3.4, 12.4, 3.2, 3.2))
+        painter.drawLine(QPointF(8.4, 3.8), QPointF(14.6, 3.8))
+        painter.drawLine(QPointF(8.4, 9.0), QPointF(12.8, 9.0))
+        painter.drawLine(QPointF(8.4, 14.0), QPointF(14.6, 14.0))
     elif kind == "agents":
         painter.drawRoundedRect(QRectF(2.8, 3.6, 9.6, 7.4), 2.2, 2.2)
         painter.drawLine(QPointF(5.2, 11.0), QPointF(4.4, 13.6))
@@ -502,6 +587,7 @@ class NotificationCard(QFrame):
     ack_requested = Signal(str)
     snooze_requested = Signal(str, int)
     action_requested = Signal(object, object)
+    timeline_requested = Signal(object)
 
     def __init__(
         self,
@@ -509,6 +595,7 @@ class NotificationCard(QFrame):
         logger: logging.Logger,
         latest: bool = False,
         allow_local_paths: bool = False,
+        allow_timeline: bool = False,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -561,6 +648,27 @@ class NotificationCard(QFrame):
             priority.setFixedHeight(20)
             title_row.addWidget(priority, 0, Qt.AlignmentFlag.AlignVCenter)
 
+        if notification.is_waiting_input:
+            wait_chip = QLabel(notification.wait_reason_label, self)
+            wait_chip.setObjectName("waitChip")
+            wait_chip.setProperty("reason", notification.wait_reason or "other")
+            wait_chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            wait_chip.setFixedHeight(20)
+            wait_chip.setToolTip("会话正在等待你的输入或确认")
+            title_row.addWidget(wait_chip, 0, Qt.AlignmentFlag.AlignVCenter)
+            self.wait_chip = wait_chip
+            if notification.wait_source == "inferred":
+                inferred = QLabel("推断", self)
+                inferred.setObjectName("inferredChip")
+                inferred.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                inferred.setFixedHeight(20)
+                inferred.setToolTip(
+                    "根据会话文件尾部推断，可能未覆盖所有等待场景"
+                )
+                title_row.addWidget(
+                    inferred, 0, Qt.AlignmentFlag.AlignVCenter
+                )
+
         chip = QLabel(notification.status_label, self)
         chip.setObjectName("statusChip")
         chip.setProperty("status", notification.status)
@@ -579,6 +687,8 @@ class NotificationCard(QFrame):
                 summary_text = notification.error or "执行失败，未提供更多信息。"
             elif notification.status == "canceled":
                 summary_text = "本轮任务已取消。"
+            elif notification.is_waiting_input:
+                summary_text = "该会话正在等待你继续处理。"
             elif notification.status == "running":
                 summary_text = "本轮任务正在进行中。"
             else:
@@ -588,7 +698,9 @@ class NotificationCard(QFrame):
         body.addWidget(summary)
 
         self.progress_bar: QProgressBar | None = None
-        if notification.progress is not None or notification.status == "running":
+        if notification.progress is not None or (
+            notification.status == "running" and not notification.is_waiting_input
+        ):
             progress_row = QWidget(self)
             progress_row.setObjectName("cardProgress")
             progress_layout = QHBoxLayout(progress_row)
@@ -727,6 +839,17 @@ class NotificationCard(QFrame):
             self.view_button.setAccessibleName("打开链接")
             self.view_button.clicked.connect(self._open_link)
             side.addWidget(self.view_button)
+
+        self.timeline_button: QToolButton | None = None
+        if allow_timeline and notification.run_id:
+            self.timeline_button = self._make_action(
+                "timeline", "#2F6FF0", "查看本次运行时间线"
+            )
+            self.timeline_button.setAccessibleName("运行时间线")
+            self.timeline_button.clicked.connect(
+                lambda: self.timeline_requested.emit(self.notification)
+            )
+            side.addWidget(self.timeline_button)
 
         self.replay_button = self._make_action(
             "bell", "#4F647F", "再次弹出这条提醒"
@@ -874,16 +997,18 @@ class ActiveSessionCard(QFrame):
     terminal_requested = Signal(object)
 
     def __init__(
-        self, session: AgentSession, parent: QWidget | None = None
+        self,
+        session: AgentSession,
+        parent: QWidget | None = None,
+        wait_reason: str | None = None,
+        wait_source: str = "",
     ) -> None:
         super().__init__(parent)
         self.session = session
         self.setObjectName("activeSessionCard")
+        self.setProperty("waiting", "true" if wait_reason else "false")
         self.setAccessibleName(f"活跃会话 {session.display_title}")
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.setToolTip(
-            f"{session.display_title}\n{session.project_path or session.folder}"
-        )
 
         root = QHBoxLayout(self)
         root.setContentsMargins(12, 9, 10, 9)
@@ -891,8 +1016,13 @@ class ActiveSessionCard(QFrame):
 
         dot = QLabel(self)
         dot.setObjectName("liveDot")
+        dot.setProperty("waiting", "true" if wait_reason else "false")
         dot.setFixedSize(8, 8)
-        dot.setToolTip("依据会话文件的最近写入自动推断")
+        dot.setToolTip(
+            "等待输入"
+            if wait_reason
+            else "依据会话文件的最近写入自动推断"
+        )
         root.addWidget(dot, 0, Qt.AlignmentFlag.AlignVCenter)
 
         body = QVBoxLayout()
@@ -914,6 +1044,20 @@ class ActiveSessionCard(QFrame):
         title = ElidedLabel(session.display_title, self)
         title.setObjectName("sessionTitle")
         title_row.addWidget(title, 1)
+
+        if wait_reason:
+            wait_chip = QLabel(
+                WAIT_REASON_LABELS.get(wait_reason, "等待输入"), self
+            )
+            wait_chip.setObjectName("sessionWaitChip")
+            wait_chip.setProperty("reason", wait_reason)
+            wait_chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            wait_chip.setFixedHeight(20)
+            wait_chip.setToolTip(
+                "本地推断" if wait_source == "inferred" else "Agent 显式上报"
+            )
+            title_row.addWidget(wait_chip, 0, Qt.AlignmentFlag.AlignVCenter)
+            self.wait_chip = wait_chip
 
         updated = QLabel(
             f"最近活动 {format_received_at(session.updated_at)}", self
@@ -1378,6 +1522,8 @@ def _default_action_label(kind: str) -> str:
         "path": "打开文件",
         "center": "查看详情",
         "focus": "回到终端",
+        "session": "查看记录",
+        "timeline": "时间线",
     }.get(kind, "执行")
 
 
@@ -1513,6 +1659,7 @@ class NotificationWindow(QMainWindow):
         self._signature: tuple | None = None
         self._cards_dirty = True
         self._filter = "all"
+        self._waiting_only = False
         self._source_filter = ""
         self._query = ""
         self._search_items: list[Notification] = []
@@ -1954,6 +2101,35 @@ class NotificationWindow(QMainWindow):
             segment_layout.addWidget(button)
         toolbar_row.addWidget(self._segment_bar)
 
+        self._waiting_bar = QFrame(toolbar)
+        self._waiting_bar.setObjectName("waitingBar")
+        waiting_row = QHBoxLayout(self._waiting_bar)
+        waiting_row.setContentsMargins(0, 0, 0, 0)
+        waiting_row.setSpacing(4)
+        self._waiting_group = QButtonGroup(self)
+        self._waiting_group.setExclusive(True)
+        self._waiting_all_button = QPushButton("全部进行中", self._waiting_bar)
+        self._waiting_only_button = QPushButton("待输入 0", self._waiting_bar)
+        for button in (self._waiting_all_button, self._waiting_only_button):
+            button.setObjectName("waitingToggle")
+            button.setCheckable(True)
+            button.setAutoExclusive(False)
+            button.setFixedHeight(28)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            self._waiting_group.addButton(button)
+            waiting_row.addWidget(button)
+        self._waiting_all_button.setChecked(True)
+        self._waiting_all_button.setToolTip("显示进行中的通知与活跃会话")
+        self._waiting_only_button.setToolTip("只显示正在等待输入的会话")
+        self._waiting_all_button.clicked.connect(
+            lambda: self._set_waiting_only(False)
+        )
+        self._waiting_only_button.clicked.connect(
+            lambda: self._set_waiting_only(True)
+        )
+        self._waiting_bar.setVisible(False)
+        toolbar_row.addWidget(self._waiting_bar, 0, Qt.AlignmentFlag.AlignVCenter)
+
         self._source_combo = QComboBox(toolbar)
         self._source_combo.setObjectName("sourceFilter")
         self._source_combo.setAccessibleName("按 Agent 来源筛选")
@@ -2071,6 +2247,51 @@ class NotificationWindow(QMainWindow):
         self._daily_chart = DailyChart(chart_card)
         chart_layout.addWidget(self._daily_chart)
         layout.addWidget(chart_card)
+
+        layout.addSpacing(14)
+
+        run_card = QFrame(page)
+        run_card.setObjectName("statsCard")
+        run_layout = QVBoxLayout(run_card)
+        run_layout.setContentsMargins(16, 14, 16, 14)
+        run_layout.setSpacing(8)
+        run_header = QHBoxLayout()
+        run_header.setContentsMargins(0, 0, 0, 0)
+        run_title = QLabel("运行时间线", run_card)
+        run_title.setObjectName("statsTitle")
+        run_header.addWidget(run_title)
+        run_header.addStretch(1)
+        run_hint = QLabel("按 run_id 聚合开始 / 等待 / 继续 / 完成", run_card)
+        run_hint.setObjectName("statsHint")
+        run_header.addWidget(run_hint)
+        run_layout.addLayout(run_header)
+
+        run_values = QHBoxLayout()
+        run_values.setContentsMargins(0, 0, 0, 0)
+        run_values.setSpacing(26)
+        self._run_stat_values: dict[str, QLabel] = {}
+        for key, caption in (
+            ("runs", "运行次数"),
+            ("run_success", "运行成功率"),
+            ("p50", "耗时 P50"),
+            ("p90", "耗时 P90"),
+            ("waiting", "累计等待"),
+        ):
+            cell = QWidget(run_card)
+            cell_layout = QVBoxLayout(cell)
+            cell_layout.setContentsMargins(0, 0, 0, 0)
+            cell_layout.setSpacing(1)
+            value = QLabel("—", cell)
+            value.setObjectName("runStatValue")
+            caption_label = QLabel(caption, cell)
+            caption_label.setObjectName("runStatCaption")
+            cell_layout.addWidget(value)
+            cell_layout.addWidget(caption_label)
+            run_values.addWidget(cell)
+            self._run_stat_values[key] = value
+        run_values.addStretch(1)
+        run_layout.addLayout(run_values)
+        layout.addWidget(run_card)
 
         layout.addSpacing(14)
 
@@ -2818,6 +3039,29 @@ class NotificationWindow(QMainWindow):
         toolbar_row.addWidget(search_host, 0, Qt.AlignmentFlag.AlignVCenter)
         layout.addWidget(toolbar)
 
+        self._detail_run_events: list[RunEvent] = []
+        self._detail_run_card = QFrame(page)
+        self._detail_run_card.setObjectName("detailRunCard")
+        run_layout = QHBoxLayout(self._detail_run_card)
+        run_layout.setContentsMargins(14, 8, 10, 8)
+        run_layout.setSpacing(10)
+        run_badge = QLabel("本次运行", self._detail_run_card)
+        run_badge.setObjectName("detailRunBadge")
+        run_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        run_badge.setFixedHeight(22)
+        run_layout.addWidget(run_badge)
+        self._detail_run_summary = ElidedLabel("", self._detail_run_card)
+        self._detail_run_summary.setObjectName("detailRunSummary")
+        run_layout.addWidget(self._detail_run_summary, 1)
+        self._detail_run_button = QPushButton("时间线", self._detail_run_card)
+        self._detail_run_button.setObjectName("detailRunButton")
+        self._detail_run_button.setFixedSize(64, 26)
+        self._detail_run_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._detail_run_button.clicked.connect(self._open_detail_run_timeline)
+        run_layout.addWidget(self._detail_run_button)
+        self._detail_run_card.hide()
+        layout.addWidget(self._detail_run_card)
+
         layout.addSpacing(10)
 
         self._transcript_scroll = QScrollArea(page)
@@ -2870,6 +3114,10 @@ class NotificationWindow(QMainWindow):
                 item.progress,
                 item.updated_at,
                 item.source,
+                item.needs_input,
+                item.wait_reason,
+                item.wait_source,
+                item.session_id,
             )
             for item in self._items
         )
@@ -2895,12 +3143,26 @@ class NotificationWindow(QMainWindow):
         changed = key != self._filter
         if changed:
             self._filter = key
+            self._waiting_only = False
             self._cards_dirty = True
             self._update_counts()
         self._update_filter_controls()
         if self._page != "list":
             self.set_page("list")
         elif changed:
+            self._rebuild_cards()
+
+    def _set_waiting_only(self, waiting_only: bool) -> None:
+        if waiting_only == self._waiting_only:
+            self._update_filter_controls()
+            return
+        self._waiting_only = waiting_only
+        self._cards_dirty = True
+        self._update_counts()
+        self._update_filter_controls()
+        if self._page != "list":
+            self.set_page("list")
+        else:
             self._rebuild_cards()
 
     def set_page(self, page: str) -> None:
@@ -2954,6 +3216,11 @@ class NotificationWindow(QMainWindow):
             button.setChecked(self._page == "list" and key == self._filter)
         for key, button in self._segment_buttons.items():
             button.setChecked(key == self._filter)
+        self._waiting_bar.setVisible(
+            self._page == "list" and self._filter == "running"
+        )
+        self._waiting_all_button.setChecked(not self._waiting_only)
+        self._waiting_only_button.setChecked(self._waiting_only)
 
     def _source_items(self) -> list[Notification]:
         if self._query:
@@ -3086,6 +3353,13 @@ class NotificationWindow(QMainWindow):
         running_notifications = counts["running"]
         if live:
             counts["running"] += len(live)
+        waiting_items = [item for item in items if item.is_waiting_input]
+        waits = self._waiting_notifications_by_session()
+        waiting_live = [
+            session for session in live if self._session_wait(session, waits)
+        ]
+        if hasattr(self, "_waiting_only_button"):
+            self._waiting_only_button.setText(f"待输入 {len(waiting_items)}")
         for key, label, _ in FILTERS:
             if key in self._segment_buttons:
                 self._segment_buttons[key].setText(f"{label} {counts[key]}")
@@ -3105,8 +3379,26 @@ class NotificationWindow(QMainWindow):
         else:
             text = f"共 {len(items)} 条"
         if live and self._filter == "running":
-            text += f" · {len(live)} 个活跃会话"
+            if self._waiting_only:
+                text += f" · {len(waiting_live)} 个等待中的会话"
+            else:
+                text += f" · {len(live)} 个活跃会话"
         self._total_label.setText(text)
+
+    def _waiting_notifications_by_session(self) -> dict[str, Notification]:
+        waits: dict[str, Notification] = {}
+        for item in self._items:
+            if item.is_waiting_input and item.session_id:
+                waits[item.session_id] = item
+        return waits
+
+    @staticmethod
+    def _session_wait(
+        session: AgentSession, waits: dict[str, Notification]
+    ) -> Notification | None:
+        if not waits:
+            return None
+        return waits.get(session.session_id) or waits.get(Path(session.path).stem)
 
     def _filtered_items(self) -> list[Notification]:
         items = [
@@ -3114,13 +3406,18 @@ class NotificationWindow(QMainWindow):
         ]
         if self._filter == "all":
             return items
-        return [item for item in items if item.status == self._filter]
+        selected = [item for item in items if item.status == self._filter]
+        if self._filter == "running" and self._waiting_only:
+            selected = [item for item in selected if item.is_waiting_input]
+        return selected
 
     def _clear_cards(self) -> None:
         _discard_layout_widgets(self._list_layout)
         self._cards = []
 
-    def _add_live_section(self, sessions: list[AgentSession]) -> None:
+    def _add_live_section(
+        self, sessions: list[AgentSession], waits: dict[str, Notification]
+    ) -> None:
         header = QWidget(self._list_host)
         header_row = QHBoxLayout(header)
         header_row.setContentsMargins(2, 2, 2, 2)
@@ -3146,7 +3443,13 @@ class NotificationWindow(QMainWindow):
         self._list_layout.addWidget(header)
 
         for session in sessions[:MAX_LIVE_SESSIONS]:
-            card = ActiveSessionCard(session, self._list_host)
+            wait = self._session_wait(session, waits)
+            card = ActiveSessionCard(
+                session,
+                self._list_host,
+                wait_reason=wait.wait_reason if wait else None,
+                wait_source=(wait.wait_source or "") if wait else "",
+            )
             card.view_requested.connect(self._open_live_session)
             card.terminal_requested.connect(self._focus_session)
             self._list_layout.addWidget(card)
@@ -3171,8 +3474,11 @@ class NotificationWindow(QMainWindow):
 
         filtered = self._filtered_items()
         live = self._live_sessions() if self._filter == "running" else []
+        waits = self._waiting_notifications_by_session() if live else {}
+        if live and self._waiting_only:
+            live = [session for session in live if self._session_wait(session, waits)]
         if live:
-            self._add_live_section(live)
+            self._add_live_section(live, waits)
         if not filtered and not live:
             empty = EmptyState(
                 bool(self._source_items()),
@@ -3189,12 +3495,14 @@ class NotificationWindow(QMainWindow):
                     self.logger,
                     latest=index == 0,
                     allow_local_paths=self.config.allow_local_paths,
+                    allow_timeline=self._store.persistent,
                     parent=self._list_host,
                 )
                 card.replay_requested.connect(self.replay_requested.emit)
                 card.ack_requested.connect(self.ack_requested.emit)
                 card.snooze_requested.connect(self.snooze_requested.emit)
                 card.action_requested.connect(self.action_requested.emit)
+                card.timeline_requested.connect(self._open_timeline)
                 self._list_layout.addWidget(card)
                 self._cards.append(card)
             self._list_layout.addStretch(1)
@@ -3242,6 +3550,7 @@ class NotificationWindow(QMainWindow):
         self._query = ""
         self._search_items = []
         self._filter = "all"
+        self._waiting_only = False
         self._source_filter = ""
         self._source_combo.blockSignals(True)
         self._source_combo.setCurrentIndex(0)
@@ -3270,6 +3579,23 @@ class NotificationWindow(QMainWindow):
         self._stat_values["awaiting"].setText(
             str(int(stats.get("awaiting_ack") or 0))
         )
+        run_values = getattr(self, "_run_stat_values", {})
+        if run_values:
+            run_values["runs"].setText(str(int(stats.get("runs") or 0)))
+            run_rate = stats.get("run_success_rate")
+            run_values["run_success"].setText(
+                "—" if run_rate is None else f"{float(run_rate) * 100:.0f}%"
+            )
+            run_values["p50"].setText(
+                format_seconds(stats.get("run_duration_p50_seconds"))
+            )
+            run_values["p90"].setText(
+                format_seconds(stats.get("run_duration_p90_seconds"))
+            )
+            waiting = float(stats.get("waiting_seconds_total") or 0.0)
+            run_values["waiting"].setText(
+                format_seconds(waiting) if waiting > 0 else "—"
+            )
         self._daily_chart.set_data(stats.get("daily") or [])
         for key, label in self._stats_status_labels.items():
             label.setText(f"{STATUS_LABELS[key]} {int(stats.get(key) or 0)}")
@@ -3281,6 +3607,53 @@ class NotificationWindow(QMainWindow):
             self._stats_hint.setText("历史数据库未启用，仅统计本次运行")
         else:
             self._stats_hint.setText("历史记录已关闭，仅统计本次运行")
+
+    def _build_timeline_dialog(self, notification: Notification) -> RunTimelineDialog:
+        events = self._store.run_events(notification.run_id)
+        return RunTimelineDialog(notification, events, self.logger, self)
+
+    def _open_timeline(self, notification: Notification) -> None:
+        if not notification.run_id:
+            return
+        dialog = self._build_timeline_dialog(notification)
+        dialog.exec()
+        dialog.deleteLater()
+
+    def open_session_by_id(self, session_id: str) -> bool:
+        if not session_id:
+            return False
+        session = next(
+            (item for item in self._sessions if item.session_id == session_id),
+            None,
+        )
+        if session is None:
+            return False
+        self._open_live_session(session)
+        return True
+
+    def open_timeline_by_run(self, run_id: str) -> bool:
+        if not run_id:
+            return False
+        events = self._store.run_events(run_id)
+        if not events:
+            return False
+        notification = next(
+            (item for item in self._items if item.run_id == run_id), None
+        )
+        if notification is None:
+            last = events[-1]
+            notification = Notification(
+                id=run_id,
+                title=last.title or "运行时间线",
+                status=last.status or "running",
+                session_id=last.session_id,
+                run_id=run_id,
+                source=last.agent,
+            )
+        dialog = RunTimelineDialog(notification, events, self.logger, self)
+        dialog.exec()
+        dialog.deleteLater()
+        return True
 
     # ---------- agent sessions ----------
 
@@ -3474,6 +3847,7 @@ class NotificationWindow(QMainWindow):
         self._transcript_search.blockSignals(False)
         self._transcript_search.setEnabled(bool(transcript.turns))
         self._render_transcript(transcript)
+        self._refresh_detail_run(session)
         self._session_view_stack.setCurrentIndex(1)
         self._transcript_scroll.verticalScrollBar().setValue(0)
         self.logger.info(
@@ -3482,6 +3856,38 @@ class NotificationWindow(QMainWindow):
             transcript.total_turns,
             transcript.total_items,
         )
+
+    def _refresh_detail_run(self, session: AgentSession) -> None:
+        events = self._store.session_run_events(session.session_id)
+        self._detail_run_events = events
+        if not events:
+            self._detail_run_summary.set_full_text("")
+            self._detail_run_card.hide()
+            return
+        self._detail_run_summary.set_full_text(_run_summary_text(events))
+        self._detail_run_card.show()
+
+    def _open_detail_run_timeline(self) -> None:
+        session = self._session_detail_session
+        if session is None or not self._detail_run_events:
+            return
+        run_id = self._detail_run_events[-1].run_id
+        notification = next(
+            (item for item in self._items if item.run_id == run_id), None
+        )
+        if notification is None:
+            notification = Notification(
+                id=run_id,
+                title=session.display_title,
+                status=self._detail_run_events[-1].status or "running",
+                session_id=session.session_id,
+                run_id=run_id,
+            )
+        dialog = RunTimelineDialog(
+            notification, self._detail_run_events, self.logger, self
+        )
+        dialog.exec()
+        dialog.deleteLater()
 
     def _close_session_view(self) -> None:
         if self._session_view_stack.currentIndex() != 1:
@@ -3857,6 +4263,14 @@ class NotificationWindow(QMainWindow):
 
 
 _STYLESHEET = """
+QToolTip {
+    background-color: #FFFFFF;
+    color: #344054;
+    border: 1px solid #D0D5DD;
+    border-radius: 6px;
+    padding: 6px 8px;
+    font-size: 12px;
+}
 QWidget#centralHost {
     background: transparent;
 }
@@ -4061,6 +4475,27 @@ QPushButton#segmentButton:checked {
     color: #1F2329;
     font-weight: 600;
 }
+QFrame#waitingBar {
+    background: transparent;
+}
+QPushButton#waitingToggle {
+    background: transparent;
+    border: 1px solid #E8EBF0;
+    border-radius: 8px;
+    color: #6B7280;
+    font-size: 11px;
+    padding: 0px 10px;
+}
+QPushButton#waitingToggle:hover {
+    color: #323A45;
+    border-color: #D5DAE3;
+}
+QPushButton#waitingToggle:checked {
+    background-color: #FFF4E6;
+    border-color: #F3D3A7;
+    color: #9A4E05;
+    font-weight: 600;
+}
 QFrame#searchHost {
     background-color: #F5F6FA;
     border: 1px solid #E8EBF0;
@@ -4187,6 +4622,38 @@ QLabel#priorityChip[priority="high"] {
 QLabel#priorityChip[priority="critical"] {
     background-color: #FDECEC;
     color: #C24141;
+}
+QLabel#waitChip {
+    background-color: #FFF1E2;
+    border: 1px solid #F6D8B4;
+    border-radius: 8px;
+    color: #A15C0A;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 1px 8px;
+}
+QLabel#waitChip[reason="permission"] {
+    background-color: #FFF4E6;
+    border-color: #F3D3A7;
+    color: #9A4E05;
+}
+QLabel#waitChip[reason="question"] {
+    background-color: #EEF3FF;
+    border-color: #CFDEFB;
+    color: #2F5FB3;
+}
+QLabel#waitChip[reason="rate_limit"],
+QLabel#waitChip[reason="context_limit"] {
+    background-color: #FDECEC;
+    border-color: #F3C9C9;
+    color: #B33A3A;
+}
+QLabel#inferredChip {
+    background-color: #F4F5F8;
+    border-radius: 7px;
+    color: #8A919D;
+    font-size: 9px;
+    padding: 1px 6px;
 }
 QLabel#durationChip, QLabel#sourceChip, QLabel#repeatChip, QLabel#ackChip {
     background-color: #F4F5F8;
@@ -4328,6 +4795,15 @@ QLabel#statCaption {
     font-size: 10px;
     color: #8A919D;
 }
+QLabel#runStatValue {
+    font-size: 16px;
+    font-weight: 700;
+    color: #161A20;
+}
+QLabel#runStatCaption {
+    font-size: 9px;
+    color: #8A919D;
+}
 QFrame#statsCard {
     background-color: #FFFFFF;
     border: 1px solid #E6E8EC;
@@ -4368,6 +4844,35 @@ QLabel#sessionSummary {
     font-size: 11px;
     color: #8A919D;
 }
+QFrame#detailRunCard {
+    background-color: #FFFFFF;
+    border: 1px solid #E6E8EC;
+    border-radius: 10px;
+}
+QLabel#detailRunBadge {
+    background-color: #EAF2FF;
+    border-radius: 7px;
+    color: #2F6FF0;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 1px 8px;
+}
+QLabel#detailRunSummary {
+    font-size: 11px;
+    color: #323A45;
+}
+QPushButton#detailRunButton {
+    background-color: #F5F7FB;
+    border: 1px solid #E3E7ED;
+    border-radius: 7px;
+    color: #2F6FF0;
+    font-size: 10px;
+    font-weight: 600;
+}
+QPushButton#detailRunButton:hover {
+    background-color: #EAF1FF;
+    border-color: #C9DBFF;
+}
 QLabel#sessionGroupTitle {
     font-size: 12px;
     font-weight: 650;
@@ -4384,6 +4889,33 @@ QFrame#activeSessionCard {
 }
 QFrame#activeSessionCard:hover {
     border-color: #AFCCF6;
+}
+QFrame#activeSessionCard[waiting="true"] {
+    background-color: #FFFCF6;
+    border-color: #F3D3A7;
+}
+QLabel#liveDot[waiting="true"] {
+    background-color: #F59E0B;
+}
+QLabel#sessionWaitChip {
+    background-color: #FFF1E2;
+    border: 1px solid #F6D8B4;
+    border-radius: 8px;
+    color: #A15C0A;
+    font-size: 9px;
+    font-weight: 600;
+    padding: 1px 7px;
+}
+QLabel#sessionWaitChip[reason="question"] {
+    background-color: #EEF3FF;
+    border-color: #CFDEFB;
+    color: #2F5FB3;
+}
+QLabel#sessionWaitChip[reason="rate_limit"],
+QLabel#sessionWaitChip[reason="context_limit"] {
+    background-color: #FDECEC;
+    border-color: #F3C9C9;
+    color: #B33A3A;
 }
 QLabel#liveDot {
     background-color: #22B573;

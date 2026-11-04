@@ -10,8 +10,9 @@ from fastapi.testclient import TestClient
 import agentbell.api as api_module
 from agentbell import window_focus
 from agentbell.api import MAX_BODY_BYTES, create_app
-from agentbell.config import AppConfig
+from agentbell.config import AppConfig, ConfigRef, RuleConfig
 from agentbell.models import Notification
+from agentbell.storage import NotificationStorage
 from agentbell.store import NotificationStore
 
 TOKEN = "test-secret"
@@ -24,10 +25,20 @@ def _stub_window_snapshot(monkeypatch):
     monkeypatch.setattr(api_module.window_focus, "sender_label", lambda pid: "")
 
 
-def build(maxsize: int = 20, store: NotificationStore | None = None):
+def build(
+    maxsize: int = 20,
+    store: NotificationStore | None = None,
+    config: AppConfig | None = None,
+    config_source=None,
+):
     inbox: queue.Queue[Notification] = queue.Queue(maxsize=maxsize)
+    source = config_source
+    if source is None:
+        source = config if config is not None else AppConfig(
+            port=8765, token=TOKEN, auto_close_seconds=30, autostart=False
+        )
     app = create_app(
-        AppConfig(port=8765, token=TOKEN, auto_close_seconds=30, autostart=False),
+        source,
         inbox,
         logging.getLogger("agentbell.tests"),
         store=store,
@@ -292,6 +303,101 @@ def test_origin_keeps_focus_action_first_and_limits_total_actions():
     ]
 
 
+def test_session_and_timeline_actions_are_ordered_and_ignore_values():
+    client, inbox = build()
+    response = client.post(
+        "/notify",
+        json={
+            "title": "查看记录",
+            "status": "running",
+            "session_id": "s-1",
+            "run_id": "r-1",
+            "actions": [
+                {"kind": "copy", "label": "复制", "value": "echo hi"},
+                {
+                    "kind": "timeline",
+                    "value": "C:\\Windows\\System32\\cmd.exe",
+                },
+                {"kind": "session", "value": "../../secret.jsonl"},
+            ],
+        },
+        headers=auth_headers(),
+    )
+    assert response.status_code == 202
+    notification = inbox.get_nowait()
+    assert [action.kind for action in notification.actions] == [
+        "session",
+        "timeline",
+        "copy",
+    ]
+    assert [action.label for action in notification.actions] == [
+        "查看记录",
+        "时间线",
+        "复制",
+    ]
+    assert notification.actions[0].value == ""
+    assert notification.actions[1].value == ""
+
+
+def test_session_and_timeline_actions_require_identifiers(caplog):
+    client, inbox = build()
+    with caplog.at_level(logging.WARNING):
+        response = client.post(
+            "/notify",
+            json={
+                "title": "缺少标识",
+                "actions": [{"kind": "session"}, {"kind": "timeline"}],
+            },
+            headers=auth_headers(),
+        )
+    assert response.status_code == 202
+    notification = inbox.get_nowait()
+    assert notification.actions == ()
+    assert "缺少 session_id" in caplog.text
+    assert "无法确定 run_id" in caplog.text
+
+
+def test_origin_focus_precedes_session_and_timeline_actions():
+    client, inbox = build()
+    response = client.post(
+        "/notify",
+        json={
+            "title": "主按钮顺序",
+            "origin": {"pid": 4321, "window_title": "Qoder"},
+            "actions": [
+                {"kind": "timeline"},
+                {"kind": "copy", "value": "echo hi"},
+                {"kind": "session"},
+            ],
+            "session_id": "s-1",
+            "run_id": "r-1",
+        },
+        headers=auth_headers(),
+    )
+    assert response.status_code == 202
+    notification = inbox.get_nowait()
+    assert [action.kind for action in notification.actions] == [
+        "focus",
+        "session",
+        "timeline",
+        "copy",
+    ]
+
+
+def test_unknown_action_kind_is_rejected():
+    client, inbox = build()
+    response = client.post(
+        "/notify",
+        json={
+            "title": "未知动作",
+            "actions": [{"kind": "approve", "label": "批准"}],
+        },
+        headers=auth_headers(),
+    )
+    assert response.status_code == 422
+    assert inbox.empty()
+
+
 def test_sender_supplied_focus_action_is_ignored(caplog):
     client, inbox = build()
     with caplog.at_level(logging.WARNING):
@@ -463,6 +569,82 @@ def test_running_progress_notification_is_accepted():
     assert notification.status == "running"
     assert notification.progress == 45
     assert notification.priority == "low"
+
+
+def test_waiting_input_is_accepted_on_running():
+    client, inbox = build()
+    response = client.post(
+        "/notify",
+        json={
+            "title": "等待权限确认",
+            "status": "running",
+            "needs_input": True,
+            "wait_reason": "Permission",
+            "session_id": " session-1 ",
+            "run_id": "run-1",
+            "summary": "Agent 请求写入工作区",
+        },
+        headers=auth_headers(),
+    )
+    assert response.status_code == 202
+    body = response.json()
+    assert body["needs_input"] is True
+    assert body["wait_reason"] == "permission"
+    assert body["wait_source"] == "explicit"
+
+    notification = inbox.get_nowait()
+    assert notification.status == "running"
+    assert notification.priority == "high"
+    assert notification.wait_reason_label == "等待权限确认"
+    assert notification.session_id == "session-1"
+    assert notification.run_id == "run-1"
+    assert notification.is_waiting_input is True
+
+
+def test_waiting_input_defaults_and_clearing():
+    client, inbox = build()
+    response = client.post(
+        "/notify",
+        json={
+            "title": "等待回答",
+            "status": "running",
+            "needs_input": True,
+            "wait_reason": "unknown-reason",
+        },
+        headers=auth_headers(),
+    )
+    assert response.status_code == 202
+    assert response.json()["wait_reason"] == "other"
+    assert inbox.get_nowait().wait_reason_label == "等待输入"
+
+    response = client.post(
+        "/notify",
+        json={
+            "title": "继续执行",
+            "status": "running",
+            "needs_input": False,
+            "wait_reason": "permission",
+            "wait_source": "inferred",
+        },
+        headers=auth_headers(),
+    )
+    assert response.status_code == 202
+    notification = inbox.get_nowait()
+    assert notification.needs_input is False
+    assert notification.wait_reason is None
+    assert notification.wait_source is None
+    assert notification.priority == "low"
+
+
+def test_waiting_input_rejects_non_running_status():
+    client, inbox = build()
+    response = client.post(
+        "/notify",
+        json={"title": "完成", "status": "succeeded", "needs_input": True},
+        headers=auth_headers(),
+    )
+    assert response.status_code == 422
+    assert inbox.empty()
 
 
 def test_unsafe_links_are_dropped():
@@ -652,3 +834,198 @@ def test_require_ack_and_actions_are_forwarded():
         "retry",
         "copy",
     ]
+
+
+def build_persistent(tmp_path):
+    storage = NotificationStorage(
+        tmp_path / "history.db", logging.getLogger("agentbell.tests")
+    )
+    store = NotificationStore(storage=storage, limit=50)
+    client, inbox = build(store=store)
+    return client, inbox, store
+
+
+def test_phase_is_lowercased_and_returned(tmp_path):
+    client, _inbox, store = build_persistent(tmp_path)
+    try:
+        response = client.post(
+            "/notify",
+            json={
+                "title": "进度汇报",
+                "status": "running",
+                "session_id": "s-1",
+                "phase": "Progress",
+            },
+            headers=auth_headers(),
+        )
+        assert response.status_code == 202
+        body = response.json()
+        assert body["run_id"] == "session:s-1"
+        assert body["phase"] == "progress"
+        events = store.run_events("session:s-1")
+        assert [event.kind for event in events] == ["progress"]
+    finally:
+        store.close()
+
+
+def test_unknown_phase_is_rejected(tmp_path):
+    client, _inbox, store = build_persistent(tmp_path)
+    try:
+        response = client.post(
+            "/notify",
+            json={"title": "任务", "phase": "bogus"},
+            headers=auth_headers(),
+        )
+        assert response.status_code == 422
+    finally:
+        store.close()
+
+
+def test_notify_infers_run_transitions(tmp_path):
+    client, _inbox, store = build_persistent(tmp_path)
+    try:
+        first = client.post(
+            "/notify",
+            json={
+                "title": "任务",
+                "status": "running",
+                "session_id": "s-1",
+            },
+            headers=auth_headers(),
+        )
+        assert first.json()["run_id"] == "session:s-1"
+        client.post(
+            "/notify",
+            json={
+                "title": "任务",
+                "status": "running",
+                "session_id": "s-1",
+                "needs_input": True,
+                "wait_reason": "question",
+            },
+            headers=auth_headers(),
+        )
+        client.post(
+            "/notify",
+            json={
+                "title": "任务",
+                "status": "running",
+                "session_id": "s-1",
+                "needs_input": False,
+            },
+            headers=auth_headers(),
+        )
+        client.post(
+            "/notify",
+            json={"title": "任务", "status": "succeeded", "session_id": "s-1"},
+            headers=auth_headers(),
+        )
+        events = store.run_events("session:s-1")
+        assert [event.kind for event in events] == [
+            "started",
+            "waiting_input",
+            "resumed",
+            "finished",
+        ]
+        assert events[-1].status == "succeeded"
+    finally:
+        store.close()
+
+
+def test_rules_match_project_wait_reason_and_duration():
+    config = AppConfig(
+        port=8765,
+        token=TOKEN,
+        auto_close_seconds=30,
+        autostart=False,
+        rules=(
+            RuleConfig(
+                name="演示项目权限等待",
+                project="demo-*",
+                wait_reason="permission",
+                min_duration_seconds=600,
+                priority="critical",
+            ),
+        ),
+    )
+    client, inbox = build(config=config)
+    response = client.post(
+        "/notify",
+        json={
+            "title": "等待权限",
+            "status": "running",
+            "needs_input": True,
+            "wait_reason": "permission",
+            "duration": "11m",
+            "priority": "low",
+            "origin": {"working_dir": "E:\\work\\demo-api"},
+        },
+        headers=auth_headers(),
+    )
+    assert response.status_code == 202
+    assert response.json()["priority"] == "critical"
+    notification = inbox.get_nowait()
+    assert notification.rule_name == "演示项目权限等待"
+    assert notification.priority == "critical"
+
+    response = client.post(
+        "/notify",
+        json={
+            "title": "等待权限",
+            "status": "running",
+            "needs_input": True,
+            "wait_reason": "permission",
+            "duration": "5m",
+            "priority": "low",
+            "origin": {"working_dir": "E:\\work\\demo-api"},
+        },
+        headers=auth_headers(),
+    )
+    assert response.json()["priority"] == "low"
+    assert inbox.get_nowait().rule_name == ""
+
+
+def test_rules_use_live_config_after_settings_save():
+    ref = ConfigRef(
+        AppConfig(
+            port=8765,
+            token=TOKEN,
+            auto_close_seconds=30,
+            autostart=False,
+        )
+    )
+    client, inbox = build(config_source=lambda: ref.current)
+    payload = {
+        "title": "等待权限",
+        "status": "running",
+        "needs_input": True,
+        "wait_reason": "permission",
+        "priority": "low",
+    }
+    first = client.post("/notify", json=payload, headers=auth_headers())
+    assert first.json()["priority"] == "low"
+    assert inbox.get_nowait().rule_name == ""
+
+    ref.current = AppConfig(
+        port=8765,
+        token=TOKEN,
+        auto_close_seconds=30,
+        autostart=False,
+        rules=(
+            RuleConfig(
+                name="权限等待高优",
+                wait_reason="permission",
+                priority="critical",
+                silent=True,
+            ),
+        ),
+    )
+    second = client.post(
+        "/notify",
+        json={**payload, "title": "再次等待权限"},
+        headers=auth_headers(),
+    )
+    assert second.json()["priority"] == "critical"
+    notification = inbox.get_nowait()
+    assert notification.rule_name == "权限等待高优"
+    assert notification.silent is True

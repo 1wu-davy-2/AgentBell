@@ -9,6 +9,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import uuid
 from collections import deque
 from dataclasses import replace
 from datetime import datetime
@@ -28,11 +29,18 @@ from PySide6.QtWidgets import (
 
 from . import __version__
 from .agent_sessions import AgentSessionScanner
+from .attention import AttentionScanner, WaitDetection, WaitResolution
 from .channels import ChannelDispatcher
-from .config import AppConfig, ConfigError, save_config
+from .config import AppConfig, ConfigError, ConfigRef, save_config
 from .hotkey import GlobalHotkey
-from .models import Notification, NotificationAction, safe_callback_url, safe_http_url
-from .policy import Decision, Presence, decide, quiet_hours_end
+from .models import (
+    ATTENTION_AGENT_LABELS,
+    Notification,
+    NotificationAction,
+    safe_callback_url,
+    safe_http_url,
+)
+from .policy import Decision, Presence, apply_rules, decide, quiet_hours_end
 from .presence import PresenceMonitor
 from .server import UvicornServerThread
 from .store import NotificationStore
@@ -77,10 +85,14 @@ class AgentBellApp(QObject):
         asgi_app: Any,
         listener: socket.socket,
         config_path: Path | None = None,
+        config_ref: ConfigRef | None = None,
     ) -> None:
         super().__init__()
         self.qapp = qapp
         self.config = config
+        self._config_ref = config_ref
+        if config_ref is not None:
+            config_ref.current = config
         self.logger = logger
         self.inbox = inbox
         self.store = store
@@ -123,6 +135,7 @@ class AgentBellApp(QObject):
         self.session_scanner = AgentSessionScanner(
             config.agent_sessions, logger, self
         )
+        self.attention_scanner = AttentionScanner(config.attention, logger, self)
         self.server = UvicornServerThread(
             app=asgi_app,
             port=config.port,
@@ -156,6 +169,9 @@ class AgentBellApp(QObject):
         self.center.session_refresh_requested.connect(self.session_scanner.refresh)
         self.session_scanner.scanned.connect(self.center.update_sessions)
         self.session_scanner.failed.connect(self._on_session_scan_failed)
+        self.attention_scanner.detected.connect(self._on_wait_detected)
+        self.attention_scanner.resolved.connect(self._on_wait_resolved)
+        self.attention_scanner.failed.connect(self._on_attention_failed)
         self.toasts.acknowledged.connect(self._acknowledge)
         self.toasts.snooze_requested.connect(self._snooze)
         self.toasts.action_requested.connect(self._run_action)
@@ -184,6 +200,7 @@ class AgentBellApp(QObject):
         self.server.start()
         self.presence_monitor.start()
         self.session_scanner.start()
+        self.attention_scanner.start()
         self.hotkey.register()
         self._drain_timer.start()
         self.qapp.aboutToQuit.connect(self.shutdown)
@@ -216,6 +233,100 @@ class AgentBellApp(QObject):
             self._handle_notification(notification)
         if handled and self.center.isVisible():
             self.center.refresh_items(self.store.snapshot())
+
+    def _on_wait_detected(self, detection: WaitDetection) -> None:
+        if self._shutting_down or not self.config.attention.enabled:
+            return
+        for item in self.store.snapshot():
+            if (
+                item.is_waiting_input
+                and item.session_id == detection.session_id
+                and item.wait_source == "explicit"
+            ):
+                self.logger.info(
+                    "已有显式等待提醒，跳过推断 session=%s",
+                    detection.session_id[:8],
+                )
+                return
+        now = datetime.now().astimezone()
+        notification = Notification(
+            id=uuid.uuid4().hex[:12],
+            title=detection.title,
+            status="running",
+            summary=detection.summary,
+            received_at=now,
+            updated_at=now,
+            priority="high",
+            source=ATTENTION_AGENT_LABELS.get(detection.agent, detection.agent),
+            dedupe_key=detection.dedupe_key,
+            needs_input=True,
+            wait_reason=detection.reason,
+            wait_source="inferred",
+            session_id=detection.session_id,
+        )
+        notification = apply_rules(
+            notification, self.config.rules, project=detection.project
+        )
+        stored, updated = self.store.add(notification, project=detection.project)
+        self._recent.appendleft(stored)
+        self.tray.set_recent(list(self._recent))
+        if not updated and not self.center.isVisible():
+            self._unread += 1
+            self.tray.set_unread(self._unread)
+        if self.center.isVisible():
+            self.center.refresh_items(self.store.snapshot())
+        if detection.reason == "question" and not self.config.attention.question_popup:
+            self.logger.info(
+                "提问类推断仅进入通知中心 session=%s", detection.session_id[:8]
+            )
+            return
+        self._handle_notification(stored)
+
+    def _on_wait_resolved(self, resolution: WaitResolution) -> None:
+        if self._shutting_down:
+            return
+        item = self.store.find_by_dedupe(resolution.dedupe_key)
+        if item is None or not item.is_waiting_input:
+            return
+        updated = replace(
+            item,
+            needs_input=False,
+            wait_reason=None,
+            wait_source=None,
+            updated_at=datetime.now().astimezone(),
+        )
+        self.store.replace_notification(updated, event_kind="resumed")
+        if self.center.isVisible():
+            self.center.refresh_items(self.store.snapshot())
+        self.logger.info(
+            "等待输入已恢复：agent=%s session=%s",
+            resolution.agent,
+            resolution.session_id[:8],
+        )
+
+    def _on_attention_failed(self, message: str) -> None:
+        self.logger.warning("等待输入推断失败：%s", message)
+
+    def _clear_inferred_waits(self) -> None:
+        now = datetime.now().astimezone()
+        cleared = 0
+        for item in self.store.snapshot():
+            if not item.is_waiting_input or item.wait_source != "inferred":
+                continue
+            self.store.replace_notification(
+                replace(
+                    item,
+                    needs_input=False,
+                    wait_reason=None,
+                    wait_source=None,
+                    updated_at=now,
+                )
+            )
+            cleared += 1
+        if cleared and self.center.isVisible():
+            self.center.refresh_items(self.store.snapshot())
+        if cleared:
+            self.logger.info("已关闭本地推断，清除 %d 条推断等待提醒", cleared)
 
     def _handle_notification(self, notification: Notification) -> None:
         if notification.is_expired():
@@ -273,7 +384,7 @@ class AgentBellApp(QObject):
     def _dispatch_channels(self, notification: Notification, decision: Decision) -> None:
         if not decision.channel_types:
             return
-        if notification.status == "running":
+        if notification.status == "running" and not notification.needs_input:
             return
         if notification.occurrence_count > 1 and notification.status not in {
             "failed",
@@ -646,8 +757,40 @@ class AgentBellApp(QObject):
                 daemon=True,
             ).start()
             return
+        if action.kind == "session":
+            self._open_session_record(notification)
+            return
+        if action.kind == "timeline":
+            self._open_run_timeline(notification)
+            return
         if action.kind == "center":
             self.open_notification_center()
+
+    def _action_failed(self, notification: Notification, message: str) -> None:
+        self.logger.warning("动作失败 id=%s：%s", notification.id, message)
+        self.tray.showMessage("AgentBell", message, make_app_icon(), 3500)
+
+    def _open_session_record(self, notification: Notification) -> None:
+        session_id = notification.session_id or ""
+        if not session_id:
+            self._action_failed(notification, "该通知没有关联的会话记录")
+            return
+        if not self.center.open_session_by_id(session_id):
+            self._action_failed(notification, "未找到关联的会话记录，可能已被清理")
+            return
+        self.open_notification_center()
+        self.logger.info("打开会话记录 id=%s session=%s", notification.id, session_id)
+
+    def _open_run_timeline(self, notification: Notification) -> None:
+        run_id = notification.run_id or ""
+        if not run_id or not self.store.run_events(run_id):
+            self._action_failed(notification, "未找到该运行的时间线")
+            return
+        self.open_notification_center()
+        if not self.center.open_timeline_by_run(run_id):
+            self._action_failed(notification, "未找到该运行的时间线")
+            return
+        self.logger.info("打开运行时间线 id=%s run=%s", notification.id, run_id)
 
     def _post_retry(self, url: str, notification: Notification) -> None:
         import json
@@ -731,6 +874,8 @@ class AgentBellApp(QObject):
         if self.config.onboarding_seen:
             return
         self.config = replace(self.config, onboarding_seen=True)
+        if self._config_ref is not None:
+            self._config_ref.current = self.config
         if self.config_path is not None:
             try:
                 save_config(self.config_path, self.config)
@@ -977,6 +1122,8 @@ class AgentBellApp(QObject):
 
     def _apply_config(self, config: AppConfig) -> None:
         self.config = config
+        if self._config_ref is not None:
+            self._config_ref.current = config
         self.toasts.set_auto_close(config.auto_close_seconds)
         self.toasts.set_templates(config.templates)
         self.toasts.set_appearance(
@@ -988,6 +1135,13 @@ class AgentBellApp(QObject):
         self.toasts.set_paused(config.hold_when_locked and self._presence.locked)
         self.presence_monitor.apply_config(config)
         self.session_scanner.apply_config(config.agent_sessions)
+        self.attention_scanner.apply_config(config.attention)
+        if not (
+            config.attention.enabled
+            and config.attention.infer
+            and config.attention.agents
+        ):
+            self._clear_inferred_waits()
         self.hotkey.apply(config.hotkey)
         self.center.apply_config(config)
         try:
@@ -1034,6 +1188,7 @@ class AgentBellApp(QObject):
         self._snooze_timers.clear()
         self.presence_monitor.stop()
         self.session_scanner.stop()
+        self.attention_scanner.stop()
         self.hotkey.unregister()
         self.channels.stop()
         self.toasts.close_all()

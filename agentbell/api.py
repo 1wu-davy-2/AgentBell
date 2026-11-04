@@ -7,11 +7,18 @@ import queue
 import re
 import uuid
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Callable
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from . import __version__, window_focus
 from .config import AppConfig
@@ -22,7 +29,12 @@ from .models import (
     PopupMode,
     PopupSkin,
     Priority,
+    RunEventKind,
     Status,
+    WAIT_REASONS,
+    WAIT_SOURCES,
+    WaitReason,
+    WaitSource,
     default_priority,
     safe_callback_url,
     safe_http_url,
@@ -49,7 +61,11 @@ _ACTION_LABELS: dict[str, str] = {
     "path": "打开文件",
     "center": "通知中心",
     "focus": "回到终端",
+    "session": "查看记录",
+    "timeline": "时间线",
 }
+
+_ACTION_PRIORITY = {"focus": 0, "session": 1, "timeline": 2}
 
 _SUSPECT_MARKS = re.compile(r"\?{3,}")
 _LOSSY_FIELDS = ("title", "summary", "duration", "error", "source")
@@ -88,6 +104,12 @@ class NotifyPayload(BaseModel):
     priority: Priority | None = None
     source: str = Field(default="", max_length=100)
     dedupe_key: str | None = Field(default=None, max_length=200)
+    needs_input: bool = False
+    wait_reason: WaitReason | None = None
+    wait_source: WaitSource | None = None
+    session_id: str | None = Field(default=None, max_length=120)
+    run_id: str | None = Field(default=None, max_length=120)
+    phase: RunEventKind | None = None
     require_ack: bool = False
     silent: bool = False
     progress: int | None = Field(default=None, ge=0, le=100)
@@ -131,7 +153,9 @@ class NotifyPayload(BaseModel):
     def _empty_link_to_none(cls, value: str | None) -> str | None:
         return value or None
 
-    @field_validator("dedupe_key", "priority", "popup_mode", "popup_skin", mode="before")
+    @field_validator(
+        "dedupe_key", "priority", "phase", "popup_mode", "popup_skin", mode="before"
+    )
     @classmethod
     def _lower_optional(cls, value: Any) -> Any:
         if isinstance(value, str):
@@ -148,6 +172,40 @@ class NotifyPayload(BaseModel):
     @classmethod
     def _none_to_empty(cls, value: Any) -> Any:
         return [] if value is None else value
+
+    @field_validator("wait_reason", "wait_source", mode="before")
+    @classmethod
+    def _normalize_wait_enum(cls, value: Any, info: Any) -> Any:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            return value
+        text = value.strip().lower()
+        if not text:
+            return None
+        allowed = WAIT_REASONS if info.field_name == "wait_reason" else WAIT_SOURCES
+        if text in allowed:
+            return text
+        return "other" if info.field_name == "wait_reason" else "explicit"
+
+    @field_validator("session_id", "run_id", mode="before")
+    @classmethod
+    def _normalize_optional_id(cls, value: Any) -> Any:
+        if value is None or not isinstance(value, str):
+            return value
+        return value.strip() or None
+
+    @model_validator(mode="after")
+    def _validate_waiting_input(self) -> "NotifyPayload":
+        if not self.needs_input:
+            self.wait_reason = None
+            self.wait_source = None
+            return self
+        if self.status != "running":
+            raise ValueError("needs_input 只允许与 status=running 一起使用")
+        self.wait_reason = self.wait_reason or "other"
+        self.wait_source = self.wait_source or "explicit"
+        return self
 
 
 def _client(request: Request) -> str:
@@ -295,6 +353,16 @@ def _build_actions(
             if not value or "\x00" in value:
                 continue
             value = value[:2048]
+        elif item.kind == "session":
+            if not payload.session_id:
+                logger.warning("忽略缺少 session_id 的 session 动作")
+                continue
+            value = ""
+        elif item.kind == "timeline":
+            if not (payload.run_id or payload.session_id or payload.dedupe_key):
+                logger.warning("忽略无法确定 run_id 的 timeline 动作")
+                continue
+            value = ""
         elif item.kind == "focus":
             logger.warning("忽略外部 focus 动作，请改用 origin 字段")
             continue
@@ -302,6 +370,7 @@ def _build_actions(
             value = ""
         label = item.label.strip()[:40] or _ACTION_LABELS[item.kind]
         actions.append(NotificationAction(kind=item.kind, label=label, value=value))
+    actions.sort(key=lambda action: _ACTION_PRIORITY.get(action.kind, 3))
     return tuple(actions)
 
 
@@ -339,6 +408,13 @@ def _detect_sender(
     return origin, window_focus.sender_label(detected)
 
 
+def _project_name(origin: OriginPayload | None) -> str:
+    if origin is None or not origin.working_dir:
+        return ""
+    parts = [part for part in re.split(r"[\\/]+", origin.working_dir.strip()) if part]
+    return parts[-1][:80] if parts else ""
+
+
 def _build_notification(
     payload: NotifyPayload,
     config: AppConfig,
@@ -347,12 +423,15 @@ def _build_notification(
     *,
     origin: OriginPayload | None,
     source: str,
+    project: str = "",
 ) -> Notification:
     link = safe_http_url(payload.link)
     if payload.link and link is None:
         logger.warning("忽略非 http(s) 链接：%s", _log_text(payload.link, 200))
 
-    priority = payload.priority or default_priority(payload.status)
+    priority = payload.priority or (
+        "high" if payload.needs_input else default_priority(payload.status)
+    )
     actions = _build_actions(payload, config, logger)
     origin_action = _build_origin_action(origin, logger)
     if origin_action is not None:
@@ -370,6 +449,11 @@ def _build_notification(
         priority=priority,
         source=source,
         dedupe_key=payload.dedupe_key,
+        needs_input=payload.needs_input,
+        wait_reason=payload.wait_reason,
+        wait_source=payload.wait_source,
+        session_id=payload.session_id,
+        run_id=payload.run_id,
         require_ack=payload.require_ack,
         silent=payload.silent,
         progress=payload.progress if payload.status == "running" else None,
@@ -385,15 +469,19 @@ def _build_notification(
         popup_mode=payload.popup_mode,
         popup_skin=payload.popup_skin,
     )
-    return apply_rules(notification, config.rules)
+    return apply_rules(notification, config.rules, project=project)
 
 
 def create_app(
-    config: AppConfig,
+    config: AppConfig | Callable[[], AppConfig],
     inbox: queue.Queue[Notification],
     logger: logging.Logger,
     store: NotificationStore | None = None,
 ) -> FastAPI:
+    def current_config() -> AppConfig:
+        return config() if callable(config) else config
+
+    startup_config = current_config()
     app = FastAPI(
         title="AgentBell",
         version=__version__,
@@ -401,12 +489,12 @@ def create_app(
         redoc_url=None,
         openapi_url=None,
     )
-    expected_token = config.token.encode("utf-8")
+    expected_token = startup_config.token.encode("utf-8")
     history = store if store is not None else NotificationStore(QUEUE_MAX_SIZE)
 
     @app.middleware("http")
     async def verify_token(request: Request, call_next):
-        if request.url.path == "/notify" and config.token:
+        if request.url.path == "/notify" and startup_config.token:
             supplied = request.headers.get("x-token")
             supplied_bytes = supplied.encode("utf-8") if supplied is not None else None
             if supplied_bytes is None or not hmac.compare_digest(supplied_bytes, expected_token):
@@ -423,7 +511,7 @@ def create_app(
             "ok": True,
             "app": "AgentBell",
             "version": __version__,
-            "auth": config.auth_enabled,
+            "auth": startup_config.auth_enabled,
             "history": len(history),
         }
 
@@ -439,15 +527,22 @@ def create_app(
 
         now = datetime.now().astimezone()
         origin, auto_source = _detect_sender(request, payload.origin, logger)
+        project = _project_name(origin)
+        active_config = current_config()
         notification = _build_notification(
             payload,
-            config,
+            active_config,
             logger,
             now,
             origin=origin,
             source=payload.source or auto_source,
+            project=project,
         )
-        stored, updated = history.add(notification)
+        stored, updated = history.add(
+            notification,
+            phase=payload.phase,
+            project=project,
+        )
 
         lossy_fields = [
             name
@@ -465,7 +560,7 @@ def create_app(
         log_id = stored.id
         logger.info(
             "收到通知 id=%s status=%s priority=%s title=%s duration=%s "
-            "summary_len=%d source=%s dedupe=%s updated=%s client=%s",
+            "summary_len=%d source=%s dedupe=%s run=%s phase=%s updated=%s client=%s",
             log_id,
             stored.status,
             stored.priority,
@@ -474,6 +569,8 @@ def create_app(
             len(stored.summary),
             _log_text(stored.source, 60) or "-",
             _log_text(stored.dedupe_key or "", 60) or "-",
+            _log_text(stored.run_id or "", 60) or "-",
+            payload.phase or "auto",
             updated,
             _client(request),
         )
@@ -497,11 +594,16 @@ def create_app(
             "id": log_id,
             "queued": True,
             "updated": updated,
+            "run_id": stored.run_id,
+            "phase": payload.phase,
             "priority": stored.priority,
             "require_ack": stored.require_ack,
+            "needs_input": stored.needs_input,
+            "wait_reason": stored.wait_reason,
+            "wait_source": stored.wait_source,
             "occurrence": stored.occurrence_count,
-            "popup_mode": stored.popup_mode or config.popup_mode,
-            "popup_skin": stored.popup_skin or config.popup_skin,
+            "popup_mode": stored.popup_mode or active_config.popup_mode,
+            "popup_skin": stored.popup_skin or active_config.popup_skin,
         }
 
     return app

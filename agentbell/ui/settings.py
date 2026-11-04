@@ -74,15 +74,22 @@ _TEMPLATE_LABELS = {
 
 _RULES_EXAMPLE = [
     {
-        "name": "失败必须确认",
-        "status": "failed",
+        "name": "等待权限时高优先级",
+        "wait_reason": "permission",
+        "needs_input": True,
         "priority": "high",
+    },
+    {
+        "name": "测试项目仅在失败时确认",
+        "project": "demo-*",
+        "status": "failed",
+        "priority": "critical",
         "require_ack": True,
     },
     {
-        "name": "抓取任务静音",
-        "source": "*crawler*",
-        "silent": True,
+        "name": "长任务完成后转投",
+        "min_duration_seconds": 600,
+        "channels": ["webhook"],
     },
 ]
 _CHANNELS_EXAMPLE = [
@@ -888,8 +895,89 @@ class SettingsDialog(QDialog):
         form.addRow("", paths)
         layout.addWidget(group)
 
+        attention = QGroupBox("等待输入提醒", page)
+        attention_form = QFormLayout(attention)
+        attention_form.setContentsMargins(12, 14, 12, 10)
+        attention_form.setSpacing(9)
+
+        self._attention_enabled_check = QCheckBox(
+            "启用等待输入提醒（显式上报与本地推断）", attention
+        )
+        self._attention_enabled_check.setChecked(self.config.attention.enabled)
+        attention_form.addRow("", self._attention_enabled_check)
+
+        self._attention_infer_check = QCheckBox(
+            "从 Claude Code / Qoder 会话文件推断等待状态", attention
+        )
+        self._attention_infer_check.setChecked(self.config.attention.infer)
+        attention_form.addRow("", self._attention_infer_check)
+
+        self._attention_idle_spin = QSpinBox(attention)
+        self._attention_idle_spin.setRange(10, 120)
+        self._attention_idle_spin.setSuffix(" 秒")
+        self._attention_idle_spin.setValue(self.config.attention.idle_seconds)
+        attention_form.addRow("推断空闲阈值", self._attention_idle_spin)
+
+        self._attention_poll_spin = QSpinBox(attention)
+        self._attention_poll_spin.setRange(2, 60)
+        self._attention_poll_spin.setSuffix(" 秒")
+        self._attention_poll_spin.setValue(
+            self.config.attention.poll_interval_seconds
+        )
+        attention_form.addRow("检测间隔", self._attention_poll_spin)
+
+        self._attention_question_popup_check = QCheckBox(
+            "提问类推断也弹窗（默认只进通知中心）", attention
+        )
+        self._attention_question_popup_check.setChecked(
+            self.config.attention.question_popup
+        )
+        attention_form.addRow("", self._attention_question_popup_check)
+
+        agents_row = QHBoxLayout()
+        agents_row.setContentsMargins(0, 0, 0, 0)
+        agents_row.setSpacing(12)
+        self._attention_claude_check = QCheckBox("Claude Code", attention)
+        self._attention_claude_check.setChecked(
+            "claude" in self.config.attention.agents
+        )
+        self._attention_qoder_check = QCheckBox("Qoder", attention)
+        self._attention_qoder_check.setChecked(
+            "qoder" in self.config.attention.agents
+        )
+        agents_row.addWidget(self._attention_claude_check)
+        agents_row.addWidget(self._attention_qoder_check)
+        agents_row.addStretch(1)
+        attention_form.addRow("推断范围", agents_row)
+
+        attention_hint = QLabel(
+            "推荐由 Agent 通过 /notify 显式上报；本地推断只读取会话文件尾部，"
+            "不会写入或上传对话内容。显式上报不受本地推断开关影响。",
+            attention,
+        )
+        attention_hint.setObjectName("editorHint")
+        attention_hint.setWordWrap(True)
+        attention_form.addRow("", attention_hint)
+
+        self._attention_enabled_check.toggled.connect(
+            self._sync_attention_controls
+        )
+        self._sync_attention_controls(self._attention_enabled_check.isChecked())
+        layout.addWidget(attention)
+
         layout.addStretch(1)
         return page
+
+    def _sync_attention_controls(self, enabled: bool) -> None:
+        for widget in (
+            self._attention_infer_check,
+            self._attention_idle_spin,
+            self._attention_poll_spin,
+            self._attention_question_popup_check,
+            self._attention_claude_check,
+            self._attention_qoder_check,
+        ):
+            widget.setEnabled(enabled)
 
     def _build_rules_tab(self) -> QWidget:
         page = QWidget(self)
@@ -899,7 +987,9 @@ class SettingsDialog(QDialog):
 
         rules_header = QHBoxLayout()
         rules_header.setContentsMargins(0, 0, 0, 0)
-        rules_title = QLabel("匹配规则（JSON 数组，从上到下匹配）", page)
+        rules_title = QLabel(
+            "匹配规则（JSON 数组，从上到下匹配，后匹配规则覆盖标量字段）", page
+        )
         rules_title.setObjectName("dialogHint")
         rules_header.addWidget(rules_title, 1)
         rules_example = QPushButton("填入示例", page)
@@ -920,9 +1010,10 @@ class SettingsDialog(QDialog):
         layout.addWidget(self._rules_editor, 1)
 
         hint = QLabel(
-            "可用字段：name, source, title_contains, status, priority, silent, "
-            "require_ack, auto_close_seconds, bypass_quiet_hours, popup_mode, "
-            "popup_skin, channels",
+            "匹配条件：source（支持通配）、title_contains、status、needs_input、"
+            "wait_reason、project（项目名，支持通配）、min_duration_seconds、"
+            "max_duration_seconds；动作字段：priority, silent, require_ack, "
+            "auto_close_seconds, bypass_quiet_hours, popup_mode, popup_skin, channels",
             page,
         )
         hint.setObjectName("editorHint")
@@ -1067,6 +1158,23 @@ class SettingsDialog(QDialog):
                     "scan_interval_seconds": self._agent_interval_spin.value(),
                     "max_sessions": self._agent_max_spin.value(),
                 },
+                "attention": {
+                    "enabled": self._attention_enabled_check.isChecked(),
+                    "infer": self._attention_infer_check.isChecked(),
+                    "idle_seconds": self._attention_idle_spin.value(),
+                    "poll_interval_seconds": self._attention_poll_spin.value(),
+                    "question_popup": (
+                        self._attention_question_popup_check.isChecked()
+                    ),
+                    "agents": [
+                        name
+                        for name, check in (
+                            ("claude", self._attention_claude_check),
+                            ("qoder", self._attention_qoder_check),
+                        )
+                        if check.isChecked()
+                    ],
+                },
                 "update": {
                     "enabled": self._update_enabled_check.isChecked(),
                     "repo": self._update_repo_edit.text().strip(),
@@ -1131,7 +1239,7 @@ class SettingsDialog(QDialog):
             self._tabs.setCurrentIndex(5)
         elif "模板" in message or "提示音" in message or "sounds" in message:
             self._tabs.setCurrentIndex(3)
-        elif "agent_sessions" in message:
+        elif "agent_sessions" in message or "attention" in message:
             self._tabs.setCurrentIndex(4)
         elif "overlay_image" in message:
             self._tabs.setCurrentIndex(1)

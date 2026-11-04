@@ -191,6 +191,7 @@ def test_finish_onboarding_persists_seen_flag(tmp_path, monkeypatch):
         config_path=path,
         logger=logging.getLogger("agentbell.tests"),
         center=center,
+        _config_ref=None,
     )
 
     AgentBellApp._finish_onboarding(owner)
@@ -222,6 +223,7 @@ def test_finish_onboarding_without_path_does_not_write(monkeypatch):
         config_path=None,
         logger=logging.getLogger("agentbell.tests"),
         center=FakeCenter(),
+        _config_ref=None,
     )
     AgentBellApp._finish_onboarding(owner)
     assert owner.config.onboarding_seen is True

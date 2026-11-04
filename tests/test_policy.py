@@ -89,6 +89,152 @@ def test_apply_rules_skips_unmatched():
     assert resolved is notification
 
 
+def test_rules_match_wait_reason_and_needs_input():
+    notification = make_notification(
+        status="running",
+        needs_input=True,
+        wait_reason="permission",
+        priority="low",
+    )
+    rules = (
+        RuleConfig(name="权限等待", wait_reason="permission", priority="high"),
+        RuleConfig(name="提问等待", wait_reason="question", priority="critical"),
+        RuleConfig(name="非等待", needs_input=False, silent=True),
+    )
+    resolved = apply_rules(notification, rules)
+    assert resolved.priority == "high"
+    assert resolved.silent is False
+    assert resolved.rule_name == "权限等待"
+
+    non_waiting = make_notification(status="succeeded")
+    matched = apply_rules(non_waiting, rules)
+    assert matched.priority == "normal"
+    assert matched.silent is True
+    assert matched.rule_name == "非等待"
+
+    waiting_only = (RuleConfig(name="等待中", needs_input=True, silent=True),)
+    assert apply_rules(non_waiting, waiting_only).rule_name == ""
+    assert apply_rules(non_waiting, waiting_only).silent is False
+
+
+def test_rules_match_duration_bounds():
+    notification = make_notification(status="failed", duration="8m30s")
+    rules = (
+        RuleConfig(
+            name="中长任务",
+            min_duration_seconds=480,
+            max_duration_seconds=600,
+            priority="high",
+        ),
+        RuleConfig(name="超长任务", min_duration_seconds=601, priority="critical"),
+    )
+    resolved = apply_rules(notification, rules)
+    assert resolved.priority == "high"
+    assert resolved.rule_name == "中长任务"
+
+    exact_min = make_notification(status="failed", duration="8m0s")
+    assert apply_rules(exact_min, (rules[0],)).rule_name == "中长任务"
+    exact_max = make_notification(status="failed", duration="10m0s")
+    assert apply_rules(exact_max, (rules[0],)).rule_name == "中长任务"
+    over = make_notification(status="failed", duration="10m1s")
+    assert apply_rules(over, (rules[0],)).rule_name == ""
+
+    missing = make_notification(status="failed", duration="")
+    assert apply_rules(missing, rules).rule_name == ""
+
+    unparsable = make_notification(status="failed", duration="soon")
+    assert apply_rules(unparsable, rules).rule_name == ""
+
+
+def test_rules_match_project_with_glob_and_case():
+    notification = make_notification(status="failed")
+    rules = (
+        RuleConfig(name="项目高优", project="agentbell-*", priority="critical"),
+    )
+    resolved = apply_rules(notification, rules, project="AgentBell-Core")
+    assert resolved.priority == "critical"
+    assert resolved.rule_name == "项目高优"
+
+    assert apply_rules(notification, rules, project="other").rule_name == ""
+    assert apply_rules(notification, rules).rule_name == ""
+    assert (
+        apply_rules(notification, rules, project="agentbell-core").rule_name
+        == "项目高优"
+    )
+
+
+def test_later_rule_wins_across_wait_and_project_conditions():
+    notification = make_notification(
+        status="running",
+        needs_input=True,
+        wait_reason="permission",
+        duration="12m",
+        source="Claude Code",
+    )
+    rules = (
+        RuleConfig(
+            name="权限等待",
+            wait_reason="permission",
+            priority="high",
+            popup_mode="corner",
+        ),
+        RuleConfig(
+            name="长任务项目",
+            project="demo",
+            min_duration_seconds=600,
+            priority="critical",
+            silent=True,
+            popup_mode="center",
+        ),
+    )
+    resolved = apply_rules(notification, rules, project="demo")
+    assert resolved.priority == "critical"
+    assert resolved.silent is True
+    assert resolved.popup_mode == "center"
+    assert resolved.rule_name == "权限等待, 长任务项目"
+
+
+def test_combined_conditions_require_every_field():
+    rule = RuleConfig(
+        name="测试项目失败长任务",
+        project="qa-*",
+        status="failed",
+        min_duration_seconds=60,
+        wait_reason="permission",
+    )
+    matched = make_notification(
+        status="failed",
+        duration="2m",
+        wait_reason="permission",
+    )
+    assert apply_rules(matched, (rule,), project="qa-api").rule_name == rule.name
+    assert apply_rules(matched, (rule,), project="other").rule_name == ""
+    assert (
+        apply_rules(
+            make_notification(
+                status="succeeded",
+                duration="2m",
+                wait_reason="permission",
+            ),
+            (rule,),
+            project="qa-api",
+        ).rule_name
+        == ""
+    )
+    assert (
+        apply_rules(
+            make_notification(
+                status="failed",
+                duration="30s",
+                wait_reason="permission",
+            ),
+            (rule,),
+            project="qa-api",
+        ).rule_name
+        == ""
+    )
+
+
 def test_decide_success_popup_toggle_and_running_priority():
     config = AppConfig(success_popup=False)
     success = decide(make_notification(), config, now=datetime(2026, 10, 29, 12, 0))

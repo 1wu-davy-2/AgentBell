@@ -7,7 +7,13 @@ from dataclasses import replace
 from datetime import datetime
 from typing import Any
 
-from .models import PRIORITY_RANK, Notification, duration_to_seconds
+from .models import (
+    PRIORITY_RANK,
+    Notification,
+    RunEvent,
+    RunEventKind,
+    duration_to_seconds,
+)
 from .storage import NotificationStorage
 
 DEFAULT_HISTORY_LIMIT = 1000
@@ -35,11 +41,18 @@ class NotificationStore:
 
     # ---------- writes ----------
 
-    def add(self, notification: Notification) -> tuple[Notification, bool]:
+    def add(
+        self,
+        notification: Notification,
+        *,
+        phase: RunEventKind | None = None,
+        project: str = "",
+    ) -> tuple[Notification, bool]:
         """Insert or update a notification.
 
         Returns (stored_notification, was_updated). A notification carrying a
         dedupe_key replaces the previous card instead of stacking a new one.
+        Run events are appended for explicit phases or inferred transitions.
         """
         now = datetime.now().astimezone()
         with self._lock:
@@ -48,11 +61,26 @@ class NotificationStore:
                 existing_id = self._dedupe_index.get(notification.dedupe_key)
                 if existing_id is not None:
                     existing = self._by_id.get(existing_id)
+            if not notification.run_id:
+                notification = replace(
+                    notification,
+                    run_id=(
+                        existing.run_id
+                        if existing is not None and existing.run_id
+                        else self._run_id_for(notification)
+                    ),
+                )
             if existing is not None:
                 merged = self._merge(existing, notification, now)
                 self._remove_locked(existing)
                 self._insert_locked(merged)
                 self._persist_locked(merged)
+                self._clear_session_waits_locked(
+                    merged.session_id, merged.id, now
+                )
+                self._record_transition_locked(
+                    merged, existing, now, phase, project
+                )
                 self._logger.info(
                     "通知去重更新 id=%s key=%s 次数=%d 进度=%s",
                     merged.id,
@@ -64,9 +92,20 @@ class NotificationStore:
 
             self._insert_locked(notification)
             self._persist_locked(notification)
+            self._clear_session_waits_locked(
+                notification.session_id, notification.id, now
+            )
+            self._record_transition_locked(
+                notification, None, now, phase, project
+            )
             return notification, False
 
-    def replace_notification(self, notification: Notification) -> Notification:
+    def replace_notification(
+        self,
+        notification: Notification,
+        *,
+        event_kind: RunEventKind | None = None,
+    ) -> Notification:
         """Replace by id without touching dedupe counters or acknowledgement."""
         with self._lock:
             existing = self._by_id.get(notification.id)
@@ -85,7 +124,28 @@ class NotificationStore:
                 if notification.dedupe_key:
                     self._dedupe_index[notification.dedupe_key] = notification.id
             self._persist_locked(notification)
+            if event_kind is not None:
+                self._append_run_event_locked(
+                    notification,
+                    event_kind,
+                    datetime.now().astimezone(),
+                    "",
+                )
             return notification
+
+    def run_events(self, run_id: str | None, limit: int = 200) -> list[RunEvent]:
+        with self._lock:
+            if self._storage is None or not run_id:
+                return []
+            return self._storage.load_run_events(run_id, limit)
+
+    def session_run_events(
+        self, session_id: str | None, limit: int = 200
+    ) -> list[RunEvent]:
+        with self._lock:
+            if self._storage is None or not session_id:
+                return []
+            return self._storage.load_session_run_events(session_id, limit)
 
     def acknowledge(self, notification_id: str, now: datetime | None = None) -> Notification | None:
         with self._lock:
@@ -199,6 +259,8 @@ class NotificationStore:
             link=incoming.link or existing.link,
             error=incoming.error or existing.error,
             source=incoming.source or existing.source,
+            session_id=incoming.session_id or existing.session_id,
+            run_id=incoming.run_id or existing.run_id,
             actions=incoming.actions or existing.actions,
             progress=progress,
             require_ack=incoming.require_ack or existing.require_ack,
@@ -227,6 +289,115 @@ class NotificationStore:
         if notification.dedupe_key:
             self._dedupe_index[notification.dedupe_key] = notification.id
 
+    @staticmethod
+    def _run_id_for(notification: Notification) -> str:
+        if notification.session_id:
+            return f"session:{notification.session_id}"
+        if notification.dedupe_key:
+            return f"notify:{notification.dedupe_key}"
+        return f"single:{notification.id}"
+
+    def _has_running_locked(self, notification: Notification) -> bool:
+        return any(
+            item.id != notification.id
+            and item.run_id == notification.run_id
+            and item.status == "running"
+            for item in self._items
+        )
+
+    def _record_transition_locked(
+        self,
+        notification: Notification,
+        previous: Notification | None,
+        now: datetime,
+        phase: RunEventKind | None,
+        project: str,
+    ) -> None:
+        if self._storage is None:
+            return
+        kinds: list[RunEventKind] = []
+        if phase is not None:
+            kinds.append(phase)
+        elif notification.status == "running":
+            if previous is None:
+                if not self._has_running_locked(notification):
+                    kinds.append("started")
+            elif previous.status != "running":
+                kinds.append("started")
+            if notification.needs_input and (
+                previous is None or not previous.needs_input
+            ):
+                kinds.append("waiting_input")
+            elif (
+                previous is not None
+                and previous.is_waiting_input
+                and not notification.needs_input
+            ):
+                kinds.append("resumed")
+        else:
+            if previous is not None and previous.is_waiting_input:
+                kinds.append("resumed")
+            if previous is None or previous.status != notification.status:
+                kinds.append("finished")
+        for kind in kinds:
+            self._append_run_event_locked(notification, kind, now, project)
+
+    def _append_run_event_locked(
+        self,
+        notification: Notification,
+        kind: RunEventKind,
+        now: datetime,
+        project: str,
+    ) -> None:
+        if self._storage is None or not notification.run_id:
+            return
+        self._storage.append_run_event(
+            RunEvent(
+                run_id=notification.run_id,
+                kind=kind,
+                occurred_at=now,
+                notification_id=notification.id,
+                session_id=notification.session_id,
+                agent=notification.source,
+                project=project,
+                status=notification.status,
+                title=notification.title,
+                detail=notification.summary,
+            )
+        )
+
+    def _clear_session_waits_locked(
+        self, session_id: str | None, keep_id: str, now: datetime
+    ) -> None:
+        """A newer event for the same session ends any previous waiting episode."""
+        if not session_id:
+            return
+        replacements: list[Notification] = []
+        updated: list[Notification] = []
+        for item in self._items:
+            if (
+                item.is_waiting_input
+                and item.session_id == session_id
+                and item.id != keep_id
+            ):
+                replacement = replace(
+                    item,
+                    needs_input=False,
+                    wait_reason=None,
+                    wait_source=None,
+                    updated_at=now,
+                )
+                self._by_id[item.id] = replacement
+                replacements.append(replacement)
+                updated.append(replacement)
+            else:
+                updated.append(item)
+        if replacements:
+            self._items = deque(updated, maxlen=self._limit)
+            for replacement in replacements:
+                self._persist_locked(replacement)
+                self._append_run_event_locked(replacement, "resumed", now, "")
+
     def _remove_locked(self, notification: Notification) -> None:
         try:
             self._items.remove(notification)
@@ -252,23 +423,32 @@ class NotificationStore:
     def _memory_stats_locked(self) -> dict[str, Any]:
         counts = {"succeeded": 0, "failed": 0, "canceled": 0, "running": 0}
         awaiting = 0
+        needs_input = 0
         durations: list[float] = []
 
         for item in self._items:
             counts[item.status] = counts.get(item.status, 0) + 1
             if item.require_ack and not item.acknowledged:
                 awaiting += 1
+            if item.is_waiting_input:
+                needs_input += 1
             seconds = duration_to_seconds(item.duration)
             if seconds is not None and item.status != "running":
                 durations.append(seconds)
         completed = counts["succeeded"] + counts["failed"] + counts["canceled"]
         return {
+            "runs": 0,
+            "run_success_rate": None,
+            "run_duration_p50_seconds": None,
+            "run_duration_p90_seconds": None,
+            "waiting_seconds_total": 0.0,
             "total": len(self._items),
             "succeeded": counts["succeeded"],
             "failed": counts["failed"],
             "canceled": counts["canceled"],
             "running": counts["running"],
             "awaiting_ack": awaiting,
+            "needs_input": needs_input,
             "success_rate": (
                 counts["succeeded"] / completed if completed > 0 else None
             ),

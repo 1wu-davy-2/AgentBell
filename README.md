@@ -33,9 +33,12 @@ AgentBell 是一个只做提醒的 Windows 桌面工具。AI Agent 每轮任务�
 主要能力：
 
 - 成功 / 失败 / 取消 / 进行中四种状态，支持进度、去重更新与优先级。
+- 等待输入提醒：Agent 卡在权限确认、提问、限流或上下文超限时，卡片标出原因；支持显式上报与本地只读推断，并在「进行中」下提供「待输入」子筛选。
+- 运行时间线：同一 `run_id` 的开始、等待、继续、完成会串成一条只追加的事件线；卡片可直接打开时间线弹窗，统计页按运行查看成功率、P50/P90 耗时与累计等待时长。
 - 四套皮肤、三种弹窗模式，以及可拖拽定位的全屏遮挡。
+- 规则分流：可按等待原因、`needs_input`、运行时长和项目 glob 匹配，分别覆盖优先级、是否静音、确认、自动关闭、弹窗与额外通道；后匹配规则覆盖标量字段，设置保存后立即生效。
 - 免打扰、全屏 / 会议抑制、锁屏保留、聚合摘要与未读升级。
-- 待确认、5/15/30 分钟稍后提醒，以及回到终端、打开链接、复制、重试等动作。
+- 待确认、5/15/30 分钟稍后提醒，以及回到终端、查看记录、打开时间线、打开链接、复制、重试等动作；查看记录与时间线只读，不包含审批或自动继续。
 - 通知中心搜索、状态与 Agent 来源筛选、进行中自动汇入近期活跃的 Agent 会话，以及成功率 / 耗时统计与 7 天趋势。
 - 内置 11 种 Agent 的检测与启动，默认使用安装目录下的 `chat/` 工作区。
 - 便携运行环境：一键把 Node LTS 和 7 个官方 Agent CLI（Claude Code、Codex、Gemini CLI、OpenCode、OpenClaw、Hermes、Pi）装进安装目录的 `runtime/`，免管理员权限、不改系统 PATH；同时自动识别系统 Node 与 npm 全局安装的 CLI；cc-switch 等外部工具直接跳转官方下载页；DeepSeek 作为供应商预设直接注入 Claude Code。
@@ -43,6 +46,10 @@ AgentBell 是一个只做提醒的 Windows 桌面工具。AI Agent 每轮任务�
 
 ### 最近更新
 
+- **v2.13.0**：规则精细化。`rules` 新增 `wait_reason`、`needs_input`、`min_duration_seconds` / `max_duration_seconds` 与 `project` 条件，可把「等待权限」「测试项目」或「超过 10 分钟」的任务分流到不同优先级和通道；项目按工作目录名取末级、忽略大小写，时长从 `duration` 解析且边界包含，缺失时该条件不匹配。规则随设置保存立即生效，本地推断的等待通知同样参与匹配。通知中心的悬停提示同步收紧：仅在文字被截断时出现，限制为 32 字宽并统一浅色样式，不再用整卡大提示遮挡相邻记录。
+- **v2.12.0**：新增只读动作。通知可声明 `session` / `timeline`，弹窗与通知中心会显示「查看记录」「时间线」按钮，直接打开本地会话或本次运行；两类动作只读取通知自身的 `session_id` / `run_id`，忽略 `value`，不执行外部命令。明确不提供批准权限、自动继续或发送提示词的动作。
+- **v2.11.0**：新增运行时间线。同一 `run_id` 的开始、等待、继续、完成会写入只追加的 `run_events`，卡片「时间线」按钮可回看阶段与耗时；会话详情显示「本次运行」，统计页增加运行数、运行成功率、P50/P90 耗时与累计等待。支持 `/notify` 显式 `phase`，未传时按状态变化自动推断。
+- **v2.10.0**：新增等待输入提醒。Agent 卡在权限确认、提问、限流或上下文超限时，通知卡片显示等待原因；「进行中」下可只看「待输入」会话。支持 `/notify` 显式上报，以及 Claude Code / Qoder 会话尾部的本地只读推断，推断结果带「推断」标记。
 - **v2.9.10**：首次运行生成的 `config.json` 默认填入 `1wu-davy-2/AgentBell` 并保持启动检查，下载后约 9 秒即可检查新版本。
 - **v2.9.9**：「进行中」自动汇集近期活跃的 Agent 会话，只读展示 Agent、项目、最近活动与记录数，并随来源筛选与搜索收窄。
 - **v2.9.8**：Agent 来源筛选与状态、搜索叠加；程序更新支持在启动约 9 秒后自动检查新版本。
@@ -152,7 +159,7 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8765/notify" -Method Post `
 
 - 左侧按状态筛选，顶部「全部 Agent」下拉按来源筛选，搜索可叠加；「进行中」会自动汇入近期活跃的 Agent 会话，点「查看记录」只读查看。双击标题栏可最大化 / 还原。
 - 关闭窗口后程序仍在托盘；按 `Ctrl+Alt+A` 或右键托盘图标可重新打开。
-- 历史默认保留 1000 条，可在「数据统计」查看成功率、平均耗时和 7 天趋势。
+- 历史默认保留 1000 条，可在「数据统计」查看成功率、平均耗时、7 天趋势，以及运行数、运行成功率、P50/P90 耗时与累计等待。
 
 #### 3. 让 Agent 每轮自动推送
 
@@ -160,9 +167,63 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8765/notify" -Method Post `
 2. 把剪贴板内容粘贴给 Agent（Claude Code、Codex、Qoder 等），发一次即可。
 3. 指令包含当前端口、`X-Token`、字段说明和编码要求，并要求它**每轮任务结束都推送一次**，无论成功、失败还是取消。
 
-如果希望通知卡片带「回到终端」按钮，让 Agent 在请求里带上 `origin.pid`；`window_title` 和 `working_dir` 可作为兜底。即使忘了填，AgentBell 也会尝试按本机连接自动识别发送进程；`source` 留空时同样会自动补出来源 Agent。
+如果希望通知卡片带「回到终端」按钮，让 Agent 在请求里带上 `origin.pid`；`window_title` 和 `working_dir` 可作为兜底。即使忘了填，AgentBell 也会尝试按本机连接自动识别发送进程；`source` 留空时同样会自动补出来源 Agent。需要「查看记录」或「时间线」按钮时，按第 5 节在 `actions` 中声明只读动作。
 
-#### 4. 一键装好 Agent 运行环境
+#### 4. 提醒等待输入（可选）
+
+Agent 停下来等你处理时，可以让它显式上报一条 `status="running"` 的通知，并带上 `needs_input`：
+
+```json
+{
+  "title": "Claude Code 等待权限确认",
+  "status": "running",
+  "needs_input": true,
+  "wait_reason": "permission",
+  "wait_source": "explicit",
+  "session_id": "abc123",
+  "summary": "需要允许执行 npm test",
+  "source": "Claude Code"
+}
+```
+
+`wait_reason` 可选 `permission` / `question` / `rate_limit` / `context_limit` / `other`，缺省为 `other`；`needs_input=true` 只能与 `running` 一起使用。卡片会显示等待原因，通知中心「进行中」页会出现「待输入」子筛选；同一会话的后续事件，或显式上报 `needs_input=false`，会结束这次等待。
+
+没有显式上报时，AgentBell 也可以在「偏好设置 → Agent」中开启本地推断：只读取最近 10 分钟内 Claude Code / Qoder 会话文件的尾部，连续两次扫描命中且闲置达到阈值才提醒，结果标记为「推断」。推断不写入会话文件，也不会把会话正文写进日志；关闭推断后只保留显式上报。Claude Code Hook、通用脚本与 Python 片段见 [docs/waiting-input.md](docs/waiting-input.md)。
+
+#### 5. 查看运行时间线（可选）
+
+同一个 `run_id` 的事件会聚成一次运行。AgentBell 按以下顺序确定运行编号：请求里的 `run_id` → `session:<session_id>` → `notify:<dedupe_key>` → `single:<通知 id>`。未传 `phase` 时，首次 `running` 记为「开始」，终态记为「完成」，并自动补出「等待输入 / 已继续」：
+
+```json
+{
+  "title": "生成竞品分析报告",
+  "status": "running",
+  "session_id": "abc123",
+  "summary": "正在生成第 3 页",
+  "phase": "progress"
+}
+```
+
+`phase` 可选 `started` / `progress` / `waiting_input` / `resumed` / `finished` / `note`；显式传入时按原样追加一条事件，不再自动推断。同一运行、同一阶段 5 秒内重复上报会合并为一条，避免进度刷屏。通知卡片右侧出现「时间线」按钮后，可查看阶段、相对耗时、状态和来源；会话详情页会显示最近一次运行的摘要，统计页可看运行级指标。完整字段见 [system-architecture.md](system-architecture.md)。
+
+如果希望弹窗和通知中心直接出现「查看记录」「时间线」按钮，让 Agent 在 `actions` 里声明只读动作：
+
+```json
+{
+  "title": "等待权限确认",
+  "status": "running",
+  "session_id": "abc123",
+  "run_id": "run-001",
+  "actions": [
+    {"kind": "session", "label": "查看记录"},
+    {"kind": "timeline", "label": "时间线"}
+  ]
+}
+```
+
+`session` 需要 `session_id`，`timeline` 需要 `run_id`（或可回落到 `session_id` / `dedupe_key`）；两类动作都不读取 `value`，只打开 AgentBell 内的只读记录。找不到会话或运行时会给出非阻塞提示，不执行任何外部命令。AgentBell 不提供“批准权限”“自动继续”或“发送提示词”动作，审批请回到终端完成。
+
+#### 6. 一键装好 Agent 运行环境
 
 打开「运行环境」页，点「一键安装全部」即装好 Node 与 7 个 CLI，也可只安装需要的组件：
 
@@ -174,7 +235,7 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8765/notify" -Method Post `
 
 全程不需要管理员权限，也不修改系统 `PATH`；AgentBell 只在检测和启动 Agent 时临时把这些目录加进子进程环境。装完到「Agent 启动」页点「重新检测」，新装的 CLI 会出现在已安装列表里。DeepSeek 没有官方 CLI，可在页面底部保存 API Key，用「用 DeepSeek 启动 Claude Code」以该供应商打开终端。
 
-#### 5. 启动 Agent（可选）
+#### 7. 启动 Agent（可选）
 
 打开「Agent 启动」页，AgentBell 会检测本机安装的 Claude Code、Claude Desktop、Codex、Gemini CLI、Grok Build、OpenCode、OpenClaw、Hermes、Pi、MiniMax Code、Antigravity。
 
@@ -183,7 +244,7 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8765/notify" -Method Post `
 - 提示词通过环境变量传入，不拼接进 shell 命令。桌面应用只能打开窗口，无法预填提示词。
 - 每张卡片右上角的「项目主页」可打开对应官网或 GitHub 仓库。
 
-#### 6. 回到终端
+#### 8. 回到终端
 
 通知请求带上来源进程信息：
 
@@ -200,16 +261,16 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8765/notify" -Method Post `
 
 `source` 会显示在弹窗和通知中心。请求没带 `origin` 或 `source` 时，AgentBell 会用发起请求的本机端口找到发送进程，尽力补出「回到终端」和来源 Agent；显式填写仍然最准确。
 
-#### 7. 外观与打扰控制
+#### 9. 外观与打扰控制
 
 在偏好设置里可以调整弹窗皮肤、弹窗模式、全屏背景与卡片位置，配置免打扰时段、全屏 / 会议抑制、锁屏保留、聚合摘要、待确认和稍后提醒。设置页底部的「测试」按钮会按当前配置弹出一条预览，不写入历史。
 
-#### 8. 构建与发布
+#### 10. 构建与发布
 
 ```powershell
 pip install -r requirements-dev.txt
-python -m PyInstaller --noconfirm --clean AgentBell21.spec
-# 产物：dist\AgentBell-21.exe
+python -m PyInstaller --noconfirm --clean AgentBell22.spec
+# 产物：dist\AgentBell-22.exe
 ```
 
 推送到 `develop` 会触发测试与打包；推送 `v*` 标签会校验标签与 `agentbell/__init__.py` 的 `__version__` 一致，然后自动发布 Release。工作流会自动选用编号最大的 `AgentBell*.spec`，并把产物复制为稳定命名的 `AgentBell.exe`。

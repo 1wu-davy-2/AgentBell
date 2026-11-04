@@ -15,14 +15,17 @@ from PySide6.QtWidgets import QApplication, QLabel
 from agentbell.agent_sessions import AgentSession
 from agentbell.agent_launch import AgentAvailability, AgentSpec, LaunchResult
 from agentbell.config import AgentLauncherConfig, AgentSessionsConfig, AppConfig, load_config
-from agentbell.models import Notification, NotificationAction
+from agentbell.models import Notification, NotificationAction, RunEvent
+from agentbell.storage import NotificationStorage
 from agentbell.store import NotificationStore
 from agentbell.ui.window import (
     ActiveSessionCard,
     AgentPickCard,
     AgentSessionCard,
+    ElidedLabel,
     EmptyState,
     LaunchRecordCard,
+    NotificationCard,
     NotificationWindow,
     format_received_at,
     format_seconds,
@@ -348,6 +351,102 @@ def test_running_filter_and_progress(window_factory):
     assert card.progress_bar.value() == 60
 
 
+def test_waiting_notification_shows_reason_and_inferred_chip(window_factory):
+    store = NotificationStore()
+    store.add(
+        make_notification(
+            1,
+            status="running",
+            needs_input=True,
+            wait_reason="permission",
+            wait_source="explicit",
+            session_id="session-0000",
+        )
+    )
+    store.add(
+        make_notification(
+            2,
+            status="running",
+            needs_input=True,
+            wait_reason="question",
+            wait_source="inferred",
+            session_id="session-0001",
+        )
+    )
+    window = window_factory(store)
+    window.refresh_items(store.snapshot())
+
+    inferred_card = window._cards[0]
+    chips = [
+        label.text()
+        for label in inferred_card.findChildren(QLabel)
+        if label.objectName() == "waitChip"
+    ]
+    assert chips == ["等待回答"]
+    assert inferred_card.wait_chip.property("reason") == "question"
+    assert len(
+        [
+            label
+            for label in inferred_card.findChildren(QLabel)
+            if label.objectName() == "inferredChip"
+        ]
+    ) == 1
+
+    explicit_card = window._cards[1]
+    assert explicit_card.wait_chip.text() == "等待权限确认"
+    assert [
+        label
+        for label in explicit_card.findChildren(QLabel)
+        if label.objectName() == "inferredChip"
+    ] == []
+
+
+def test_running_waiting_filter_only_shows_waiting(window_factory):
+    store = NotificationStore()
+    store.add(
+        make_notification(
+            1,
+            status="running",
+            needs_input=True,
+            wait_reason="permission",
+            wait_source="explicit",
+            session_id="session-0000",
+        )
+    )
+    store.add(make_notification(2, status="running", progress=40))
+    window = window_factory(store)
+    window.refresh_items(store.snapshot())
+    window.update_sessions(
+        [
+            make_session(0, "TaskBeacon"),
+            make_session(1, "EmoChat", agent="qoder"),
+        ]
+    )
+    window.set_filter("running")
+
+    assert window._waiting_bar.isVisibleTo(window)
+    assert window._waiting_only_button.text() == "待输入 1"
+    assert len(window._cards) == 2
+    assert len(window._list_host.findChildren(ActiveSessionCard)) == 2
+
+    window._waiting_only_button.click()
+    QTest.qWait(30)
+
+    assert window._waiting_only
+    assert [card.notification.title for card in window._cards] == ["任务 1"]
+    live_cards = window._list_host.findChildren(ActiveSessionCard)
+    assert [card.session.project for card in live_cards] == ["TaskBeacon"]
+    assert live_cards[0].wait_chip.text() == "等待权限确认"
+    assert live_cards[0].property("waiting") == "true"
+    assert window._total_label.text() == "共 2 条 · 1 个等待中的会话"
+
+    window._waiting_all_button.click()
+    QTest.qWait(30)
+    assert not window._waiting_only
+    assert len(window._cards) == 2
+    assert len(window._list_host.findChildren(ActiveSessionCard)) == 2
+
+
 def test_running_tab_shows_live_sessions_from_scan(window_factory):
     store = NotificationStore()
     store.add(make_notification(1))
@@ -460,6 +559,31 @@ def test_live_session_view_opens_sessions_page(window_factory, monkeypatch):
 
     assert window._page == "sessions"
     assert opened == [session]
+
+
+def test_active_session_card_has_no_duplicate_tooltip(window_factory):
+    window = window_factory()
+    window.update_sessions([make_session(0, "TaskBeacon", agent="qoder")])
+    window.set_filter("running")
+
+    card = window._list_host.findChildren(ActiveSessionCard)[0]
+    assert card.toolTip() == ""
+
+
+def test_elided_label_tooltip_only_when_truncated(qapp):
+    label = ElidedLabel("短标题")
+    label.resize(300, 24)
+    label._apply_elision()
+    assert label.toolTip() == ""
+
+    text = "请查看下 /argus/infra/os/list 采集状态未知 是有几种取数方式，并补充一段更长的说明"
+    label.set_full_text(text)
+    label.resize(60, 24)
+    label._apply_elision()
+
+    assert label.text().endswith("…")
+    assert label.toolTip().replace("\n", "") == text
+    assert max(len(line) for line in label.toolTip().splitlines()) <= 32
 
 
 def test_search_filters_cards_and_can_reset(window_factory):
@@ -1255,3 +1379,234 @@ def test_agent_link_disabled_without_project_url(
     window = window_factory()
 
     assert window._agent_link.isEnabled() is False
+
+
+def open_persistent_store(tmp_path) -> NotificationStore:
+    storage = NotificationStorage(
+        tmp_path / "history.db", logging.getLogger("agentbell.tests")
+    )
+    return NotificationStore(storage=storage, limit=50)
+
+
+def test_card_timeline_button_requires_run_id_and_storage(qapp):
+    logger = logging.getLogger("agentbell.tests")
+    with_run = NotificationCard(
+        make_notification(1, run_id="session:s-1"), logger, allow_timeline=True
+    )
+    assert with_run.timeline_button is not None
+    without_run = NotificationCard(make_notification(2), logger, allow_timeline=True)
+    assert without_run.timeline_button is None
+    without_storage = NotificationCard(
+        make_notification(3, run_id="session:s-1"), logger, allow_timeline=False
+    )
+    assert without_storage.timeline_button is None
+    with_run.deleteLater()
+    without_run.deleteLater()
+    without_storage.deleteLater()
+
+
+def test_build_timeline_dialog_reads_events(tmp_path, window_factory):
+    store = open_persistent_store(tmp_path)
+    base = datetime.now().astimezone()
+    notification = make_notification(
+        1, status="running", session_id="s-1", run_id="session:s-1"
+    )
+    storage = store._storage
+    assert storage is not None
+    storage.append_run_event(
+        RunEvent(
+            run_id="session:s-1",
+            kind="started",
+            occurred_at=base,
+            session_id="s-1",
+            status="running",
+            title="任务 1",
+        )
+    )
+    storage.append_run_event(
+        RunEvent(
+            run_id="session:s-1",
+            kind="finished",
+            occurred_at=base + timedelta(seconds=30),
+            session_id="s-1",
+            status="succeeded",
+            title="任务 1",
+        )
+    )
+    window = window_factory(store)
+    dialog = window._build_timeline_dialog(notification)
+    try:
+        assert [event.kind for event in dialog.events] == ["started", "finished"]
+        assert len(dialog.event_rows) == 2
+        assert dialog.empty_label is None
+    finally:
+        dialog.deleteLater()
+        store.close()
+
+
+def test_open_session_by_id_uses_scanned_sessions(window_factory, monkeypatch):
+    session = make_session(0, "TaskBeacon", agent="qoder")
+    window = window_factory()
+    window.update_sessions([session])
+    opened: list[AgentSession] = []
+    monkeypatch.setattr(
+        window, "_open_session_view", lambda item: opened.append(item)
+    )
+    assert window.open_session_by_id("session-0000") is True
+    assert opened == [session]
+    assert window._page == "sessions"
+    assert window.open_session_by_id("missing-session") is False
+    assert window.open_session_by_id("") is False
+
+
+def test_open_timeline_by_run_opens_persistent_events(
+    tmp_path, window_factory, monkeypatch
+):
+    store = open_persistent_store(tmp_path)
+    storage = store._storage
+    assert storage is not None
+    base = datetime.now().astimezone()
+    storage.append_run_event(
+        RunEvent(
+            run_id="session:s-1",
+            kind="started",
+            occurred_at=base,
+            session_id="s-1",
+            agent="claude",
+            status="running",
+            title="会话任务",
+        )
+    )
+    storage.append_run_event(
+        RunEvent(
+            run_id="session:s-1",
+            kind="finished",
+            occurred_at=base + timedelta(seconds=20),
+            session_id="s-1",
+            agent="claude",
+            status="succeeded",
+            title="会话任务",
+        )
+    )
+    window = window_factory(store)
+    opened = []
+
+    def fake_exec(dialog) -> int:
+        opened.append(dialog)
+        return 0
+
+    monkeypatch.setattr("agentbell.ui.window.RunTimelineDialog.exec", fake_exec)
+    assert window.open_timeline_by_run("session:s-1") is True
+    assert len(opened) == 1
+    dialog = opened[0]
+    assert dialog.notification.run_id == "session:s-1"
+    assert dialog.notification.title == "会话任务"
+    assert [event.kind for event in dialog.events] == ["started", "finished"]
+    assert window.open_timeline_by_run("missing-run") is False
+    assert window.open_timeline_by_run("") is False
+    assert len(opened) == 1
+    store.close()
+
+
+def test_detail_run_block_shows_latest_summary(tmp_path, window_factory):
+    store = open_persistent_store(tmp_path)
+    storage = store._storage
+    assert storage is not None
+    base = datetime.now().astimezone()
+    for kind, offset, status in (
+        ("started", 0, "running"),
+        ("waiting_input", 5, "running"),
+        ("resumed", 35, "running"),
+        ("finished", 65, "succeeded"),
+    ):
+        storage.append_run_event(
+            RunEvent(
+                run_id="session:sess-1",
+                kind=kind,
+                occurred_at=base + timedelta(seconds=offset),
+                session_id="sess-1",
+                status=status,
+                title="会话任务",
+            )
+        )
+    window = window_factory(store)
+    session = AgentSession(
+        agent="claude",
+        session_id="sess-1",
+        project="demo",
+        project_path="E:/demo",
+        path="E:/demo/session.jsonl",
+        updated_at=base,
+        title="会话任务",
+    )
+    window._refresh_detail_run(session)
+    assert window._detail_run_card.isHidden() is False
+    summary = window._detail_run_summary.toolTip()
+    assert "等待输入" in summary
+    assert "完成" in summary
+    assert "用时" in summary
+    assert len(window._detail_run_events) == 4
+
+    other = AgentSession(
+        agent="claude",
+        session_id="sess-other",
+        project="demo",
+        project_path="E:/demo",
+        path="E:/demo/other.jsonl",
+        updated_at=base,
+        title="其他会话",
+    )
+    window._refresh_detail_run(other)
+    assert window._detail_run_card.isHidden() is True
+    assert window._detail_run_events == []
+    store.close()
+
+
+def test_stats_page_shows_run_metrics(tmp_path, window_factory):
+    store = open_persistent_store(tmp_path)
+    storage = store._storage
+    assert storage is not None
+    base = datetime.now().astimezone()
+    for index in range(2):
+        start = base + timedelta(minutes=index * 5)
+        storage.append_run_event(
+            RunEvent(
+                run_id=f"run-{index}",
+                kind="started",
+                occurred_at=start,
+                status="running",
+            )
+        )
+        if index == 0:
+            storage.append_run_event(
+                RunEvent(
+                    run_id="run-0",
+                    kind="waiting_input",
+                    occurred_at=start + timedelta(seconds=10),
+                    status="running",
+                )
+            )
+            storage.append_run_event(
+                RunEvent(
+                    run_id="run-0",
+                    kind="resumed",
+                    occurred_at=start + timedelta(seconds=40),
+                    status="running",
+                )
+            )
+        storage.append_run_event(
+            RunEvent(
+                run_id=f"run-{index}",
+                kind="finished",
+                occurred_at=start + timedelta(seconds=60 + index * 60),
+                status="succeeded" if index == 0 else "failed",
+            )
+        )
+    window = window_factory(store)
+    window.refresh_stats()
+    assert window._run_stat_values["runs"].text() == "2"
+    assert window._run_stat_values["run_success"].text() == "50%"
+    assert window._run_stat_values["p50"].text() != "—"
+    assert window._run_stat_values["p90"].text() != "—"
+    assert window._run_stat_values["waiting"].text() == "30 秒"
+    store.close()

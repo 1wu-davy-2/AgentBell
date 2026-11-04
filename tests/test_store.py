@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import replace
 from datetime import datetime
 
 from agentbell.models import Notification
+from agentbell.storage import NotificationStorage
 from agentbell.store import NotificationStore
 
 
@@ -171,3 +173,151 @@ def test_memory_stats():
     assert stats["duration_samples"] == 2
     assert stats["avg_duration_seconds"] == 45
     assert stats["daily"] == []
+    assert stats["runs"] == 0
+
+
+def open_persistent_store(tmp_path) -> NotificationStore:
+    storage = NotificationStorage(
+        tmp_path / "history.db", logging.getLogger("agentbell.tests")
+    )
+    return NotificationStore(storage=storage, limit=50)
+
+
+def test_run_id_prefers_session_then_dedupe_then_single(tmp_path):
+    store = open_persistent_store(tmp_path)
+    try:
+        by_session, _ = store.add(make_notification(1, session_id="s-1"))
+        by_dedupe, _ = store.add(make_notification(2, dedupe_key="build"))
+        by_single, _ = store.add(make_notification(3))
+        explicit, _ = store.add(make_notification(4, run_id="client-run"))
+
+        assert by_session.run_id == "session:s-1"
+        assert by_dedupe.run_id == "notify:build"
+        assert by_single.run_id == "single:id3"
+        assert explicit.run_id == "client-run"
+
+        updated, _ = store.add(
+            make_notification(5, dedupe_key="build", status="running")
+        )
+        assert updated.run_id == "notify:build"
+    finally:
+        store.close()
+
+
+def test_store_infers_started_waiting_resumed_finished(tmp_path):
+    store = open_persistent_store(tmp_path)
+    try:
+        first, _ = store.add(
+            make_notification(
+                1,
+                status="running",
+                dedupe_key="task",
+                session_id="s-1",
+                title="任务 1",
+            )
+        )
+        run_id = first.run_id
+        assert [event.kind for event in store.run_events(run_id)] == ["started"]
+
+        store.add(
+            make_notification(
+                1,
+                status="running",
+                dedupe_key="task",
+                needs_input=True,
+                wait_reason="question",
+                title="任务 1",
+            )
+        )
+        assert [event.kind for event in store.run_events(run_id)] == [
+            "started",
+            "waiting_input",
+        ]
+
+        store.add(
+            make_notification(
+                1,
+                status="running",
+                dedupe_key="task",
+                needs_input=False,
+                title="任务 1",
+            )
+        )
+        store.add(
+            make_notification(
+                1,
+                status="succeeded",
+                dedupe_key="task",
+                title="任务 1",
+            )
+        )
+        assert [event.kind for event in store.run_events(run_id)] == [
+            "started",
+            "waiting_input",
+            "resumed",
+            "finished",
+        ]
+        assert store.run_events(run_id)[-1].status == "succeeded"
+    finally:
+        store.close()
+
+
+def test_explicit_phase_appends_single_event(tmp_path):
+    store = open_persistent_store(tmp_path)
+    try:
+        stored, _ = store.add(
+            make_notification(1, status="running"),
+            phase="progress",
+            project="demo",
+        )
+        events = store.run_events(stored.run_id)
+        assert [event.kind for event in events] == ["progress"]
+        assert events[0].project == "demo"
+    finally:
+        store.close()
+
+
+def test_new_session_event_resumes_previous_wait(tmp_path):
+    store = open_persistent_store(tmp_path)
+    try:
+        waiting, _ = store.add(
+            make_notification(
+                1,
+                status="running",
+                dedupe_key="wait:s-1",
+                session_id="s-1",
+                needs_input=True,
+            )
+        )
+        store.add(
+            make_notification(
+                2,
+                status="running",
+                dedupe_key="progress:s-1",
+                session_id="s-1",
+            )
+        )
+        assert store.find(waiting.id).needs_input is False
+        assert [event.kind for event in store.run_events("session:s-1")] == [
+            "started",
+            "waiting_input",
+            "resumed",
+        ]
+    finally:
+        store.close()
+
+
+def test_same_phase_within_five_seconds_appends_once(tmp_path):
+    store = open_persistent_store(tmp_path)
+    try:
+        store.add(
+            make_notification(1, status="running", run_id="run-x"),
+            phase="progress",
+        )
+        store.add(
+            make_notification(2, status="running", run_id="run-x"),
+            phase="progress",
+        )
+        assert [event.kind for event in store.run_events("run-x")] == ["progress"]
+    finally:
+        store.close()

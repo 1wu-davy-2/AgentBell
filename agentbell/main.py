@@ -16,7 +16,7 @@ from . import __version__
 from .api import QUEUE_MAX_SIZE, create_app
 from .app import AgentBellApp
 from .autostart import configure_autostart
-from .config import ConfigError, load_config
+from .config import ConfigError, ConfigRef, load_config
 from .log import install_exception_hooks, setup_logging
 from .models import Notification
 from .paths import config_file, ensure_chat_dir
@@ -85,6 +85,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     app.setOrganizationName("AgentBell")
     app.setQuitOnLastWindowClosed(False)
     app.setStyle("Fusion")
+    app.setStyleSheet(
+        "QToolTip {"
+        " background-color: #FFFFFF;"
+        " color: #344054;"
+        " border: 1px solid #D0D5DD;"
+        " border-radius: 6px;"
+        " padding: 6px 8px;"
+        " font-size: 12px;"
+        " }"
+    )
     app.setFont(QFont(_pick_ui_font(), 10))
     app.setWindowIcon(make_app_icon())
 
@@ -195,7 +205,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         storage=storage,
         logger=logger,
     )
-    asgi_app = create_app(config, inbox, logger, store=store)
+    config_ref = ConfigRef(config)
+    asgi_app = create_app(
+        lambda: config_ref.current, inbox, logger, store=store
+    )
     controller: AgentBellApp | None = None
     splash: SplashWindow | None = None
     splash_shows_tour = False
@@ -211,6 +224,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             asgi_app=asgi_app,
             listener=listener,
             config_path=config_path,
+            config_ref=config_ref,
         )
 
         def _on_splash_finished() -> None:

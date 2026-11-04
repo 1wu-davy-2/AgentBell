@@ -382,3 +382,64 @@ def test_update_section_validation(tmp_path, payload, message):
 
     with pytest.raises(ConfigError, match=message):
         config_from_dict(json.loads(payload))
+
+
+def test_rule_routing_fields_round_trip(tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps(
+            {
+                "rules": [
+                    {
+                        "name": "权限等待高优",
+                        "needs_input": True,
+                        "wait_reason": "permission",
+                        "project": "demo-*",
+                        "min_duration_seconds": 600,
+                        "max_duration_seconds": 604800,
+                        "priority": "critical",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    config, _ = load_config(path)
+    rule = config.rules[0]
+    assert rule.needs_input is True
+    assert rule.wait_reason == "permission"
+    assert rule.project == "demo-*"
+    assert rule.min_duration_seconds == 600
+    assert rule.max_duration_seconds == 604800
+    assert rule.priority == "critical"
+
+    from agentbell.config import config_to_dict
+
+    data = config_to_dict(config)["rules"][0]
+    assert data["wait_reason"] == "permission"
+    assert data["needs_input"] is True
+    assert data["project"] == "demo-*"
+    assert data["min_duration_seconds"] == 600
+    assert data["max_duration_seconds"] == 604800
+
+    save_config(path, config)
+    reloaded, _ = load_config(path)
+    assert reloaded.rules == config.rules
+
+
+@pytest.mark.parametrize(
+    "rule,message",
+    [
+        ({"wait_reason": "approval"}, "wait_reason"),
+        ({"needs_input": "yes"}, "needs_input"),
+        ({"min_duration_seconds": -1}, "min_duration_seconds"),
+        ({"max_duration_seconds": 604801}, "max_duration_seconds"),
+        ({"min_duration_seconds": 600, "max_duration_seconds": 60}, "不能大于"),
+        ({"project": 123}, "project"),
+    ],
+)
+def test_invalid_rule_routing_fields(tmp_path, rule, message):
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"rules": [rule]}), encoding="utf-8")
+    with pytest.raises(ConfigError, match=message):
+        load_config(path)

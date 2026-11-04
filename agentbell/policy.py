@@ -5,7 +5,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, time, timedelta
 
 from .config import AppConfig, QuietHoursConfig, RuleConfig
-from .models import PRIORITY_RANK, Notification
+from .models import PRIORITY_RANK, Notification, duration_to_seconds
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,7 +35,7 @@ class Decision:
     channel_types: tuple[str, ...] = ()
 
 
-def _matches(notification: Notification, rule: RuleConfig) -> bool:
+def _matches(notification: Notification, rule: RuleConfig, project: str = "") -> bool:
     pattern = (rule.source or "*").lower()
     if pattern not in {"", "*"} and not fnmatch.fnmatchcase(
         (notification.source or "").lower(), pattern
@@ -47,11 +47,41 @@ def _matches(notification: Notification, rule: RuleConfig) -> bool:
         return False
     if rule.status and rule.status != notification.status:
         return False
+    if (
+        rule.needs_input is not None
+        and notification.needs_input != rule.needs_input
+    ):
+        return False
+    if rule.wait_reason and notification.wait_reason != rule.wait_reason:
+        return False
+    if rule.project and not fnmatch.fnmatchcase(
+        project.lower(), rule.project.lower()
+    ):
+        return False
+    if (
+        rule.min_duration_seconds is not None
+        or rule.max_duration_seconds is not None
+    ):
+        seconds = duration_to_seconds(notification.duration)
+        if seconds is None:
+            return False
+        if (
+            rule.min_duration_seconds is not None
+            and seconds < rule.min_duration_seconds
+        ):
+            return False
+        if (
+            rule.max_duration_seconds is not None
+            and seconds > rule.max_duration_seconds
+        ):
+            return False
     return True
 
 
 def apply_rules(
-    notification: Notification, rules: tuple[RuleConfig, ...]
+    notification: Notification,
+    rules: tuple[RuleConfig, ...],
+    project: str = "",
 ) -> Notification:
     """Apply every matching rule in order; later rules win on scalar fields."""
     if not rules:
@@ -66,7 +96,7 @@ def apply_rules(
     popup_mode = notification.popup_mode
     popup_skin = notification.popup_skin
     for rule in rules:
-        if not _matches(notification, rule):
+        if not _matches(notification, rule, project):
             continue
         matched.append(rule.name or "未命名规则")
         if rule.priority is not None:

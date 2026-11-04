@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .models import (
+    ATTENTION_AGENTS,
     DEFAULT_TEMPLATES,
     OVERLAY_ANCHORS,
     OVERLAY_CARD_WIDTH_MAX,
@@ -19,11 +20,13 @@ from .models import (
     POPUP_SKINS,
     PRIORITIES,
     STATUSES,
+    WAIT_REASONS,
     OverlayAnchor,
     PopupMode,
     PopupSkin,
     Priority,
     Status,
+    WaitReason,
     safe_http_url,
 )
 from .updater import normalize_repo
@@ -32,6 +35,7 @@ DEFAULT_PORT = 8765
 DEFAULT_AUTO_CLOSE_SECONDS = 30
 MAX_AUTO_CLOSE_SECONDS = 3600
 DEFAULT_HISTORY_LIMIT = 1000
+MAX_RULE_DURATION_SECONDS = 7 * 24 * 3600
 DEFAULT_UPDATE_REPO = "1wu-davy-2/AgentBell"
 DEFAULT_MEETING_PROCESSES = (
     "zoom.exe",
@@ -87,6 +91,16 @@ class AgentSessionsConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class AttentionConfig:
+    enabled: bool = True
+    infer: bool = True
+    idle_seconds: int = 20
+    poll_interval_seconds: int = 5
+    question_popup: bool = False
+    agents: tuple[str, ...] = ATTENTION_AGENTS
+
+
+@dataclass(frozen=True, slots=True)
 class AgentLauncherConfig:
     recent_projects: tuple[str, ...] = ()
     last_agent: str = ""
@@ -120,6 +134,11 @@ class RuleConfig:
     source: str = "*"
     title_contains: str | None = None
     status: Status | None = None
+    needs_input: bool | None = None
+    wait_reason: WaitReason | None = None
+    min_duration_seconds: int | None = None
+    max_duration_seconds: int | None = None
+    project: str | None = None
     priority: Priority | None = None
     silent: bool | None = None
     require_ack: bool | None = None
@@ -188,6 +207,7 @@ class AppConfig:
     agent_sessions: AgentSessionsConfig = field(
         default_factory=AgentSessionsConfig
     )
+    attention: AttentionConfig = field(default_factory=AttentionConfig)
     agent_launcher: AgentLauncherConfig = field(
         default_factory=AgentLauncherConfig
     )
@@ -197,6 +217,13 @@ class AppConfig:
     @property
     def auth_enabled(self) -> bool:
         return bool(self.token)
+
+
+@dataclass(slots=True)
+class ConfigRef:
+    """Mutable holder shared by the HTTP service and the desktop app."""
+
+    current: AppConfig
 
 
 def _read_int(data: dict[str, Any], key: str, default: int, minimum: int, maximum: int) -> int:
@@ -343,6 +370,15 @@ def _read_optional_status(data: dict[str, Any], key: str) -> Status | None:
     return value  # type: ignore[return-value]
 
 
+def _read_optional_wait_reason(data: dict[str, Any], key: str) -> WaitReason | None:
+    if data.get(key) is None:
+        return None
+    value = _read_str(data, key, "", 20).lower()
+    if value not in WAIT_REASONS:
+        raise ConfigError(f'"{key}" 必须是 {" / ".join(WAIT_REASONS)}')
+    return value  # type: ignore[return-value]
+
+
 def _read_popup_mode(
     data: dict[str, Any], key: str, default: str = "corner"
 ) -> PopupMode:
@@ -425,6 +461,37 @@ def _read_agent_sessions(data: dict[str, Any]) -> AgentSessionsConfig:
             section, "scan_interval_seconds", 120, 30, 3600
         ),
         max_sessions=_read_int(section, "max_sessions", 80, 10, 500),
+    )
+
+
+def _read_attention(data: dict[str, Any]) -> AttentionConfig:
+    section = _section(data, "attention")
+    raw_agents = _read_str_list(
+        section,
+        "agents",
+        ATTENTION_AGENTS,
+        maximum_items=len(ATTENTION_AGENTS),
+        maximum_length=20,
+    )
+    agents: list[str] = []
+    for item in raw_agents:
+        value = item.lower()
+        if value not in ATTENTION_AGENTS:
+            raise ConfigError(
+                f'"attention.agents" 包含未知 Agent：{item}，'
+                f'可选 {" / ".join(ATTENTION_AGENTS)}'
+            )
+        if value not in agents:
+            agents.append(value)
+    return AttentionConfig(
+        enabled=_read_bool(section, "enabled", True),
+        infer=_read_bool(section, "infer", True),
+        idle_seconds=_read_int(section, "idle_seconds", 20, 10, 120),
+        poll_interval_seconds=_read_int(
+            section, "poll_interval_seconds", 5, 2, 60
+        ),
+        question_popup=_read_bool(section, "question_popup", False),
+        agents=tuple(agents),
     )
 
 
@@ -557,6 +624,23 @@ def _read_rules(data: dict[str, Any]) -> tuple[RuleConfig, ...]:
         source = _read_str(item, "source", "*", 100) or "*"
         title_contains = _read_optional_str(item, "title_contains", 100)
         status = _read_optional_status(item, "status")
+        needs_input = _read_optional_bool(item, "needs_input")
+        wait_reason = _read_optional_wait_reason(item, "wait_reason")
+        min_duration_seconds = _read_optional_int(
+            item, "min_duration_seconds", 0, MAX_RULE_DURATION_SECONDS
+        )
+        max_duration_seconds = _read_optional_int(
+            item, "max_duration_seconds", 0, MAX_RULE_DURATION_SECONDS
+        )
+        if (
+            min_duration_seconds is not None
+            and max_duration_seconds is not None
+            and min_duration_seconds > max_duration_seconds
+        ):
+            raise ConfigError(
+                f'"{label}.min_duration_seconds" 不能大于 max_duration_seconds'
+            )
+        project = _read_optional_str(item, "project", 120)
         priority = _read_optional_priority(item, "priority")
         silent = _read_optional_bool(item, "silent")
         require_ack = _read_optional_bool(item, "require_ack")
@@ -584,6 +668,11 @@ def _read_rules(data: dict[str, Any]) -> tuple[RuleConfig, ...]:
                 source=source,
                 title_contains=title_contains,
                 status=status,
+                needs_input=needs_input,
+                wait_reason=wait_reason,
+                min_duration_seconds=min_duration_seconds,
+                max_duration_seconds=max_duration_seconds,
+                project=project,
                 priority=priority,
                 silent=silent,
                 require_ack=require_ack,
@@ -734,6 +823,7 @@ def _parse_config(data: dict[str, Any]) -> AppConfig:
         overlay_area=_read_overlay_area(data),
         hold_when_locked=_read_bool(data, "hold_when_locked", True),
         agent_sessions=_read_agent_sessions(data),
+        attention=_read_attention(data),
         agent_launcher=_read_agent_launcher(data),
         toolchain=_read_toolchain(data),
         update=_read_update(data),

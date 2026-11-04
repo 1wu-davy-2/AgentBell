@@ -82,6 +82,31 @@ def test_toast_renders_source_and_focus_action(qapp):
         QTest.qWait(20)
 
 
+def test_toast_renders_read_only_actions_and_emits(qapp):
+    notification = make_notification(
+        3,
+        actions=(
+            NotificationAction(kind="session", label="查看记录"),
+            NotificationAction(kind="timeline", label="时间线"),
+            NotificationAction(kind="copy", label="复制", value="echo hi"),
+        ),
+    )
+    toast = ToastWindow(notification, 0, logging.getLogger("agentbell.tests"))
+    try:
+        buttons = toast.findChildren(QPushButton, "action")
+        assert [button.text() for button in buttons] == ["查看记录", "时间线"]
+        clicked: list[str] = []
+        toast.action_requested.connect(
+            lambda item, action: clicked.append(action.kind)
+        )
+        buttons[0].click()
+        assert clicked == ["session"]
+    finally:
+        toast.close_now()
+        toast.deleteLater()
+        QTest.qWait(20)
+
+
 def test_view_button_disabled_without_usable_link(qapp):
     notification = make_notification(2, link="file:///C:/secret.txt")
     toast = ToastWindow(notification, 0, logging.getLogger("agentbell.tests"))

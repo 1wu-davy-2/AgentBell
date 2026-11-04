@@ -85,8 +85,10 @@ def build_agent_instructions(port: int, token: str = "") -> str:
   dedupe_key 可选，同一任务的多轮更新使用相同的去重键，AgentBell 会原地更新卡片而不是重复弹出
   require_ack 可选，true 表示需要用户点击“知道了”才算完成，适合等你决策或失败需处理的场景
   progress  可选，0-100，配合 status="running" 和 dedupe_key 展示任务进度
-  actions   可选，最多 4 个按钮，每项为 {{"kind":"open|copy|retry|path|center","label":"按钮文字","value":"参数"}}
+  actions   可选，最多 4 个按钮，每项为 {{"kind":"open|copy|retry|path|center|session|timeline","label":"按钮文字","value":"参数"}}
             open/link 用 http(s) 链接；copy 用要复制的文本；path 用本地绝对路径；retry 只能用本机 http 回调地址
+            session 打开内置会话记录（需填写 session_id）；timeline 打开本次运行时间线（需 run_id 或 session_id/dedupe_key）
+            这两类动作只读，不使用 value；AgentBell 不会批准权限、自动继续或发送提示词，审批必须回到终端完成
   origin    强烈建议每轮都填，来源位置（仅 Windows），用于生成「回到终端」按钮：
             {{"pid": 12345, "window_title": "可选，终端窗口标题", "working_dir": "可选，项目目录"}}
             推荐填当前进程 PID；AgentBell 会沿父进程链找到宿主终端窗口，只聚焦窗口，不会选中具体标签页
@@ -104,6 +106,8 @@ def build_agent_instructions(port: int, token: str = "") -> str:
   需要用户确认时设置 require_ack=true；重要但不需要确认时设置 priority="high"。
   每轮都带上 origin.pid 后，每条通知会出现「回到终端」按钮，点击可把宿主终端窗口切到前台；不带 origin 时 AgentBell 会尝试按连接自动识别发送进程。
   带上 source 后，弹窗和通知中心会显示来源 Agent；未填写时也会尝试自动识别。
+  如果带 session_id / run_id，可在 actions 中加 {{"kind":"session"}} 或 {{"kind":"timeline"}}，弹窗与通知中心会出现「查看记录」「时间线」按钮；它们只打开本地只读记录。
+  需要审批时只提醒用户，不要在通知里设计“批准”“继续”按钮；用户必须回到终端自行确认。
   如果不确定终端标题，只填 origin.working_dir 也能生成按钮，但只能按项目目录名匹配窗口。
   不要把普通成功都设成 critical，也不要在每一轮都使用 require_ack。
 

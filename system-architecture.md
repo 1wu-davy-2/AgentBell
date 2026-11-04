@@ -42,11 +42,22 @@
 
 2.9.10 补齐首次运行的更新配置：生成的 `config.json` 默认填入 `1wu-davy-2/AgentBell` 并保持「启动时自动检查」，下载后约 9 秒即可查询 Releases；从旧版本升级且仓库为空的配置不会被覆盖，仍可在偏好设置中填写。
 
+2.10.0 新增等待输入提醒，但不新增状态枚举：在 `running` 通知上增加 `needs_input` / `wait_reason` / `wait_source` / `session_id` / `run_id`，显式上报是主路径，本地推断是可选兜底。通知卡片显示等待原因，通知中心「进行中」下新增「待输入」子筛选；同一会话的后续事件或 `needs_input=false` 会结束等待。旧数据库启动时幂等补齐新列，老客户端不传新字段时行为不变。
+
+2.11.0 新增运行时间线：`run_events` 只追加记录一次运行的开始、执行中、等待、继续、结束与备注，`run_id` 按「客户端传入 → `session:<session_id>` → `notify:<dedupe_key>` → `single:<通知 id>`」生成。`/notify` 可选 `phase`；不传时按状态变化自动推断，同一运行同一阶段 5 秒内合并。通知表仍是当前状态读模型，时间线只负责历史；卡片新增时间线弹窗，会话详情显示最近一次运行，统计页增加运行数、运行成功率、P50/P90 耗时与累计等待。删除或裁剪通知时同步清理孤儿事件。
+
+2.12.0 新增只读动作：`/notify` 的 `actions` 接受 `session` 与 `timeline`，分别打开内置会话记录与本次运行时间线。两类动作只读取通知自身的 `session_id` / `run_id`，忽略 `value`，不执行任何外部命令；未知标识或缺少标识时给出非阻塞提示。动作顺序固定为 `focus` → `session` → `timeline` → 其他，弹窗与通知中心的首个按钮因此总是「回到终端」或「查看记录」。不提供批准权限、自动继续或发送提示词的动作，审批必须回到终端完成。
+
+2.13.0 规则精细化：`rules` 在来源 / 标题 / 状态之外新增 `needs_input`、`wait_reason`、`project`、`min_duration_seconds`、`max_duration_seconds`。项目名取自 `origin.working_dir` 目录名或本地会话项目名，支持通配符；时长条件按通知的 `duration` 解析，缺失或不合法时不匹配。`/notify` 改为读取实时配置，设置页保存规则后立即对新通知生效；本地推断的等待提醒也走同一套规则。规则仍按顺序匹配、后匹配覆盖标量字段，最多 50 条。通知中心的悬停提示同步收紧：仅在文字被截断时出现，按 32 字换行并统一浅色样式，避免遮挡相邻卡片。
+
 ## 特性
 
 - 只监听 `127.0.0.1:8765`（可在 `config.json` 改端口），不暴露到局域网。
 - 弹窗置顶、不抢键盘焦点，打字不会被打断。
 - 状态：成功 / 失败 / 取消 / 进行中；进行中通知可带 0–100 进度并在原卡片更新。
+- 等待输入：进行中通知可带 `needs_input` 与等待原因（权限、提问、限流、上下文超限、其他），卡片与「进行中」页的活跃会话同步标记；「待输入」子筛选只显示等待中的通知与会话。显式上报为主，Claude Code / Qoder 尾部只读推断为可关闭的兜底。
+- 运行时间线：同一 `run_id` 的事件写入只追加的 `run_events`，卡片「时间线」按钮展示阶段、相对耗时、状态与来源；会话详情显示最近一次运行摘要，统计页增加运行数、运行成功率、P50/P90 耗时与累计等待。
+- 只读动作：通知可带「查看记录」「时间线」按钮，直接打开本地会话与运行时间线；不包含审批、自动继续、发送提示词或任意命令。
 - 优先级：`low` / `normal` / `high` / `critical`；紧急通知常驻，必须点「知道了」才消失。
 - 弹窗外观：`midnight` 午夜蓝 / `light` 晨光白 / `ocean` 深海青 / `amber` 琥珀暖四套皮肤，可按全局配置、规则或单条通知指定。
 - 弹窗模式：`corner` 右侧小卡片、`center` 居中弹窗（必须确认）、`overlay` 全屏遮挡；全屏模式真正铺满整块屏幕并覆盖任务栏，可搭配自定义背景图。同一时刻只显示一种弹窗，避免卡片与全屏层互相干扰。
@@ -70,7 +81,7 @@
 - 便携运行环境：内置「运行环境」页把 Node LTS 与 7 个官方 npm Agent CLI 装到安装目录 `runtime/`；下载只接受 HTTPS 白名单域名并校验 SHA-256，免管理员权限、不改系统 PATH，安装后可卸载与重新检测；cc-switch 等外部 exe 不代装，点按钮跳转官方下载页；DeepSeek 作为供应商预设注入 Claude Code 启动环境。
 - Agent 项目主页：每张 Agent 卡片都可点右上角「项目主页」打开对应的官网或 GitHub 仓库，方便查安装方式、更新与文档。
 - 自身更新：安装包预填 GitHub 仓库 `1wu-davy-2/AgentBell`，启动约 9 秒后检查 Releases；发现新版本会提示并下载 `AgentBell.exe`，校验大小与 SHA-256 后在退出时自动替换、备份旧版并重启。托盘和 Agent 启动页都有「检查更新」入口；源码模式只下载安装包，不会替换正在运行的 Python 程序。仓库可在设置里改为其他 `owner/repo` 或清空。
-- 规则引擎：按来源 / 标题 / 状态自动设置优先级、静音、待确认、免打扰例外、弹窗外观、外部渠道。
+- 规则引擎：按来源 / 标题 / 状态 / 等待原因 / 是否等待输入 / 时长 / 项目自动设置优先级、静音、待确认、免打扰例外、弹窗外观、外部渠道；保存设置后立即生效。
 - 模板与声音：四种状态的弹窗文案、五类 WAV 提示音均可配置。
 - 外部渠道：企业微信、飞书、Telegram、Bark、ntfy、通用 Webhook；可按“离开电脑”或规则触发，失败只记日志，不影响主流程。
 - Agent 会话：只读扫描本机 Claude Code / Qoder 的会话，可在软件内直接阅读完整记录（轮次、工具调用、结果与思考过程）、跳转大纲、会话内搜索、复制或导出 Markdown，支持按项目、标题与路径筛选。
@@ -94,14 +105,15 @@ agentbell/
 │  ├─ policy.py           优先级、免打扰、全屏/会议/锁屏、规则与渠道决策
 │  ├─ presence.py         Windows 空闲时间、前台全屏、会议进程、锁屏/息屏检测
 │  ├─ agent_sessions.py   Claude Code / Qoder 会话扫描、记录解析与 Markdown 导出
+│  ├─ attention.py        等待输入推断：尾部增量读取、信号识别、去重与恢复
 │  ├─ agent_launch.py     Agent 检测、项目内启动终端与提示词传递
 │  ├─ toolchain.py        便携 Node / Agent CLI 安装、校验与清单
 │  ├─ updater.py          GitHub Release 检查、下载校验、替换脚本与重启
 │  ├─ window_focus.py     Win32 窗口解析与聚焦（回到终端）
 │  ├─ channels.py         外部渠道后台投递线程
 │  ├─ hotkey.py           全局快捷键（RegisterHotKey）
-│  ├─ storage.py          SQLite 历史、搜索与统计
-│  ├─ store.py            线程安全通知历史、去重索引
+│  ├─ storage.py          SQLite 历史、run_events、搜索与统计
+│  ├─ store.py            线程安全通知历史、去重索引、运行事件推断
 │  ├─ integration.py      Agent 接入指令生成（复制到剪贴板）
 │  ├─ single_instance.py  QLockFile 单实例锁 + QLocalServer 唤醒通道
 │  ├─ log.py              滚动日志、异常钩子
@@ -115,6 +127,7 @@ agentbell/
 │     ├─ onboarding.py    四步首次启动介绍覆盖层（自动播放、暂停、跳过）
 │     ├─ about.py         「关于 AgentBell」标志展示、尺寸/变体与 SVG 导出
 │     ├─ window.py        cc-switch 风格通知中心、搜索、统计、Agent 会话、Agent 启动与阅读视图
+│     ├─ timeline.py      运行时间线弹窗（阶段、相对耗时、状态与来源）
 │     ├─ toolchain_page.py 「运行环境」页面（安装、卸载、进度、DeepSeek 预设）
 │     ├─ settings.py      偏好设置对话框
 │     ├─ overlay_editor.py 全屏拖拽定位编辑器（真实背景预览、拖动、保存位置）
@@ -133,7 +146,7 @@ agentbell/
 ├─ requirements.txt       运行依赖
 ├─ requirements-dev.txt   测试/打包依赖
 ├─ run.py                 源码启动入口
-├─ AgentBell21.spec       PyInstaller 配置（AgentBell-21.exe）
+├─ AgentBell25.spec       PyInstaller 配置（AgentBell-25.exe）
 ├─ LICENSE                MIT 许可证
 ├─ README.md              项目介绍、截图、安装与使用教程
 └─ system-architecture.md 本文件：架构、配置、API 与打包手册
@@ -336,6 +349,28 @@ AgentBell 已就绪：http://127.0.0.1:8765（X-Token 鉴权已开启）
 
 没有对应目录时页面显示空状态；扫描结果按更新时间倒序，可按标题、项目、会话 ID 或路径搜索，并支持打开项目目录或复制路径。
 
+### 等待输入提醒 `attention`
+
+| 字段 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `attention.enabled` | 布尔 | `true` | 是否启用等待输入提醒；关闭后不接收推断，也不显示「待输入」子筛选 |
+| `attention.infer` | 布尔 | `true` | 是否启用本地推断；关闭后只保留显式 `/notify` 上报 |
+| `attention.idle_seconds` | 整数 | `20` | 会话文件闲置多少秒后才推断为等待，范围 10–120 |
+| `attention.poll_interval_seconds` | 整数 | `5` | 推断扫描间隔，范围 2–60 秒 |
+| `attention.question_popup` | 布尔 | `false` | 推断出的「提问」是否弹窗；默认只进通知中心 |
+| `attention.agents` | 字符串数组 | `["claude", "qoder"]` | 参与推断的 Agent，取值 `claude` / `qoder`；未知项会被忽略，重复项自动去重 |
+
+显式上报是主路径：`POST /notify` 带 `needs_input=true` 与 `status=running` 即生成等待卡片，随后同一 `session_id` 的任何新通知或 `needs_input=false` 都会结束等待。
+
+本地推断只读最近 10 分钟内活跃的 `~/.claude/projects/*/*.jsonl` 与 `~/.qoder/projects/*/*.jsonl` 尾部，最多保留 256 KB，并按偏移增量读取：
+
+- 最后一条 assistant 含 `tool_use` 且没有匹配的 `tool_result` → `permission`；
+- 最后一条 assistant 文本以问号或「是否 / 要不要 / Would you like / Shall I」等结尾 → `question`（默认不弹窗）；
+- 尾部出现速率限制、配额相关错误文本 → `rate_limit`；
+- 尾部出现上下文长度、token 超限相关错误文本 → `context_limit`。
+
+同一指纹需连续两次扫描命中，且文件闲置达到 `idle_seconds` 才上报；同一会话 2 分钟内最多提醒一次。推断结果标记 `wait_source="inferred"`，去重键为 `wait:<agent>:<session_id>:<episode_fingerprint>`；会话恢复写入或推断消失时清除等待状态。推断不写入会话文件，不把会话正文写入日志或数据库。
+
 ### Agent 启动
 
 | 字段 | 类型 | 默认值 | 说明 |
@@ -446,6 +481,31 @@ runtime/
 | `history.limit` | 整数 | `1000` | 最多保留条数，启动时自动裁剪 |
 | `history.path` | 字符串 | `""` | 数据库路径；空则使用 `config.json` 同目录的 `agentbell.db`，相对路径按配置目录解析 |
 
+同库另建只追加表 `run_events`，用于运行时间线：
+
+```sql
+CREATE TABLE IF NOT EXISTS run_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    notification_id TEXT,
+    session_id TEXT,
+    agent TEXT NOT NULL DEFAULT '',
+    project TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL DEFAULT '',
+    detail TEXT NOT NULL DEFAULT '',
+    occurred_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_run_events_run ON run_events(run_id, occurred_at);
+CREATE INDEX IF NOT EXISTS idx_run_events_session ON run_events(session_id);
+```
+
+- `kind` 仅允许 `started` / `progress` / `waiting_input` / `resumed` / `finished` / `note`；未知值读取时降级为 `note`。
+- 只追加、不更新；同一 `run_id` 的同一 `kind` 在 5 秒内重复上报时直接跳过。
+- 不单独建 `runs` 表；运行状态由首尾事件推导，统计时按 `run_id` 分组。
+- 通知被删除或裁剪后，若没有其他通知引用该 `run_id`，对应事件一并清理；清空历史时全部删除。旧数据库启动时自动建表，无需手动迁移。
+
 ### 提示声音与模板
 
 - `sounds`：键为 `succeeded` / `failed` / `canceled` / `running` / `critical`，值为 WAV 绝对路径，空表示静音；紧急通知优先使用 `critical`。仅 Windows 通过 `winsound` 播放。
@@ -453,7 +513,7 @@ runtime/
 
 ### 规则 `rules`
 
-规则按顺序全部匹配、后面的规则覆盖前面的标量设置，`channels` 会累加。最多 50 条。
+规则按顺序全部匹配、后面的规则覆盖前面的标量设置，`channels` 会累加。最多 50 条。同一条规则内，`source` / `title_contains` / `status` / `needs_input` / `wait_reason` / `project` / 时长条件是「且」关系；`project` 取 `origin.working_dir` 的目录名或本地会话项目名，支持通配符且不区分大小写；带时长条件的规则只匹配能解析出 `duration` 的通知。设置保存后规则立即对新通知生效，无需重启。
 
 ```json
 {
@@ -468,10 +528,21 @@ runtime/
       "channels": ["wecom"]
     },
     {
-      "name": "数据抓取成功只记录",
-      "title_contains": "抓取",
-      "status": "succeeded",
-      "silent": true
+      "name": "权限等待高优",
+      "needs_input": true,
+      "wait_reason": "permission",
+      "priority": "critical"
+    },
+    {
+      "name": "演示项目仅失败时确认",
+      "project": "demo-*",
+      "status": "failed",
+      "require_ack": true
+    },
+    {
+      "name": "长任务完成后转投",
+      "min_duration_seconds": 600,
+      "channels": ["wecom"]
     }
   ]
 }
@@ -483,6 +554,11 @@ runtime/
 | `source` | 来源匹配，支持 `*`、`?` 通配符；默认 `*` |
 | `title_contains` | 标题包含的文本，不区分大小写 |
 | `status` | 仅匹配指定状态 |
+| `needs_input` | 仅匹配是否处于等待输入（`true` / `false`） |
+| `wait_reason` | 仅匹配指定等待原因（`permission` / `question` / `rate_limit` / `context_limit` / `other`） |
+| `project` | 项目名匹配，支持 `*`、`?` 通配符，不区分大小写；取 `origin.working_dir` 目录名或会话项目名 |
+| `min_duration_seconds` | 最短任务时长（秒），含边界；无 `duration` 或无法解析时不匹配 |
+| `max_duration_seconds` | 最长任务时长（秒），含边界；不能小于 `min_duration_seconds` |
 | `priority` | 覆盖优先级 |
 | `silent` | 是否只进通知中心 |
 | `require_ack` | 是否强制确认 |
@@ -575,6 +651,12 @@ X-Token: your-token        # 仅当 config.token 非空时必需
 | `priority` | 字符串 | 按状态推断 | `low` / `normal` / `high` / `critical`；失败默认 `high`，进行中默认 `low`，成功/取消默认 `normal` |
 | `source` | 字符串 | `""` | 来源标识（Agent 名、任务类型），最长 100 字符，参与规则匹配与搜索；留空时按发送进程自动识别 |
 | `dedupe_key` | 字符串 | `null` | 去重键，最长 200 字符；相同键会更新已有卡片并累加次数 |
+| `needs_input` | 布尔 | `false` | 标记 `running` 通知正在等待用户；仅允许与 `status=running` 一起使用，否则返回 422 |
+| `wait_reason` | 字符串 | `other` | 等待原因：`permission` / `question` / `rate_limit` / `context_limit` / `other`；未知值回落到 `other`；`needs_input=false` 时会被清空 |
+| `wait_source` | 字符串 | `explicit` | `explicit` / `inferred`；未知值回落到 `explicit`；`needs_input=false` 时会被清空 |
+| `session_id` | 字符串 | `null` | Agent 会话标识，最长 120 字符；用于关联活跃会话并结束同一会话的旧等待 |
+| `run_id` | 字符串 | 按规则生成 | 运行标识，最长 120 字符；不传时依次回落为 `session:<session_id>`、`notify:<dedupe_key>`、`single:<通知 id>` |
+| `phase` | 字符串 | `null` | 时间线阶段：`started` / `progress` / `waiting_input` / `resumed` / `finished` / `note`；显式传入时只追加该阶段，不再自动推断 |
 | `require_ack` | 布尔 | `false` | 需要用户点「知道了」；此类弹窗不自动关闭，并出现稍后提醒菜单 |
 | `silent` | 布尔 | `false` | 只记录到通知中心，不弹窗 |
 | `progress` | 整数 | `null` | `0–100`，仅 `status=running` 时生效，用于进度条 |
@@ -601,11 +683,17 @@ X-Token: your-token        # 仅当 config.token 非空时必需
 
 | 字段 | 说明 |
 | --- | --- |
-| `kind` | `open` / `copy` / `retry` / `path` / `center`；`focus` 由 `origin` 自动生成，不接受外部提交 |
+| `kind` | `open` / `copy` / `retry` / `path` / `center` / `session` / `timeline`；`focus` 由 `origin` 自动生成，不接受外部提交 |
 | `label` | 按钮文字，最长 40 字符；为空时用默认文案 |
-| `value` | `open` 为 http(s) 链接（为空时用通知的 `link`）；`copy` 为文本；`retry` 仅接受本机 http 回调地址（`127.0.0.1` / `localhost` / `::1`）；`path` 为本地绝对路径，且需 `allow_local_paths=true` |
+| `value` | `open` 为 http(s) 链接（为空时用通知的 `link`）；`copy` 为文本；`retry` 仅接受本机 http 回调地址（`127.0.0.1` / `localhost` / `::1`）；`path` 为本地绝对路径，且需 `allow_local_paths=true`；`session` / `timeline` 忽略此字段 |
 
-`origin` 生成的 `focus` 动作占用第一个按钮位；其余动作按原顺序保留，总数仍以 4 个为上限。
+`session` 打开 AgentBell 内置会话记录，必须同时填写 `session_id`；`timeline` 打开本次运行时间线，需要 `run_id`，或至少提供 `session_id` / `dedupe_key` 以便回落到 `session:` / `notify:` 运行编号。两者只按通知自身记录的标识查找本地数据，不读取 `value`，不执行外部命令；找不到会话或运行、或缺少标识时，按钮不会出现或被忽略并写入日志。它们不提供“批准权限”“自动继续”或“发送提示词”的能力。
+
+`origin` 生成的 `focus` 动作占用第一个按钮位；其余动作按 `focus` → `session` → `timeline` → 原有顺序排列，总数仍以 4 个为上限。
+
+等待输入：`needs_input=true` 未填 `priority` 时默认 `high`；`wait_reason` / `wait_source` 留空分别补 `other` / `explicit`。显式 `needs_input=false` 会清除该通知的等待标记；同一 `session_id` 的新事件也会结束之前的等待卡片。
+
+运行事件：未传 `phase` 时，首次出现的 `running` 追加 `started`，终态追加 `finished`，并自动补出 `waiting_input` / `resumed`；显式传 `phase` 时只追加这一条。同一 `run_id`、同一阶段在 5 秒内重复上报会跳过，避免进度刷屏。事件只追加，不更新已有行。
 
 未知字段会被忽略；`null` 会回落到默认值；字符串首尾及连续空白会被压缩。
 
@@ -619,6 +707,11 @@ X-Token: your-token        # 仅当 config.token 非空时必需
   "updated": false,
   "priority": "high",
   "require_ack": false,
+  "needs_input": true,
+  "wait_reason": "permission",
+  "wait_source": "explicit",
+  "run_id": "session:abc123",
+  "phase": "waiting_input",
   "occurrence": 1,
   "popup_mode": "corner",
   "popup_skin": "midnight"
@@ -652,7 +745,7 @@ X-Token: your-token        # 仅当 config.token 非空时必需
 }
 ```
 
-- 服务端生成「回到终端」按钮，放在所有动作之前；请求里的 `actions` 仍按原样追加。
+- 服务端生成「回到终端」按钮，放在所有动作之前；请求里的 `actions` 按 `session` → `timeline` → 原有顺序追加。
 - 请求未带 `origin` 时，服务端通过本机 TCP 连接（客户端端口 ↔ 发送进程）反查 PID，再快照宿主窗口；这是尽力而为的兜底，显式 `origin.pid` 仍然最准确。
 - 只填 `working_dir` 也能生成按钮：服务端会取目录名作为窗口标题线索，适合无法拿到终端 PID 的 Agent；同时填 `pid` 仍是最准确的方式。
 - `source` 留空时，服务端会沿发送进程的父进程链识别 Agent 名（Qoder、Claude Code、Cursor、VS Code 等），显示在弹窗元信息与通知中心；显式 `source` 优先。
@@ -718,8 +811,9 @@ X-Token: your-token        # 仅当 config.token 非空时必需
 - Agent 来源筛选：状态标签右侧下拉列出当前历史中的来源 Agent 及条数，选择后状态计数、总条数和卡片同步收窄；可与搜索、状态筛选叠加，「全部 Agent」或清除筛选恢复。
 - 搜索：标题、摘要、错误、来源；输入后 260ms 自动搜索，搜索状态下可一键清除。
 - 卡片：标题行显示状态、优先级、来源 Agent、`更新 ×N`、`待确认/已确认`、时间，摘要下方显示进度条、耗时、错误与动作按钮、重新弹出、确认、稍后提醒。
-- 数据统计：总通知数、成功率（成功 / 已结束）、平均耗时（可解析的 `duration`）、待确认数，以及最近 7 天每日总量/失败量柱状图。
-- 偏好设置：端口、token、自启、启动打开通知中心、自动关闭、冷却、成功弹窗、默认确认、快捷键、免打扰、全屏抑制、锁屏保留、弹窗模式与皮肤、全屏背景图与显示区域（含全屏拖拽定位）、Agent 会话扫描、会议进程、离开判定、聚合、升级、模板、声音、规则与渠道 JSON，以及「关于」入口。所有标签页均可滚动，小窗口下不会裁切内容。保存后立即应用可热更新的项并写回 `config.json`；端口、token 等监听相关配置需重启。
+- 数据统计：总通知数、成功率（成功 / 已结束）、平均耗时（可解析的 `duration`）、待确认数，以及最近 7 天每日总量/失败量柱状图；「运行时间线」卡片按 `run_id` 统计运行数、运行成功率、P50/P90 运行时长与累计等待时长，等待中未结束的区段计入当前时刻。
+- 运行时间线：有 `run_id` 的卡片右侧显示「时间线」按钮，弹窗按时间顺序列出阶段、相对耗时、绝对时间、状态、来源与关联会话；一次包含等待的运行会显示开始 → 等待输入 → 已继续 → 完成。会话详情页顶部显示最近一次运行的摘要，可直接打开同一时间线。
+- 偏好设置：端口、token、自启、启动打开通知中心、自动关闭、冷却、成功弹窗、默认确认、快捷键、免打扰、全屏抑制、锁屏保留、弹窗模式与皮肤、全屏背景图与显示区域（含全屏拖拽定位）、Agent 会话扫描、会议进程、离开判定、聚合、升级、模板、声音、规则与渠道 JSON，以及「关于」入口。所有标签页均可滚动，小窗口下不会裁切内容。保存后立即应用可热更新的项（含规则）并写回 `config.json`；端口、token 等监听相关配置需重启。
 - 全屏拖拽定位：点「全屏拖拽定位…」进入与真实弹窗一致的全屏预览，卡片可自由拖动，顶部实时显示坐标、尺寸、最近锚点和偏移；点「保存位置」自动写回设置并保存配置，点「取消」不改动原值。
 - 效果预览：设置对话框底部「测试」按钮按当前选择的模式、皮肤和背景图弹出一条预览。预览使用临时通知，不写入 SQLite 历史；`overlay` 预览会实际铺满屏幕，点「知道了」即可返回设置。
 - Agent 会话页：左侧侧栏切换到「Agent 会话」，按项目分组显示本机会话；点「查看记录」进入阅读视图，支持轮次折叠、工具过程、大纲跳转、会话内搜索、复制全文和导出 Markdown；数据只读，不进入通知历史。
@@ -890,18 +984,18 @@ PyInstaller 不能跨平台交叉编译，请在目标系统上分别打包。
 ```bash
 pip install -r requirements-dev.txt
 
-# 产物：dist\AgentBell-21.exe
-python -m PyInstaller --noconfirm --clean AgentBell21.spec
+# 产物：dist\AgentBell-25.exe
+python -m PyInstaller --noconfirm --clean AgentBell25.spec
 ```
 
 把 `config.json` 复制到 exe 旁边再运行：
 
 ```bash
 copy config.json dist\config.json
-dist\AgentBell-21.exe
+dist\AgentBell-25.exe
 ```
 
-> 新旧版本默认共用单实例锁：若托盘中已有 AgentBell 在运行，双击 AgentBell-21 只会唤醒旧实例。切换版本前先从托盘退出旧版，再启动新 exe。
+> 新旧版本默认共用单实例锁：若托盘中已有 AgentBell 在运行，双击 AgentBell-25 只会唤醒旧实例。切换版本前先从托盘退出旧版，再启动新 exe。
 
 打包后 `config.json`、`logs/`、`agentbell.db`、`chat/` 与 `updates/` 都位于 exe 所在目录。单文件模式首次启动需要解压到临时目录，通常会有 1–3 秒延迟。
 
@@ -932,7 +1026,7 @@ git push origin develop --tags
 
 ```bash
 pyinstaller --noconfirm --clean --onefile --windowed \
-  --name AgentBell-21 \
+  --name AgentBell-25 \
   --hidden-import uvicorn.logging \
   --hidden-import uvicorn.loops.asyncio \
   --hidden-import uvicorn.protocols.http.h11_impl \
@@ -954,7 +1048,7 @@ $env:QT_QPA_PLATFORM="offscreen"; python -m pytest -q
 QT_QPA_PLATFORM=offscreen python -m pytest -q
 ```
 
-覆盖：鉴权与 401、字段默认值/空值/长度、非法状态、危险链接、GB18030 请求体、疑似编码丢失告警、`origin` 动作生成与上限、仅 `working_dir` 的目录名兜底、`focus` 参数校验、窗口选择排序与去重、`FocusRequest` 往返、`overlay_area` 配置校验与卡片摆放、全屏拖拽编辑器的锚点换算与保存、空/坏 JSON、超大请求体、队列满、去重合并、待确认与动作、规则匹配、免打扰/全屏/会议/锁屏决策、优先级弹窗策略、弹窗模式与皮肤、全屏自定义背景图与失效回落、渠道选择、配置校验、Agent 启动的检测排序、CLI 参数与环境变量、提示词不进入命令行、桌面应用不支持提示词、启动失败与项目校验、最近项目持久化、启动记录与回到终端、SQLite 存取/搜索/统计/裁剪、通知中心筛选/搜索/统计/设置、通知来源筛选与计数联动、Agent 会话扫描与标题提取、会话记录解析/搜索/大纲/复制与导出/缺失文件兜底、设置效果预览与清理、弹窗文案/按钮/去重更新/聚合、居中与全屏弹窗互斥、锁屏暂停、单实例唤醒、自动关闭与悬停暂停、启动自动打开与会话动画收尾、标志 SVG/像素/单色与图标尺寸、启动三行时间线与收起、首次介绍的四步导航/键盘/暂停/跳过与 `onboarding_seen` 持久化、关于窗口的尺寸变体与 SVG 导出、更新仓库归一化与版本比较、Release 解析与稳定资产选择、404/网络错误映射、下载域名白名单/大小/SHA-256 校验与残留清理、源码模式拒绝替换、更新脚本环境变量与不插值路径、`chat/` 自动创建与默认项目回落、Agent 项目主页按钮、Agent 卡片双击启动。
+覆盖：鉴权与 401、字段默认值/空值/长度、非法状态、危险链接、GB18030 请求体、疑似编码丢失告警、`origin` 动作生成与上限、仅 `working_dir` 的目录名兜底、`focus` 参数校验、窗口选择排序与去重、`FocusRequest` 往返、`overlay_area` 配置校验与卡片摆放、全屏拖拽编辑器的锚点换算与保存、空/坏 JSON、超大请求体、队列满、去重合并、待确认与动作、规则匹配、等待原因/`needs_input`/时长/项目条件、规则实时配置、规则字段往返与非法时长、免打扰/全屏/会议/锁屏决策、优先级弹窗策略、弹窗模式与皮肤、全屏自定义背景图与失效回落、渠道选择、配置校验、Agent 启动的检测排序、CLI 参数与环境变量、提示词不进入命令行、桌面应用不支持提示词、启动失败与项目校验、最近项目持久化、启动记录与回到终端、SQLite 存取/搜索/统计/裁剪、通知中心筛选/搜索/统计/设置、通知来源筛选与计数联动、Agent 会话扫描与标题提取、会话记录解析/搜索/大纲/复制与导出/缺失文件兜底、设置效果预览与清理、弹窗文案/按钮/去重更新/聚合、居中与全屏弹窗互斥、锁屏暂停、单实例唤醒、自动关闭与悬停暂停、启动自动打开与会话动画收尾、标志 SVG/像素/单色与图标尺寸、启动三行时间线与收起、首次介绍的四步导航/键盘/暂停/跳过与 `onboarding_seen` 持久化、关于窗口的尺寸变体与 SVG 导出、更新仓库归一化与版本比较、Release 解析与稳定资产选择、404/网络错误映射、下载域名白名单/大小/SHA-256 校验与残留清理、源码模式拒绝替换、更新脚本环境变量与不插值路径、`chat/` 自动创建与默认项目回落、Agent 项目主页按钮、Agent 卡片双击启动、`run_events` 追加与同阶段 5 秒合并、`run_id` 生成优先级、阶段推断（开始/等待/继续/完成）、旧库迁移与孤儿事件清理、会话运行时间线读取、时间线弹窗与卡片入口、会话详情「本次运行」摘要、运行次数/成功率/P50/P90/累计等待统计、`session` / `timeline` 动作的标识校验与排序、只读动作忽略 `value`、未知动作类型 422、存储往返、通知中心按会话 ID / 运行 ID 打开成功与失败、弹窗只读动作按钮。
 
 ## 常见问题
 

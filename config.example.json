@@ -42,6 +42,17 @@
     "scan_interval_seconds": 120,
     "max_sessions": 80
   },
+  "attention": {
+    "enabled": true,
+    "infer": true,
+    "idle_seconds": 20,
+    "poll_interval_seconds": 5,
+    "question_popup": false,
+    "agents": [
+      "claude",
+      "qoder"
+    ]
+  },
   "agent_launcher": {
     "recent_projects": [],
     "last_agent": ""

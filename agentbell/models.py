@@ -8,7 +8,14 @@ from urllib.parse import urlsplit
 
 Status = Literal["succeeded", "failed", "canceled", "running"]
 Priority = Literal["low", "normal", "high", "critical"]
-ActionKind = Literal["open", "copy", "retry", "path", "center", "focus"]
+WaitReason = Literal["permission", "question", "rate_limit", "context_limit", "other"]
+WaitSource = Literal["explicit", "inferred"]
+RunEventKind = Literal[
+    "started", "progress", "waiting_input", "resumed", "finished", "note"
+]
+ActionKind = Literal[
+    "open", "copy", "retry", "path", "center", "focus", "session", "timeline"
+]
 PopupMode = Literal["corner", "center", "overlay"]
 PopupSkin = Literal["midnight", "light", "ocean", "amber"]
 OverlayAnchor = Literal[
@@ -25,6 +32,11 @@ OverlayAnchor = Literal[
 
 STATUSES: tuple[Status, ...] = ("succeeded", "failed", "canceled", "running")
 PRIORITIES: tuple[Priority, ...] = ("low", "normal", "high", "critical")
+ATTENTION_AGENTS: tuple[str, ...] = ("claude", "qoder")
+ATTENTION_AGENT_LABELS: dict[str, str] = {
+    "claude": "Claude Code",
+    "qoder": "Qoder",
+}
 POPUP_MODES: tuple[PopupMode, ...] = ("corner", "center", "overlay")
 POPUP_SKINS: tuple[PopupSkin, ...] = ("midnight", "light", "ocean", "amber")
 OVERLAY_ANCHORS: tuple[OverlayAnchor, ...] = (
@@ -125,6 +137,38 @@ STATUS_LABELS: dict[str, str] = {
     "failed": "失败",
     "canceled": "已取消",
     "running": "进行中",
+}
+
+WAIT_REASONS: tuple[WaitReason, ...] = (
+    "permission",
+    "question",
+    "rate_limit",
+    "context_limit",
+    "other",
+)
+WAIT_SOURCES: tuple[WaitSource, ...] = ("explicit", "inferred")
+WAIT_REASON_LABELS: dict[str, str] = {
+    "permission": "等待权限确认",
+    "question": "等待回答",
+    "rate_limit": "等待限流恢复",
+    "context_limit": "等待上下文处理",
+    "other": "等待输入",
+}
+RUN_EVENT_KINDS: tuple[RunEventKind, ...] = (
+    "started",
+    "progress",
+    "waiting_input",
+    "resumed",
+    "finished",
+    "note",
+)
+RUN_EVENT_LABELS: dict[str, str] = {
+    "started": "开始",
+    "progress": "执行中",
+    "waiting_input": "等待输入",
+    "resumed": "已继续",
+    "finished": "完成",
+    "note": "备注",
 }
 
 PRIORITY_LABELS: dict[str, str] = {
@@ -266,6 +310,11 @@ class Notification:
     priority: Priority = "normal"
     source: str = ""
     dedupe_key: str | None = None
+    needs_input: bool = False
+    wait_reason: WaitReason | None = None
+    wait_source: WaitSource | None = None
+    session_id: str | None = None
+    run_id: str | None = None
     require_ack: bool = False
     silent: bool = False
     acknowledged: bool = False
@@ -307,6 +356,16 @@ class Notification:
         return STATUS_LABELS.get(self.status, self.status)
 
     @property
+    def is_waiting_input(self) -> bool:
+        return self.needs_input and self.status == "running"
+
+    @property
+    def wait_reason_label(self) -> str:
+        if not self.needs_input:
+            return ""
+        return WAIT_REASON_LABELS.get(self.wait_reason or "other", "等待输入")
+
+    @property
     def priority_label(self) -> str:
         return PRIORITY_LABELS.get(self.priority, self.priority)
 
@@ -330,3 +389,24 @@ class Notification:
             acknowledged_at=current,
             updated_at=current,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class RunEvent:
+    """One append-only step in a run timeline."""
+
+    run_id: str
+    kind: RunEventKind
+    occurred_at: datetime
+    notification_id: str | None = None
+    session_id: str | None = None
+    agent: str = ""
+    project: str = ""
+    status: str = ""
+    title: str = ""
+    detail: str = ""
+    id: int = 0
+
+    @property
+    def kind_label(self) -> str:
+        return RUN_EVENT_LABELS.get(self.kind, self.kind)
