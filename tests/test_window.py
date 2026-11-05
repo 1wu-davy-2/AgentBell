@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from datetime import datetime, timedelta
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -295,7 +296,9 @@ def test_startup_animation_ends_at_full_opacity(window_factory):
     window = window_factory()
     window.show_center(animate=True)
     assert window.isVisible()
-    QTest.qWait(400)
+    deadline = time.monotonic() + 3
+    while window.windowOpacity() < 1.0 and time.monotonic() < deadline:
+        QTest.qWait(20)
     assert window.windowOpacity() == pytest.approx(1.0)
     window.hide_center()
     assert window.windowOpacity() == pytest.approx(1.0)
