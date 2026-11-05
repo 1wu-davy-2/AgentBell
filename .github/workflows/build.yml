@@ -148,20 +148,53 @@ jobs:
         run: python -m pip install -r requirements-dev.txt
       - name: Build with PyInstaller
         run: python -m PyInstaller --noconfirm AgentBell-linux.spec
-      - name: Package tar.gz
+      - name: Install packaging tools
+        run: sudo apt-get install -y rpm
+      - name: Download pinned AppImage tooling
+        shell: bash
         run: |
           set -euo pipefail
-          tar -C dist -czf "dist/AgentBell-linux-${{ matrix.arch }}.tar.gz" AgentBell
-          cd dist
-          sha256sum "AgentBell-linux-${{ matrix.arch }}.tar.gz" \
-            > "SHA256SUMS-linux-${{ matrix.arch }}.txt"
-          cat "SHA256SUMS-linux-${{ matrix.arch }}.txt"
+          case "${{ matrix.arch }}" in
+            x64)
+              tool=appimagetool-x86_64.AppImage
+              tool_sha=ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0
+              runtime=runtime-x86_64
+              runtime_sha=2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d
+              ;;
+            arm64)
+              tool=appimagetool-aarch64.AppImage
+              tool_sha=f0837e7448a0c1e4e650a93bb3e85802546e60654ef287576f46c71c126a9158
+              runtime=runtime-aarch64
+              runtime_sha=00cbdfcf917cc6c0ff6d3347d59e0ca1f7f45a6df1a428a0d6d8a78664d87444
+              ;;
+          esac
+          curl -fsSL --retry 3 -o appimagetool \
+            "https://github.com/AppImage/appimagetool/releases/download/1.9.1/$tool"
+          echo "$tool_sha  appimagetool" | sha256sum -c -
+          curl -fsSL --retry 3 -o appimage-runtime \
+            "https://github.com/AppImage/type2-runtime/releases/download/20251108/$runtime"
+          echo "$runtime_sha  appimage-runtime" | sha256sum -c -
+          chmod +x appimagetool
+      - name: Build Linux packages
+        run: |
+          VERSION=$(python -c "from agentbell import __version__; print(__version__)")
+          python scripts/build_linux_packages.py \
+            --binary dist/AgentBell \
+            --version "$VERSION" \
+            --arch "${{ matrix.arch }}" \
+            --outdir dist \
+            --appimagetool ./appimagetool \
+            --appimage-runtime ./appimage-runtime
+          ls -lh dist
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: AgentBell-linux-${{ matrix.arch }}
           path: |
             dist/AgentBell-linux-${{ matrix.arch }}.tar.gz
+            dist/AgentBell-linux-${{ matrix.arch }}.AppImage
+            dist/AgentBell-linux-${{ matrix.arch }}.deb
+            dist/AgentBell-linux-${{ matrix.arch }}.rpm
             dist/SHA256SUMS-linux-${{ matrix.arch }}.txt
           if-no-files-found: error
           retention-days: 30
@@ -218,6 +251,12 @@ jobs:
             release/AgentBell-*.exe
             release/AgentBell-linux-x64.tar.gz
             release/AgentBell-linux-arm64.tar.gz
+            release/AgentBell-linux-x64.AppImage
+            release/AgentBell-linux-arm64.AppImage
+            release/AgentBell-linux-x64.deb
+            release/AgentBell-linux-arm64.deb
+            release/AgentBell-linux-x64.rpm
+            release/AgentBell-linux-arm64.rpm
             release/SHA256SUMS.txt
           body_path: docs/releases/${{ github.ref_name }}.md
           fail_on_unmatched_files: true
@@ -230,6 +269,12 @@ jobs:
             release/AgentBell-*.exe
             release/AgentBell-linux-x64.tar.gz
             release/AgentBell-linux-arm64.tar.gz
+            release/AgentBell-linux-x64.AppImage
+            release/AgentBell-linux-arm64.AppImage
+            release/AgentBell-linux-x64.deb
+            release/AgentBell-linux-arm64.deb
+            release/AgentBell-linux-x64.rpm
+            release/AgentBell-linux-arm64.rpm
             release/SHA256SUMS.txt
           generate_release_notes: true
           fail_on_unmatched_files: true

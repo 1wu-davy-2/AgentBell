@@ -598,6 +598,20 @@ def _extract_linux_binary(archive: Path, destination: Path) -> Path:
     return target
 
 
+def linux_install_blocker(
+    executable: str | Path, env: Mapping[str, str] | None = None
+) -> str:
+    environment = os.environ if env is None else env
+    if environment.get("APPIMAGE"):
+        return "AppImage 版本不支持原地更新，请下载新的 AppImage 替换当前文件"
+    target = Path(executable).resolve()
+    if not target.exists():
+        return ""
+    if not os.access(target, os.W_OK) or not os.access(target.parent, os.W_OK):
+        return "当前安装由系统包管理器管理，请使用 apt 或 dnf 更新"
+    return ""
+
+
 def _install_linux_update(
     source: Path,
     *,
@@ -613,6 +627,10 @@ def _install_linux_update(
     if not source.name.lower().endswith(".tar.gz"):
         return InstallResult(False, "安装包不是 Linux 的 tar.gz 文件")
     target = Path(executable or sys.executable).resolve()
+    environment = dict(os.environ if env is None else env)
+    blocked = linux_install_blocker(target, environment)
+    if blocked:
+        return InstallResult(False, blocked)
     directory = Path(script_dir) if script_dir is not None else updates_dir()
     try:
         directory.mkdir(parents=True, exist_ok=True)
@@ -622,7 +640,6 @@ def _install_linux_update(
     if binary == target:
         return InstallResult(False, "安装包与当前程序是同一个文件")
 
-    environment = dict(os.environ if env is None else env)
     environment.update(
         {
             "AGENTBELL_UPDATE_PID": str(pid if pid is not None else os.getpid()),

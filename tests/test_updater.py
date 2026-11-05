@@ -10,6 +10,7 @@ import urllib.error
 import pytest
 
 from agentbell import __version__
+import agentbell.updater as updater
 from agentbell.updater import (
     API_ROOT,
     REPLACE_SCRIPT,
@@ -25,6 +26,7 @@ from agentbell.updater import (
     is_allowed_download_url,
     is_newer,
     linux_arch,
+    linux_install_blocker,
     normalize_repo,
     select_asset,
     version_key,
@@ -113,8 +115,23 @@ def test_select_asset_linux_picks_exact_arch_archive():
         "AgentBell-linux-arm64.tar.gz", "https://github.com/a/b/arm.tar.gz"
     )
     other = ReleaseAsset("AgentBell.exe", "https://github.com/a/b/x.exe")
+    package_assets = [
+        ReleaseAsset(
+            "AgentBell-linux-x64.AppImage", "https://github.com/a/b/x.AppImage"
+        ),
+        ReleaseAsset("AgentBell-linux-x64.deb", "https://github.com/a/b/x.deb"),
+        ReleaseAsset("AgentBell-linux-x64.rpm", "https://github.com/a/b/x.rpm"),
+    ]
     assert (
         select_asset([x64, arm, other], platform_name="linux", machine="x86_64")
+        is x64
+    )
+    assert (
+        select_asset(
+            [*package_assets, x64, arm, other],
+            platform_name="linux",
+            machine="x86_64",
+        )
         is x64
     )
     assert (
@@ -122,6 +139,7 @@ def test_select_asset_linux_picks_exact_arch_archive():
         is arm
     )
     assert select_asset([other], platform_name="linux") is None
+    assert select_asset(package_assets, platform_name="linux") is None
     assert asset_label("linux", "aarch64") == "AgentBell-linux-arm64.tar.gz"
     assert asset_label("windows") == "AgentBell.exe"
 
@@ -461,6 +479,40 @@ def test_install_update_linux_rejects_archive_without_binary(tmp_path):
     )
     assert result.ok is False
     assert "AgentBell" in result.message
+
+
+def test_linux_install_blocker_reports_appimage_and_system_installs(tmp_path, monkeypatch):
+    target = tmp_path / "AgentBell"
+    target.write_bytes(b"MZ old")
+
+    assert "AppImage" in linux_install_blocker(
+        target, {"APPIMAGE": str(tmp_path / "AgentBell.AppImage")}
+    )
+
+    monkeypatch.setattr(updater.os, "access", lambda path, mode: False)
+    assert "包管理器" in linux_install_blocker(target, {})
+    assert linux_install_blocker(tmp_path / "missing", {}) == ""
+
+
+def test_install_update_refuses_appimage_before_extracting(tmp_path):
+    source = tmp_path / "AgentBell-linux-x64.tar.gz"
+    source.write_bytes(b"not a real archive")
+    target = tmp_path / "AgentBell"
+    target.write_bytes(b"MZ old")
+
+    result = install_update(
+        source,
+        frozen=True,
+        executable=str(target),
+        script_dir=tmp_path / "updates",
+        popen=lambda *args, **kwargs: object(),
+        platform_name="linux",
+        env={"APPIMAGE": str(tmp_path / "AgentBell.AppImage")},
+    )
+
+    assert result.ok is False
+    assert "AppImage" in result.message
+    assert not (tmp_path / "updates").exists()
 
 
 def test_install_update_rejects_missing_or_empty_file(tmp_path):
