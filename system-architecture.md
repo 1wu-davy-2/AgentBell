@@ -48,7 +48,7 @@
 
 2.12.0 新增只读动作：`/notify` 的 `actions` 接受 `session` 与 `timeline`，分别打开内置会话记录与本次运行时间线。两类动作只读取通知自身的 `session_id` / `run_id`，忽略 `value`，不执行任何外部命令；未知标识或缺少标识时给出非阻塞提示。动作顺序固定为 `focus` → `session` → `timeline` → 其他，弹窗与通知中心的首个按钮因此总是「回到终端」或「查看记录」。不提供批准权限、自动继续或发送提示词的动作，审批必须回到终端完成。
 
-2.17.0 把 Linux 产物扩展为四种格式：x64 与 arm64 各生成 `tar.gz`、`AppImage`、`deb` 与 `rpm`，由 `scripts/build_linux_packages.py` 统一构建。AppImage 使用固定版本的 appimagetool 1.9.1 与 type2-runtime 20251108，AppDir 内含 `AppRun`、桌面项、图标与 `/usr/bin/AgentBell`；deb 安装到 `/opt/agentbell/AgentBell` 并提供 `/usr/bin/agentbell` 符号链接；rpm 关闭 strip、debuginfo 与 build-id，避免破坏 PyInstaller 单文件。更新器仍只选择 tar.gz；AppImage 通过 `APPIMAGE` 环境变量识别，deb/rpm 的安装目录通常不可写，二者都拒绝原地替换并提示下载新包或使用 apt/dnf。
+2.17.0 把 Linux 产物扩展为四种格式：x64 与 arm64 各生成 `tar.gz`、`AppImage`、`deb` 与 `rpm`，由 `scripts/build_linux_packages.py` 统一构建。2.17.1 修复了 CI 中 `appimagetool` 相对路径未解析为绝对路径、以及等待扫描测试 30 秒边界偶发失败的问题。AppImage 使用固定版本的 appimagetool 1.9.1 与 type2-runtime 20251108，AppDir 内含 `AppRun`、桌面项、图标与 `/usr/bin/AgentBell`；deb 安装到 `/opt/agentbell/AgentBell` 并提供 `/usr/bin/agentbell` 符号链接；rpm 关闭 strip、debuginfo 与 build-id，避免破坏 PyInstaller 单文件。更新器仍只选择 tar.gz；AppImage 通过 `APPIMAGE` 环境变量识别，deb/rpm 的安装目录通常不可写，二者都拒绝原地替换并提示下载新包或使用 apt/dnf。
 
 2.16.1 新增 Linux x64 / arm64 通用版：窗口聚焦、「回到终端」、全屏 / 会议 / 锁屏检测、全局快捷键、托盘、终端启动与包内更新全部按平台实现。X11 会话功能完整；Wayland 会话可正常弹窗与使用通知中心，但自动降级为无全局快捷键、无窗口聚焦、无全屏 / 空闲检测，并在界面与日志中提示。Release 同时提供 `AgentBell.exe`、`AgentBell-linux-x64.tar.gz` 与 `AgentBell-linux-arm64.tar.gz`，更新器按当前架构选择资产；插件 Hook 在 Linux 上改用 `AgentBell --hook` 子命令，便携 Node 与 Agent CLI 支持 Linux `tar.xz`，配置中的 API Key 在 Linux 优先写入 Secret Service。2.16.0 标签因 Linux CI 测试未通过而未发布。
 
@@ -493,7 +493,7 @@ runtime/
 发布约定：
 
 - Release 资产包含稳定命名的 `AgentBell.exe`、每种架构的 `AgentBell-linux-<arch>.tar.gz`、`.AppImage`、`.deb`、`.rpm`，并合并各平台校验文件为一个 `SHA256SUMS.txt`。Windows 工作流自动选用编号最大的 `AgentBell<数字>.spec`（忽略 `AgentBell-linux.spec`），把产物复制一份为 `AgentBell.exe`；Linux 使用 `AgentBell-linux.spec`，产物名固定为 `AgentBell` 后交给 `scripts/build_linux_packages.py` 生成四种格式。
-- 打 tag 前先把 `agentbell/__init__.py` 的 `__version__` 改成同一版本；工作流会校验 `v2.17.0` 与 `2.17.0` 一致，不一致时拒绝发布。
+- 打 tag 前先把 `agentbell/__init__.py` 的 `__version__` 改成同一版本；工作流会校验 `v2.17.1` 与 `2.17.1` 一致，不一致时拒绝发布。
 - 发布使用 GitHub Actions 的 `contents: write` 权限；fork 或 PR 构建只上传 artifact，不会发 Release。
 
 ### 历史
@@ -1078,7 +1078,7 @@ python -m PyInstaller --noconfirm --clean AgentBell-linux.spec
 # 四种格式（x64 机器；不传 AppImage 工具时只生成 tar.gz + deb + rpm）
 python scripts/build_linux_packages.py \
   --binary dist/AgentBell \
-  --version 2.17.0 \
+  --version 2.17.1 \
   --arch x64 \
   --appimagetool ./appimagetool \
   --appimage-runtime ./runtime-x86_64
@@ -1113,11 +1113,11 @@ Linux 包解压后直接运行 `./AgentBell`；`config.json`、`logs/`、`agentb
 发布新版本：
 
 ```bash
-# 1. 修改 agentbell/__init__.py 的 __version__，例如 2.17.0
+# 1. 修改 agentbell/__init__.py 的 __version__，例如 2.17.1
 # 2. 提交并打同版本 tag（tag 去掉 v 后必须与 __version__ 完全一致）
 git add -A
-git commit -m "feat: 升级 AgentBell 2.17.0 ..."
-git tag v2.17.0
+git commit -m "feat: 升级 AgentBell 2.17.1 ..."
+git tag v2.17.1
 git push origin develop --tags
 ```
 

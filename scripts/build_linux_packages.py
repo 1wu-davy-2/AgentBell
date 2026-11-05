@@ -225,6 +225,8 @@ def build_appimage(
     env["ARCH"] = APPIMAGE_ARCH[arch]
     env.setdefault("QT_QPA_PLATFORM", "offscreen")
     destination.unlink(missing_ok=True)
+    tool = tool.resolve()
+    runtime = runtime.resolve()
     subprocess.run(
         [
             str(tool),

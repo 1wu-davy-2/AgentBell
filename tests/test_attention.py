@@ -104,7 +104,7 @@ def test_sidechain_entries_are_ignored():
     assert detect_wait([assistant([tool_use()], isSidechain=True)]) is None
 
 
-def write_session(path: Path, entries: list[dict], age_seconds: float = 30) -> None:
+def write_session(path: Path, entries: list[dict], age_seconds: float = 35) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         "\n".join(json.dumps(entry, ensure_ascii=False) for entry in entries) + "\n",

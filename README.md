@@ -47,7 +47,7 @@ AgentBell 是一个只做提醒的 Windows / Linux 桌面工具。AI Agent 每�
 
 ### 最近更新
 
-- **v2.17.0**：Linux 安装包扩展为四种格式。x64 与 arm64 现在各提供 `tar.gz`、`AppImage`、`deb` 与 `rpm`：tar.gz 解压即用并保留原地自动更新，AppImage 单文件直接运行，deb / rpm 可交给系统包管理器安装与卸载。全部格式由同一条 CI 流水线构建，并附 SHA-256 校验；AppImage 与系统包安装不再尝试原地替换，更新时下载新包或用包管理器升级。Windows 行为保持不变。
+- **v2.17.1**：Linux 安装包扩展为四种格式。x64 与 arm64 现在各提供 `tar.gz`、`AppImage`、`deb` 与 `rpm`：tar.gz 解压即用并保留原地自动更新，AppImage 单文件直接运行，deb / rpm 可交给系统包管理器安装与卸载。全部格式由同一条 CI 流水线构建，并附 SHA-256 校验；AppImage 与系统包安装不再尝试原地替换，更新时下载新包或用包管理器升级。Windows 行为保持不变。v2.17.0 标签因 CI 未通过而没有发布，2.17.1 修复了 AppImage 工具路径与等待扫描测试的时序边界，功能与 2.17.0 相同。
 - **v2.16.1**：新增 Linux x64 / arm64 版本。Release 同时提供 `AgentBell-linux-x64.tar.gz` 和 `AgentBell-linux-arm64.tar.gz`，解压后直接运行 `AgentBell`；X11 桌面支持全局快捷键、回到终端、锁屏 / 空闲检测、终端启动和 Hook 接入，Wayland 下自动降级为基础提醒。Windows 行为保持不变。v2.16.0 标签因 Linux CI 测试未通过而没有发布，2.16.1 修复了跨平台路径解析与测试假设，功能与 2.16.0 相同。
 - **v2.15.0**：全屏提醒支持「仅在主屏显示卡片」。多显示器仍逐屏铺满背景与遮罩，勾选后只有主屏绘制提醒卡片，副屏保留背景图；点击任意屏幕仍会关闭全部提醒。设置页「全屏显示区域」新增开关，配置项为 `overlay_area.card_on_primary_only`，默认关闭。
 - **v2.14.0**：一键接入提醒。运行环境页新增「提醒接入」，可把 Claude Code（`~/.claude/settings.json`）、Gemini CLI（`~/.gemini/settings.json`）和 Grok（`~/.grok/hooks/agentbell.json`）的等待确认、提问与每轮结束 Hook 写入用户配置；Codex 通过顶层 `notify` 支持每轮结束提醒。写入前展示完整改动并备份，只追加带标记的条目，已有 Hook 保持不变，可随时撤销；已存在的 Codex 自定义 `notify` 不会被覆盖。
@@ -331,16 +331,16 @@ Linux 原生构建（不跨架构编译）：
 pip install -r requirements-dev.txt
 python -m PyInstaller --noconfirm AgentBell-linux.spec
 # 仅 tar.gz + deb + rpm（不传 AppImage 工具）
-python scripts/build_linux_packages.py --binary dist/AgentBell --version 2.17.0 --arch x64
+python scripts/build_linux_packages.py --binary dist/AgentBell --version 2.17.1 --arch x64
 # 生成全部四种格式
-python scripts/build_linux_packages.py --binary dist/AgentBell --version 2.17.0 --arch x64 \
+python scripts/build_linux_packages.py --binary dist/AgentBell --version 2.17.1 --arch x64 \
   --appimagetool ./appimagetool --appimage-runtime ./runtime-x86_64
 ```
 
 推送到 `develop` 会触发 Windows 与 Linux（x64 / arm64）测试和打包；推送 `v*` 标签会校验标签与 `agentbell/__init__.py` 的 `__version__` 一致，然后自动发布 Release。工作流会选用编号最大的 `AgentBell<N>.spec` 并把产物复制为稳定命名的 `AgentBell.exe`；Linux 按架构生成 `AgentBell-linux-<arch>.tar.gz`、`.AppImage`、`.deb` 与 `.rpm`，每个架构附一份 `SHA256SUMS-linux-<arch>.txt`，最后合并一份 `SHA256SUMS.txt`。
 
 ```bash
-git tag v2.17.0
+git tag v2.17.1
 git push origin develop --tags
 ```
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import tarfile
+from pathlib import Path
 
 from scripts import build_linux_packages as packages
 
@@ -28,6 +29,26 @@ def test_apprun_executes_bundled_binary():
 
     assert script.startswith("#!/bin/sh")
     assert 'exec "$HERE/usr/bin/AgentBell" "$@"' in script
+
+
+def test_build_appimage_resolves_tool_paths(tmp_path, monkeypatch):
+    commands: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        commands.append(command)
+        Path(command[-1]).write_bytes(b"appimage")
+
+    monkeypatch.setattr(packages.subprocess, "run", fake_run)
+    packages.build_appimage(
+        tmp_path / "AgentBell.AppDir",
+        tmp_path / "AgentBell-linux-x64.AppImage",
+        arch="x64",
+        tool=tmp_path / "appimagetool",
+        runtime=tmp_path / "appimage-runtime",
+    )
+
+    assert commands[0][0] == str((tmp_path / "appimagetool").resolve())
+    assert commands[0][4] == str((tmp_path / "appimage-runtime").resolve())
 
 
 def test_deb_control_maps_architectures_and_dependencies():
