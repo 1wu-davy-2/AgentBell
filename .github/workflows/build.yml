@@ -177,15 +177,15 @@ jobs:
             $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
             "$hash  $($_.Name)"
           }
-          Set-Content -Path dist/SHA256SUMS.txt -Value $lines -Encoding ascii
-          Get-Content dist/SHA256SUMS.txt
+          Set-Content -Path "dist/SHA256SUMS-windows-${{ matrix.arch }}.txt" -Value $lines -Encoding ascii
+          Get-Content "dist/SHA256SUMS-windows-${{ matrix.arch }}.txt"
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: AgentBell-windows-${{ matrix.arch }}
           path: |
             dist/AgentBell*.exe
-            dist/SHA256SUMS.txt
+            dist/SHA256SUMS-windows-${{ matrix.arch }}.txt
           if-no-files-found: error
           retention-days: 30
 

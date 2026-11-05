@@ -50,6 +50,8 @@
 
 2.18.0 新增 Windows ARM64 与 macOS 双架构：Windows 在 `windows-11-arm` runner 上用原生 Arm64 Python、Arm64 PySide6 与 PyInstaller 构建，产物命名 `AgentBell-arm64.exe`，与 x64 的 `AgentBell.exe` 并存。更新器新增按架构选资产：Arm64 只接受名称含 `arm64` 的 exe，x64 排除 arm64 资产，绝不交叉替换。macOS 使用 `AgentBell-macos.spec` 生成 `.app`（`EXE` + `COLLECT` + `BUNDLE`），`scripts/make_macos_icon.py` 通过 QSvgRenderer 与 `iconutil` 生成 `.icns`，`scripts/build_macos_packages.py` 负责 ad-hoc `codesign`、`ditto` zip 与 `hdiutil` dmg，并按架构输出 `AgentBell-macos-<arch>.dmg` / `.zip`。冻结的 macOS 应用把 `config.json`、`logs/`、`agentbell.db` 与 `chat/` 写入 `~/Library/Application Support/AgentBell`，应用包保持只读；自启写入 `~/Library/LaunchAgents/com.agentbell.app.plist`。macOS 不参与原地自动更新，更新器只打开 Release 页面。提示音在 macOS 走 `afplay`，Linux 走 `paplay` / `aplay`，端口占用提示按平台给出 `lsof` / `ss` / `netstat` 命令。
 
+2.18.2 修复 Release 校验文件：Windows x64 与 arm64 打包任务此前都写 `dist/SHA256SUMS.txt`，两个 artifact 经 `download-artifact` 合并后同名文件互相覆盖，最终 `SHA256SUMS.txt` 只保留 x64 的两个 exe。现在按架构输出 `SHA256SUMS-windows-<arch>.txt`，与 Linux / macOS 的命名方式一致，合并后覆盖全部 16 个可下载产物。
+
 2.18.1 修复 arm64 构建机上的测试：更新器与资产选择用例此前依赖宿主机默认架构，在 Windows / Linux / macOS 的 arm64 runner 上按 arm64 选包导致断言失败，现在统一显式传入 `machine`；时间格式用例改为按本地时区处理跨夏令时的旧时间。产品代码未改动，功能与 2.18.0 相同。2.18.0 标签因 arm64 测试失败而没有发布。
 
 2.17.0 把 Linux 产物扩展为四种格式：x64 与 arm64 各生成 `tar.gz`、`AppImage`、`deb` 与 `rpm`，由 `scripts/build_linux_packages.py` 统一构建。2.17.1 修复了 CI 中 `appimagetool` 相对路径未解析为绝对路径、以及等待扫描测试 30 秒边界偶发失败的问题。AppImage 使用固定版本的 appimagetool 1.9.1 与 type2-runtime 20251108，AppDir 内含 `AppRun`、桌面项、图标与 `/usr/bin/AgentBell`；deb 安装到 `/opt/agentbell/AgentBell` 并提供 `/usr/bin/agentbell` 符号链接；rpm 关闭 strip、debuginfo 与 build-id，避免破坏 PyInstaller 单文件。更新器仍只选择 tar.gz；AppImage 通过 `APPIMAGE` 环境变量识别，deb/rpm 的安装目录通常不可写，二者都拒绝原地替换并提示下载新包或使用 apt/dnf。
