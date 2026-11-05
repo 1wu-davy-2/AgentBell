@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import sys
 from ctypes import wintypes
 
 from PySide6.QtCore import QObject, QTimer, Signal
@@ -10,6 +11,7 @@ from .config import AppConfig
 from .policy import Presence
 
 _IS_WINDOWS = os.name == "nt"
+_IS_LINUX = sys.platform.startswith("linux")
 
 if _IS_WINDOWS:  # pragma: no branch - platform dependent
     _user32 = ctypes.WinDLL("user32", use_last_error=True)
@@ -147,6 +149,13 @@ def _session_flags() -> int | None:
 
 
 def idle_seconds() -> float:
+    if _IS_LINUX:
+        try:
+            from . import linux_desktop
+
+            return linux_desktop.idle_seconds()
+        except Exception:
+            return 0.0
     if not _IS_WINDOWS:
         return 0.0
     info = _LastInputInfo()
@@ -159,6 +168,13 @@ def idle_seconds() -> float:
 
 
 def foreground_window_class() -> str:
+    if _IS_LINUX:
+        try:
+            from . import linux_desktop
+
+            return linux_desktop.foreground_window_class()
+        except Exception:
+            return ""
     if not _IS_WINDOWS:
         return ""
     hwnd = _user32.GetForegroundWindow()
@@ -170,6 +186,13 @@ def foreground_window_class() -> str:
 
 
 def foreground_process_name() -> str:
+    if _IS_LINUX:
+        try:
+            from . import linux_desktop
+
+            return linux_desktop.foreground_process_name()
+        except Exception:
+            return ""
     if not _IS_WINDOWS:
         return ""
     hwnd = _user32.GetForegroundWindow()
@@ -197,6 +220,13 @@ def foreground_process_name() -> str:
 
 
 def foreground_is_fullscreen() -> bool:
+    if _IS_LINUX:
+        try:
+            from . import linux_desktop
+
+            return linux_desktop.foreground_fullscreen()
+        except Exception:
+            return False
     if not _IS_WINDOWS:
         return False
     hwnd = _user32.GetForegroundWindow()
@@ -232,7 +262,12 @@ def active_meeting_process(processes: tuple[str, ...]) -> str:
     foreground = foreground_process_name()
     if not foreground:
         return ""
-    return foreground if foreground in processes else ""
+    if foreground in processes:
+        return foreground
+    stem = foreground.rsplit(".", 1)[0]
+    if any(stem == process.rsplit(".", 1)[0] for process in processes):
+        return foreground
+    return ""
 
 
 def _screensaver_running() -> bool:
@@ -277,6 +312,13 @@ def _input_desktop_name() -> str:
 
 def session_locked() -> bool:
     """Best-effort detection of lock screen, screensaver or monitor sleep."""
+    if _IS_LINUX:
+        try:
+            from . import linux_desktop
+
+            return linux_desktop.session_locked()
+        except Exception:
+            return False
     if not _IS_WINDOWS:
         return False
     flags = _session_flags()

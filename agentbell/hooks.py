@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -234,8 +235,26 @@ def _load_json(path: Path) -> tuple[dict, bool]:
     return data, bom
 
 
-def _command(spec: HookAgent, root: Path) -> str:
-    args = [
+def _hook_args(spec: HookAgent, root: Path) -> list[str]:
+    if os.name != "nt":
+        if getattr(sys, "frozen", False):
+            return [
+                str(Path(sys.executable).resolve()),
+                "--hook",
+                "--agent",
+                spec.id,
+            ]
+        script = Path(root) / "run.py"
+        if not script.is_file():
+            script = default_app_dir() / "run.py"
+        return [
+            str(Path(sys.executable).resolve()),
+            str(script),
+            "--hook",
+            "--agent",
+            spec.id,
+        ]
+    return [
         "powershell.exe",
         "-NoProfile",
         "-NonInteractive",
@@ -248,6 +267,12 @@ def _command(spec: HookAgent, root: Path) -> str:
         "-Agent",
         spec.id,
     ]
+
+
+def _command(spec: HookAgent, root: Path) -> str:
+    args = _hook_args(spec, root)
+    if os.name != "nt":
+        return shlex.join(args)
     return subprocess.list2cmdline(args)
 
 
@@ -255,7 +280,16 @@ def _is_agentbell_handler(handler: object) -> bool:
     if not isinstance(handler, dict):
         return False
     command = handler.get("command")
-    return isinstance(command, str) and HELPER_NAME.casefold() in command.casefold()
+    if not isinstance(command, str):
+        return False
+    folded = command.casefold()
+    if HELPER_NAME.casefold() in folded:
+        return True
+    return (
+        "--hook" in folded
+        and "--agent" in folded
+        and ("agentbell" in folded or "run.py" in folded)
+    )
 
 
 def _handler_count(data: dict) -> int:
@@ -366,19 +400,7 @@ def _count_agentbell_handlers(data: dict) -> int:
 
 
 def _codex_block(spec: HookAgent, root: Path) -> str:
-    args = [
-        "powershell.exe",
-        "-NoProfile",
-        "-NonInteractive",
-        "-WindowStyle",
-        "Hidden",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        str(helper_target(root)),
-        "-Agent",
-        spec.id,
-    ]
+    args = _hook_args(spec, root)
     return (
         "# agentbell-hook (managed by AgentBell; 可在运行环境页撤销)\n"
         f"notify = {json.dumps(args, ensure_ascii=False)}\n"
@@ -478,9 +500,10 @@ def plan_install(
     if spec is None:
         raise HookError(f"未知的接入目标：{agent_id}")
     base = Path(root or default_app_dir())
-    source = helper_source()
-    if not source.is_file():
-        raise HookError(f"缺少接入脚本：{source}")
+    if os.name == "nt":
+        source = helper_source()
+        if not source.is_file():
+            raise HookError(f"缺少接入脚本：{source}")
     path = hook_config_path(spec, home)
     detected_root = _detection_root(spec, path)
     if not detected_root.is_dir():
@@ -571,7 +594,7 @@ def install_hook(
 ) -> HookResult:
     plan = plan_install(agent_id, home, root)
     base = Path(root or default_app_dir())
-    helper = _copy_helper(base)
+    helper = _copy_helper(base) if os.name == "nt" else None
     path = plan.config_path
     path.parent.mkdir(parents=True, exist_ok=True)
     with _config_lock(path):
@@ -580,12 +603,13 @@ def install_hook(
             if HOOK_MARKER in text:
                 if not _CODEX_BLOCK.search(text):
                     raise HookError(_CODEX_UNRESOLVED)
+                suffix = f"（{helper}）" if helper else ""
                 return HookResult(
                     agent_id,
                     path,
                     None,
                     False,
-                    f"{plan.agent.name} 结束提醒已接入（{helper}）",
+                    f"{plan.agent.name} 结束提醒已接入{suffix}",
                 )
             if _CODEX_NOTIFY.search(text):
                 raise HookError("Codex 已有自定义 notify 配置，未做覆盖")
@@ -603,12 +627,13 @@ def install_hook(
         data, bom = _load_json(path)
         after = _add_json_hooks(data, plan.agent, _command(plan.agent, base))
         if after == data:
+            suffix = f"（{helper}）" if helper else ""
             return HookResult(
                 agent_id,
                 path,
                 None,
                 False,
-                f"{plan.agent.name} 已接入（{helper}）",
+                f"{plan.agent.name} 已接入{suffix}",
             )
         backup = _backup(path)
         _write_text(path, json.dumps(after, ensure_ascii=False, indent=2) + "\n", bom=bom)

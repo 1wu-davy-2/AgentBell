@@ -89,7 +89,7 @@ def build_agent_instructions(port: int, token: str = "") -> str:
             open/link 用 http(s) 链接；copy 用要复制的文本；path 用本地绝对路径；retry 只能用本机 http 回调地址
             session 打开内置会话记录（需填写 session_id）；timeline 打开本次运行时间线（需 run_id 或 session_id/dedupe_key）
             这两类动作只读，不使用 value；AgentBell 不会批准权限、自动继续或发送提示词，审批必须回到终端完成
-  origin    强烈建议每轮都填，来源位置（仅 Windows），用于生成「回到终端」按钮：
+  origin    强烈建议每轮都填，来源位置（Windows / Linux X11），用于生成「回到终端」按钮：
             {{"pid": 12345, "window_title": "可选，终端窗口标题", "working_dir": "可选，项目目录"}}
             推荐填当前进程 PID；AgentBell 会沿父进程链找到宿主终端窗口，只聚焦窗口，不会选中具体标签页
             只填 working_dir 时，会用目录名匹配标题里含该名字的终端/编辑器窗口，准确度低于 pid

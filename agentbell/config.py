@@ -851,6 +851,8 @@ def save_config(path: Path, config: AppConfig) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         temp_path = path.with_name(f".{path.name}.tmp")
         temp_path.write_text(payload, encoding="utf-8")
+        if os.name != "nt":
+            os.chmod(temp_path, 0o600)
         os.replace(temp_path, path)
     except OSError as exc:
         raise ConfigError(f"无法写入配置文件 {path}：{exc}") from exc

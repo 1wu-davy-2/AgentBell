@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -70,6 +71,70 @@ def test_launch_rejects_missing_project(tmp_path):
 
     assert result.ok is False
     assert "项目目录不存在" in result.message
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"), reason="terminal launch is Linux-only"
+)
+def test_launch_linux_terminal_uses_static_script_and_env(tmp_path, monkeypatch):
+    import shutil
+
+    captured: dict[str, object] = {}
+
+    def fake_which(name, path=None):
+        return f"/usr/bin/{name}" if name in {"bash", "xterm"} else None
+
+    def fake_popen(args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return SimpleNamespace(pid=4321)
+
+    monkeypatch.setattr(shutil, "which", fake_which)
+    project = tmp_path / "demo"
+    project.mkdir()
+    prompt = '请阅读项目；带 & 中文 " 引号'
+    result = launch_agent(
+        _availability("claude-code", "/usr/bin/claude"),
+        str(project),
+        prompt,
+        env={"PATH": ""},
+        popen=fake_popen,
+    )
+
+    assert result.ok is True
+    assert result.pid == 4321
+    assert result.prompt_sent is True
+    args = captured["args"]
+    assert args[0] == "/usr/bin/xterm"
+    script = args[-1]
+    assert prompt not in script
+    assert prompt not in " ".join(args)
+    kwargs = captured["kwargs"]
+    assert kwargs["env"]["AGENTBELL_PROMPT"] == prompt
+    assert kwargs["env"]["AGENTBELL_EXE"] == "/usr/bin/claude"
+    assert kwargs["env"]["AGENTBELL_CWD"] == str(project)
+    assert kwargs["env"]["SHELL"] == "/usr/bin/bash"
+    assert kwargs["cwd"] == str(project)
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"), reason="terminal launch is Linux-only"
+)
+def test_launch_linux_missing_terminal_is_reported(tmp_path, monkeypatch):
+    import shutil
+
+    monkeypatch.setattr(shutil, "which", lambda *args, **kwargs: None)
+    project = tmp_path / "demo"
+    project.mkdir()
+    result = launch_agent(
+        _availability("claude-code", "/usr/bin/claude"),
+        str(project),
+        "hi",
+        env={"PATH": ""},
+        popen=lambda *args, **kwargs: SimpleNamespace(pid=1),
+    )
+    assert result.ok is False
+    assert "终端模拟器" in result.message
 
 
 @pytest.mark.skipif(os.name != "nt", reason="terminal launch is Windows-only")

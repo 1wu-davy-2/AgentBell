@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import replace
 from pathlib import Path
 
@@ -364,7 +365,10 @@ class SettingsDialog(QDialog):
         self._token_edit.setEchoMode(QLineEdit.EchoMode.Password)
         form.addRow("访问令牌", self._token_edit)
 
-        self._autostart_check = QCheckBox("登录 Windows 后自动启动", group)
+        autostart_text = (
+            "登录 Windows 后自动启动" if os.name == "nt" else "登录桌面后自动启动"
+        )
+        self._autostart_check = QCheckBox(autostart_text, group)
         self._autostart_check.setChecked(self.config.autostart)
         form.addRow("", self._autostart_check)
 
@@ -425,8 +429,14 @@ class SettingsDialog(QDialog):
             "GitHub 仓库 owner/repo，例如 your-name/AgentBell"
         )
         update_form.addRow("更新仓库", self._update_repo_edit)
+        if os.name == "nt":
+            asset_hint = "稳定命名的 AgentBell.exe"
+        else:
+            asset_hint = (
+                "AgentBell-linux-x64.tar.gz 或 AgentBell-linux-arm64.tar.gz"
+            )
         update_hint = QLabel(
-            "留空表示不联网检查。Release 需要附带稳定命名的 AgentBell.exe；"
+            f"留空表示不联网检查。Release 需要附带{asset_hint}；"
             "下载只接受 github.com 及 GitHub 的发布资源域名。",
             update_group,
         )

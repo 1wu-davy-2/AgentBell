@@ -27,6 +27,10 @@ def _make_env(base: Path, *, dirs: tuple[str, ...] = (".claude", ".gemini", ".gr
     return home, root
 
 
+def _installed(command: str) -> bool:
+    return hooks._is_agentbell_handler({"command": command})
+
+
 def _commands(data: dict) -> list[str]:
     commands: list[str] = []
     for groups in (data.get("hooks") or {}).values():
@@ -153,22 +157,26 @@ def test_claude_install_preserves_existing_and_uninstall_restores(tmp_path):
         for handler in group["hooks"]
     ]
     assert "echo user-hook" in stop_commands
-    assert any("agentbell-hook.ps1" in command for command in stop_commands)
+    assert any(_installed(command) for command in stop_commands)
     for event in ("UserPromptSubmit", "Notification", "Stop"):
         commands = [
             handler.get("command", "")
             for group in data["hooks"][event]
             for handler in group["hooks"]
         ]
-        assert sum("agentbell-hook.ps1" in command for command in commands) == 1
+        assert sum(_installed(command) for command in commands) == 1
         assert all(
             handler.get("timeout") == 10
             for group in data["hooks"][event]
             for handler in group["hooks"]
-            if "agentbell-hook.ps1" in handler.get("command", "")
+            if _installed(handler.get("command", ""))
         )
-    assert "powershell.exe" in stop_commands[-1]
-    assert "-Agent claude" in stop_commands[-1]
+    if os.name == "nt":
+        assert "powershell.exe" in stop_commands[-1]
+        assert "-Agent claude" in stop_commands[-1]
+    else:
+        assert "--hook" in stop_commands[-1]
+        assert "--agent claude" in stop_commands[-1]
 
     again = hooks.install_hook("claude", home=home, root=root)
     assert again.changed is False
@@ -180,7 +188,7 @@ def test_claude_install_preserves_existing_and_uninstall_restores(tmp_path):
     restored = json.loads(settings.read_text(encoding="utf-8"))
     assert restored["permissions"] == original["permissions"]
     assert restored["mcpServers"] == original["mcpServers"]
-    assert "agentbell-hook.ps1" not in " ".join(_commands(restored))
+    assert not any(_installed(command) for command in _commands(restored))
     assert "echo user-hook" in _commands(restored)
     status = hooks.hook_statuses(home=home, root=root)[0]
     assert status.installed is False
@@ -233,7 +241,7 @@ def test_grok_merges_user_hooks_and_keeps_file(tmp_path):
     assert removed.changed is True
     data = json.loads(hook_file.read_text(encoding="utf-8"))
     assert "echo user-grok" in _commands(data)
-    assert "agentbell-hook.ps1" not in " ".join(_commands(data))
+    assert not any(_installed(command) for command in _commands(data))
 
     hook_file.write_text(
         json.dumps({"hooks": {}}, ensure_ascii=False), encoding="utf-8"

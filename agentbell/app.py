@@ -1054,7 +1054,7 @@ class AgentBellApp(QObject):
             except Exception as exc:  # noqa: BLE001 - reported to the UI
                 self.update_failed.emit(str(exc))
             else:
-                self.update_downloaded.emit(path)
+                self.update_downloaded.emit((str(path), release.version))
 
         threading.Thread(
             target=worker, name="agentbell-update-download", daemon=True
@@ -1066,18 +1066,24 @@ class AgentBellApp(QObject):
             self._update_dialog.deleteLater()
             self._update_dialog = None
 
-    def _on_update_downloaded(self, path: object) -> None:
+    def _on_update_downloaded(self, payload: object) -> None:
         self._close_update_dialog()
         self._update_manual = False
         self._set_update_busy(False)
         if self._shutting_down:
             return
-        downloaded = Path(str(path))
+        version = ""
+        if isinstance(payload, tuple) and len(payload) == 2:
+            downloaded = Path(str(payload[0]))
+            version = str(payload[1])
+        else:
+            downloaded = Path(str(payload))
         self.logger.info("更新包已下载：%s", downloaded)
         result = install_update(
             downloaded,
             pid=os.getpid(),
             args=sys.argv[1:],
+            version=version,
         )
         if result.ok:
             self.tray.showMessage(
@@ -1092,7 +1098,7 @@ class AgentBellApp(QObject):
         box = QMessageBox(self._update_parent())
         box.setWindowTitle("更新已下载")
         box.setIcon(QMessageBox.Icon.Information)
-        box.setText(f"AgentBell {downloaded.stem} 的安装包已下载")
+        box.setText(f"AgentBell {version or downloaded.name} 的安装包已下载")
         box.setInformativeText(
             f"{result.message}\n\n文件位置：\n{downloaded}"
         )

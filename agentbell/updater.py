@@ -3,14 +3,17 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import platform as _platform
 import re
+import shlex
 import shutil
 import subprocess
 import sys
+import tarfile
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Callable, Mapping, Sequence
 from urllib.parse import urlsplit
 
@@ -31,6 +34,44 @@ ALLOWED_DOWNLOAD_HOSTS = frozenset(
 )
 _REPO_PART = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$")
 _VERSION_CORE = re.compile(r"^[vV]?(\d+)(?:\.(\d+))?(?:\.(\d+))?")
+
+LINUX_REPLACE_SCRIPT = """#!/bin/sh
+set -u
+target="$AGENTBELL_UPDATE_TARGET"
+source="$AGENTBELL_UPDATE_SOURCE"
+backup="$AGENTBELL_UPDATE_BACKUP"
+log="$AGENTBELL_UPDATE_LOG"
+pid="$AGENTBELL_UPDATE_PID"
+log_line() {
+    [ -n "$log" ] || return 0
+    { date '+%Y-%m-%dT%H:%M:%S%z'; printf ' %s\\n' "$1"; } >>"$log" 2>/dev/null || true
+}
+if [ -n "$pid" ]; then
+    waited=0
+    while kill -0 "$pid" 2>/dev/null; do
+        waited=$((waited + 1))
+        [ "$waited" -ge 120 ] && break
+        sleep 0.5
+    done
+fi
+sleep 0.5
+if [ -f "$target" ]; then
+    cp -p "$target" "$backup" 2>/dev/null || true
+fi
+staged="$target.new.$$"
+if cp -p "$source" "$staged" 2>/dev/null &&
+    chmod 755 "$staged" 2>/dev/null &&
+    mv -f "$staged" "$target" 2>/dev/null; then
+    log_line "updated ${AGENTBELL_UPDATE_VERSION:-unknown}"
+else
+    rm -f "$staged" 2>/dev/null || true
+    log_line "replace failed; keeping previous binary"
+fi
+if [ -n "${AGENTBELL_UPDATE_CWD:-}" ] && [ -d "$AGENTBELL_UPDATE_CWD" ]; then
+    cd "$AGENTBELL_UPDATE_CWD" || cd /
+fi
+@@RESTART@@
+"""
 
 REPLACE_SCRIPT = """$ErrorActionPreference = 'Stop'
 $target = $env:AGENTBELL_UPDATE_TARGET
@@ -192,7 +233,54 @@ def _request(url: str, headers: Mapping[str, str] | None = None):
     return urllib.request.Request(url, headers=merged)
 
 
-def select_asset(assets: Sequence[ReleaseAsset]) -> ReleaseAsset | None:
+def host_platform(platform_name: str | None = None) -> str:
+    if platform_name:
+        return platform_name
+    if os.name == "nt":
+        return "windows"
+    if sys.platform.startswith("linux"):
+        return "linux"
+    return sys.platform
+
+
+def linux_arch(machine: str = "") -> str:
+    text = (machine or _platform.machine()).strip().lower()
+    if text in {"aarch64", "arm64"}:
+        return "arm64"
+    return "x64"
+
+
+def asset_label(
+    platform_name: str | None = None, machine: str = ""
+) -> str:
+    if host_platform(platform_name) == "linux":
+        return f"AgentBell-linux-{linux_arch(machine)}.tar.gz"
+    return "AgentBell.exe"
+
+
+def select_asset(
+    assets: Sequence[ReleaseAsset],
+    *,
+    platform_name: str | None = None,
+    machine: str = "",
+) -> ReleaseAsset | None:
+    if host_platform(platform_name) == "linux":
+        arch = linux_arch(machine)
+        candidates = [
+            asset
+            for asset in assets
+            if asset.name.lower().endswith(".tar.gz")
+            and "agentbell" in asset.name.lower()
+            and f"linux-{arch}" in asset.name.lower()
+        ]
+        exact = [
+            asset
+            for asset in candidates
+            if asset.name.lower() == f"agentbell-linux-{arch}.tar.gz"
+        ]
+        if exact:
+            return exact[0]
+        return candidates[0] if candidates else None
     candidates = [
         asset
         for asset in assets
@@ -212,6 +300,8 @@ def fetch_latest_release(
     *,
     timeout: float = 8.0,
     opener: Callable[..., object] = urllib.request.urlopen,
+    platform_name: str | None = None,
+    machine: str = "",
 ) -> ReleaseInfo:
     normalized = normalize_repo(repo)
     if not normalized:
@@ -276,7 +366,7 @@ def fetch_latest_release(
         tag=tag,
         html_url=html_url,
         notes=notes,
-        asset=select_asset(assets),
+        asset=select_asset(assets, platform_name=platform_name, machine=machine),
     )
 
 
@@ -285,6 +375,8 @@ def check_for_update(
     current: str = __version__,
     *,
     fetch: Callable[[str], ReleaseInfo] = fetch_latest_release,
+    platform_name: str | None = None,
+    machine: str = "",
 ) -> UpdateCheck:
     normalized = normalize_repo(repo)
     if not normalized:
@@ -301,7 +393,11 @@ def check_for_update(
         return UpdateCheck(
             "up_to_date", f"已是最新版本 {current}", current, normalized, release
         )
-    suffix = "" if release.asset else "；该 Release 没有 AgentBell.exe"
+    suffix = (
+        ""
+        if release.asset
+        else f"；该 Release 没有 {asset_label(platform_name, machine)}"
+    )
     return UpdateCheck(
         "available",
         f"发现新版本 {release.version}{suffix}",
@@ -321,7 +417,7 @@ def download_release_asset(
 ) -> Path:
     asset = release.asset
     if asset is None:
-        raise UpdateError("该 Release 没有可下载的 AgentBell.exe")
+        raise UpdateError(f"该 Release 没有可下载的 {asset_label()}")
     if not is_allowed_download_url(asset.url):
         raise UpdateError("下载地址不在允许的 GitHub 域名内")
     if asset.size and asset.size > max_bytes:
@@ -329,7 +425,20 @@ def download_release_asset(
     safe_version = re.sub(r"[^A-Za-z0-9_.-]", "_", release.version)[:40] or "new"
     directory = Path(dest_dir) if dest_dir is not None else updates_dir()
     directory.mkdir(parents=True, exist_ok=True)
-    target = directory / f"AgentBell-{safe_version}.exe"
+    lower_name = asset.name.lower()
+    if lower_name.endswith(".tar.gz"):
+        extension = ".tar.gz"
+    elif lower_name.endswith(".tar.xz"):
+        extension = ".tar.xz"
+    elif lower_name.endswith(".exe"):
+        extension = ".exe"
+    else:
+        raise UpdateError("该 Release 的安装包格式不受支持")
+    arch = ""
+    match = re.search(r"(linux-(?:x64|arm64))", lower_name)
+    if match:
+        arch = f"-{match.group(1)}"
+    target = directory / f"AgentBell-{safe_version}{arch}{extension}"
     part = target.with_name(target.name + ".part")
 
     digest = hashlib.sha256()
@@ -390,31 +499,21 @@ def _powershell_path(env: Mapping[str, str]) -> str:
     return shutil.which("powershell", path=env.get("PATH", "")) or ""
 
 
-def install_update(
-    downloaded: Path,
+def _install_windows_update(
+    source: Path,
     *,
-    pid: int | None = None,
-    args: Sequence[str] = (),
-    frozen: bool | None = None,
-    executable: str | None = None,
-    script_dir: Path | None = None,
-    working_dir: str | None = None,
-    env: Mapping[str, str] | None = None,
-    popen: Callable[..., object] = subprocess.Popen,
+    pid: int | None,
+    args: Sequence[str],
+    executable: str | None,
+    script_dir: Path | None,
+    working_dir: str | None,
+    env: Mapping[str, str] | None,
+    popen: Callable[..., object],
 ) -> InstallResult:
-    is_frozen = bool(getattr(sys, "frozen", False)) if frozen is None else frozen
-    if not is_frozen:
-        return InstallResult(
-            False, "源码模式不会自动替换程序，请手动运行新版本"
-        )
-    source = Path(downloaded).resolve()
-    if not source.is_file() or source.stat().st_size <= 0:
-        return InstallResult(False, "安装包不存在或为空")
     if source.suffix.lower() != ".exe":
         return InstallResult(False, "安装包不是 .exe 文件")
-
     target = Path(executable or sys.executable).resolve()
-    if source.resolve() == target:
+    if source == target:
         return InstallResult(False, "安装包与当前程序是同一个文件")
 
     environment = dict(os.environ if env is None else env)
@@ -471,3 +570,140 @@ def install_update(
     except OSError as exc:
         return InstallResult(False, f"无法启动更新脚本：{exc}")
     return InstallResult(True, "更新脚本已启动，程序将退出并重启")
+
+
+def _extract_linux_binary(archive: Path, destination: Path) -> Path:
+    try:
+        with tarfile.open(archive, "r:gz") as bundle:
+            candidates = [
+                member
+                for member in bundle.getmembers()
+                if member.isfile() and PurePosixPath(member.name).name == "AgentBell"
+            ]
+            if len(candidates) != 1:
+                raise UpdateError("安装包结构异常：应包含唯一的 AgentBell 可执行文件")
+            member = candidates[0]
+            if member.size <= 0 or member.size > DOWNLOAD_BYTES_LIMIT:
+                raise UpdateError("安装包大小异常")
+            source = bundle.extractfile(member)
+            if source is None:
+                raise UpdateError("无法读取安装包中的 AgentBell")
+            destination.mkdir(parents=True, exist_ok=True)
+            target = destination / "AgentBell"
+            with source, target.open("wb") as handle:
+                shutil.copyfileobj(source, handle, CHUNK_SIZE)
+    except tarfile.TarError as exc:
+        raise UpdateError("安装包不是有效的 tar.gz 文件") from exc
+    target.chmod(0o755)
+    return target
+
+
+def _install_linux_update(
+    source: Path,
+    *,
+    pid: int | None,
+    args: Sequence[str],
+    executable: str | None,
+    script_dir: Path | None,
+    working_dir: str | None,
+    env: Mapping[str, str] | None,
+    popen: Callable[..., object],
+    version: str,
+) -> InstallResult:
+    if not source.name.lower().endswith(".tar.gz"):
+        return InstallResult(False, "安装包不是 Linux 的 tar.gz 文件")
+    target = Path(executable or sys.executable).resolve()
+    directory = Path(script_dir) if script_dir is not None else updates_dir()
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        binary = _extract_linux_binary(source, directory / f"staged-{version}")
+    except (OSError, UpdateError) as exc:
+        return InstallResult(False, f"无法解压安装包：{exc}")
+    if binary == target:
+        return InstallResult(False, "安装包与当前程序是同一个文件")
+
+    environment = dict(os.environ if env is None else env)
+    environment.update(
+        {
+            "AGENTBELL_UPDATE_PID": str(pid if pid is not None else os.getpid()),
+            "AGENTBELL_UPDATE_SOURCE": str(binary),
+            "AGENTBELL_UPDATE_TARGET": str(target),
+            "AGENTBELL_UPDATE_BACKUP": str(target.with_name(target.name + ".bak")),
+            "AGENTBELL_UPDATE_CWD": str(
+                working_dir if working_dir is not None else os.getcwd()
+            ),
+            "AGENTBELL_UPDATE_LOG": str(directory / "update.log"),
+            "AGENTBELL_UPDATE_VERSION": version,
+        }
+    )
+    restart = "exec " + shlex.join(
+        [str(target), *(str(item) for item in args)]
+    )
+    script = LINUX_REPLACE_SCRIPT.replace("@@RESTART@@", restart)
+    try:
+        script_path = directory / "apply_update.sh"
+        script_path.write_text(script, encoding="utf-8")
+        script_path.chmod(0o755)
+    except OSError as exc:
+        return InstallResult(False, f"无法写入更新脚本：{exc}")
+    try:
+        popen(
+            ["/bin/sh", str(script_path)],
+            cwd=str(directory),
+            env=environment,
+            close_fds=True,
+            start_new_session=True,
+        )
+    except OSError as exc:
+        return InstallResult(False, f"无法启动更新脚本：{exc}")
+    return InstallResult(True, "更新脚本已启动，程序将退出并重启")
+
+
+def install_update(
+    downloaded: Path,
+    *,
+    pid: int | None = None,
+    args: Sequence[str] = (),
+    frozen: bool | None = None,
+    executable: str | None = None,
+    script_dir: Path | None = None,
+    working_dir: str | None = None,
+    env: Mapping[str, str] | None = None,
+    popen: Callable[..., object] = subprocess.Popen,
+    platform_name: str | None = None,
+    version: str = "",
+) -> InstallResult:
+    is_frozen = bool(getattr(sys, "frozen", False)) if frozen is None else frozen
+    if not is_frozen:
+        return InstallResult(
+            False, "源码模式不会自动替换程序，请手动运行新版本"
+        )
+    source = Path(downloaded).resolve()
+    if not source.is_file() or source.stat().st_size <= 0:
+        return InstallResult(False, "安装包不存在或为空")
+    target_platform = host_platform(platform_name)
+    if target_platform == "linux":
+        safe_version = (
+            re.sub(r"[^A-Za-z0-9_.-]", "_", version)[:40] or "new"
+        )
+        return _install_linux_update(
+            source,
+            pid=pid,
+            args=args,
+            executable=executable,
+            script_dir=script_dir,
+            working_dir=working_dir,
+            env=env,
+            popen=popen,
+            version=safe_version,
+        )
+    return _install_windows_update(
+        source,
+        pid=pid,
+        args=args,
+        executable=executable,
+        script_dir=script_dir,
+        working_dir=working_dir,
+        env=env,
+        popen=popen,
+    )

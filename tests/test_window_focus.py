@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 from types import SimpleNamespace
+
+import pytest
 
 import agentbell.window_focus as window_focus
 from agentbell.window_focus import (
@@ -11,6 +14,12 @@ from agentbell.window_focus import (
     find_focus_choices,
     parse_focus_value,
 )
+
+
+@pytest.fixture(autouse=True)
+def _exercise_windows_paths(monkeypatch):
+    if os.name != "nt":
+        monkeypatch.setattr(window_focus, "_IS_LINUX", False)
 
 
 def test_parse_focus_value_reads_pid_title_and_cwd():

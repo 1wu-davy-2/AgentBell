@@ -10,12 +10,12 @@
   <a href="https://github.com/1wu-davy-2/AgentBell/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/1wu-davy-2/AgentBell?label=release&color=2f6bff"></a>
   <a href="https://github.com/1wu-davy-2/AgentBell/actions/workflows/build.yml"><img alt="Build" src="https://github.com/1wu-davy-2/AgentBell/actions/workflows/build.yml/badge.svg"></a>
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-2f6bff"></a>
-  <img alt="Platform: Windows 10/11" src="https://img.shields.io/badge/platform-Windows%2010%2F11-2f6bff">
+  <img alt="Platform: Windows 10/11 · Linux x64/arm64" src="https://img.shields.io/badge/platform-Windows%2010%2F11%20%7C%20Linux%20x64%2Farm64-2f6bff">
 </p>
 
 ---
 
-AgentBell is a local-first Windows notification desk for AI agents. When an agent finishes a round, it sends one message to a loopback-only HTTP endpoint; AgentBell immediately shows a top-most card in the corner of your desktop, keeps a searchable history, and stays in the system tray after you close the window.
+AgentBell is a local-first Windows / Linux notification desk for AI agents. When an agent finishes a round, it sends one message to a loopback-only HTTP endpoint; AgentBell immediately shows a top-most card in the corner of your desktop, keeps a searchable history, and stays in the system tray after you close the window.
 
 It does not orchestrate agents, proxy model requests, upload data, or ship a web console. The HTTP server binds to `127.0.0.1` only, and every screen is a native PySide6 window. The UI is currently Chinese-first; the HTTP API and configuration are language-neutral.
 
@@ -37,6 +37,7 @@ AgentBell does one thing well: **tell you the moment a round ends, and let you g
 
 ## Recent updates
 
+- **v2.16.0**: Linux x64 and arm64 builds. Releases now include `AgentBell-linux-x64.tar.gz` and `AgentBell-linux-arm64.tar.gz`; extract and run the `AgentBell` binary. On X11 it supports global hotkeys, back-to-terminal, idle/lock detection, terminal launch, and hook installation; on Wayland these degrade to basic notifications. Windows behavior is unchanged.
 - **v2.15.0**: Fullscreen alerts can keep the card on the primary display only. Every monitor still gets the backdrop and scrim, but secondary screens show just the background image; clicking any screen still dismisses the alert everywhere. Toggle it under Preferences → Popup appearance → Fullscreen area, or set `overlay_area.card_on_primary_only` (off by default).
 - **v2.14.0**: One-click reminder hooks. The Runtime page can install waiting, question, and round-finish hooks into Claude Code (`~/.claude/settings.json`), Gemini CLI (`~/.gemini/settings.json`), and Grok (`~/.grok/hooks/agentbell.json`); Codex uses the top-level `notify` key for finish-only reminders. Every change is previewed and backed up, only marked entries are appended, existing hooks stay untouched, and an existing custom Codex `notify` is never overwritten.
 - **v2.13.0**: Fine-grained rules. `rules` gain `wait_reason`, `needs_input`, `min_duration_seconds` / `max_duration_seconds`, and `project` conditions, so permission waits, test projects, or runs longer than 10 minutes can be routed to different priorities and channels. Projects match the last segment of the working directory case-insensitively; durations come from `duration` with inclusive bounds, and a rule with duration bounds does not match when it is missing. Rule changes take effect on save, and locally inferred waiting notifications participate too. Hover tips are now shown only for truncated text, wrap at 32 characters, and use the light UI style instead of a full-card tooltip covering the next row.
@@ -65,9 +66,27 @@ AgentBell does one thing well: **tell you the moment a round ends, and let you g
 
 ## Install
 
-**Requirements**: Windows 10/11 for the full feature set (tray, hotkey, fullscreen/meeting detection, focus-terminal). macOS/Linux can run the basic popup and notification center from source.
+**Requirements**: Windows 10/11, or a Linux desktop with X11 (x64 / arm64). Windows has the full feature set. Linux X11 supports the tray, global hotkeys, fullscreen/meeting detection, focus-terminal, and terminal launch. On Wayland, global hotkeys, window focus, and foreground detection are disabled; popups, the notification center, hooks, the runtime manager, and the tray remain available.
 
 ### Download (recommended)
+
+**Windows**
+
+1. Download `AgentBell.exe` from [Releases](https://github.com/1wu-davy-2/AgentBell/releases/latest).
+2. Put it in a writable directory and run it. `config.json`, `logs/`, `agentbell.db`, and `chat/` are created beside the executable.
+
+**Linux (x64 / arm64)**
+
+```bash
+mkdir -p ~/AgentBell
+tar -xzf AgentBell-linux-x64.tar.gz -C ~/AgentBell
+chmod +x ~/AgentBell/AgentBell
+~/AgentBell/AgentBell
+```
+
+Use `AgentBell-linux-arm64.tar.gz` on arm64. The updater selects the archive for the current architecture and still verifies size and SHA-256 before replacing and restarting. Qt runtime packages are required; on Debian/Ubuntu install `libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-xfixes0`.
+
+### Windows quick start
 
 1. Open [Releases](https://github.com/1wu-davy-2/AgentBell/releases/latest) and download `AgentBell.exe`.
 2. Put it in a **writable directory**, such as `D:\Tools\AgentBell`, and double-click it.
@@ -227,14 +246,22 @@ Preferences cover skins, popup modes, fullscreen background and card placement, 
 
 ```powershell
 pip install -r requirements-dev.txt
-python -m PyInstaller --noconfirm --clean AgentBell26.spec
-# Output: dist\AgentBell-26.exe
+python -m PyInstaller --noconfirm --clean AgentBell29.spec
+# Output: dist\AgentBell-29.exe
 ```
 
-Pushing to `develop` runs tests and packaging. Pushing a `v*` tag verifies that the tag matches `__version__` in `agentbell/__init__.py`, then publishes a GitHub Release automatically. The workflow picks the highest-numbered `AgentBell*.spec` and copies its output to the stable `AgentBell.exe` name.
+Linux builds must run natively per architecture:
 
 ```bash
-git tag v2.9.10
+pip install -r requirements-dev.txt
+python -m PyInstaller --noconfirm AgentBell-linux.spec
+tar -czf dist/AgentBell-linux-x64.tar.gz -C dist AgentBell
+```
+
+Pushing to `develop` runs tests and packaging on Windows and Linux (x64 / arm64). Pushing a `v*` tag verifies that the tag matches `__version__` in `agentbell/__init__.py`, then publishes a GitHub Release automatically. The workflow picks the highest-numbered `AgentBell<N>.spec` and copies its output to the stable `AgentBell.exe` name; Linux produces `AgentBell-linux-x64.tar.gz` and `AgentBell-linux-arm64.tar.gz`, and the release job merges a single `SHA256SUMS.txt`.
+
+```bash
+git tag v2.16.0
 git push origin develop --tags
 ```
 

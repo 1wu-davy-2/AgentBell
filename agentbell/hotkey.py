@@ -3,12 +3,14 @@ from __future__ import annotations
 import ctypes
 import logging
 import os
+import sys
 from ctypes import wintypes
 
-from PySide6.QtCore import QAbstractNativeEventFilter, QObject, Signal
+from PySide6.QtCore import QAbstractNativeEventFilter, QObject, QTimer, Signal
 from PySide6.QtWidgets import QApplication
 
 _IS_WINDOWS = os.name == "nt"
+_IS_LINUX = sys.platform.startswith("linux")
 _WM_HOTKEY = 0x0312
 _MOD_NOREPEAT = 0x4000
 _MODIFIERS = {
@@ -109,6 +111,8 @@ class GlobalHotkey(QObject):
         self._spec = spec
         self._id: int | None = None
         self._filter: _HotkeyFilter | None = None
+        self._linux = None
+        self._linux_timer: QTimer | None = None
 
     @property
     def spec(self) -> str:
@@ -116,11 +120,13 @@ class GlobalHotkey(QObject):
 
     @property
     def registered(self) -> bool:
-        return self._id is not None
+        return self._id is not None or self._linux is not None
 
     def register(self) -> bool:
         self.unregister()
         global _hotkey_counter
+        if _IS_LINUX:
+            return self._register_linux()
         parsed = parse_hotkey(self._spec)
         if parsed is None:
             self._logger.warning("全局快捷键格式无效，已忽略：%s", self._spec or "(空)")
@@ -148,11 +154,43 @@ class GlobalHotkey(QObject):
         self._logger.info("全局快捷键已注册：%s", self._spec)
         return True
 
+    def _register_linux(self) -> bool:
+        from .linux_desktop import X11Hotkey, is_wayland
+
+        if is_wayland():
+            self._logger.warning("Wayland 会话暂不支持全局快捷键：%s", self._spec)
+            return False
+        grabber = X11Hotkey(self._spec)
+        if not grabber.start():
+            self._logger.warning(
+                "注册全局快捷键失败（需要 X11 或已被其他程序占用）：%s", self._spec
+            )
+            return False
+        self._linux = grabber
+        timer = QTimer(self)
+        timer.setInterval(120)
+        timer.timeout.connect(self._poll_linux)
+        timer.start()
+        self._linux_timer = timer
+        self._logger.info("全局快捷键已注册：%s", self._spec)
+        return True
+
+    def _poll_linux(self) -> None:
+        if self._linux is not None and self._linux.poll():
+            self.activated.emit()
+
     def apply(self, spec: str) -> bool:
         self._spec = spec
         return self.register()
 
     def unregister(self) -> None:
+        if self._linux_timer is not None:
+            self._linux_timer.stop()
+            self._linux_timer.deleteLater()
+            self._linux_timer = None
+        if self._linux is not None:
+            self._linux.stop()
+            self._linux = None
         if self._id is None:
             return
         application = QApplication.instance()

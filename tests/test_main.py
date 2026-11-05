@@ -1,0 +1,15 @@
+from __future__ import annotations
+
+import agentbell.main as main_module
+
+
+def test_port_error_text_uses_platform_command(monkeypatch):
+    monkeypatch.setattr(main_module.os, "name", "nt")
+    windows = main_module._port_error_text(8765, RuntimeError("busy"))
+    assert "netstat -ano" in windows
+    assert "ss -ltnp" not in windows
+
+    monkeypatch.setattr(main_module.os, "name", "posix")
+    linux = main_module._port_error_text(8765, RuntimeError("busy"))
+    assert "ss -ltnp" in linux
+    assert "netstat -ano" not in linux

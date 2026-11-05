@@ -68,9 +68,13 @@ def test_hooks_panel_install_and_undo_from_runtime_page(qapp, tmp_path):
         for group in data["hooks"]["Stop"]
         for handler in group["hooks"]
     ]
-    assert any("agentbell-hook.ps1" in command for command in commands)
-    helper = tmp_path / "app" / "hooks" / "agentbell-hook.ps1"
-    assert helper.is_file()
+    if os.name == "nt":
+        assert any("agentbell-hook.ps1" in command for command in commands)
+        helper = tmp_path / "app" / "hooks" / "agentbell-hook.ps1"
+        assert helper.is_file()
+    else:
+        assert any("--hook" in command for command in commands)
+        assert not (tmp_path / "app" / "hooks" / "agentbell-hook.ps1").exists()
 
     row._remove_button.click()
     assert row._state.text() == "未接入"

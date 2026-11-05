@@ -5,9 +5,13 @@ import hashlib
 import json
 import os
 import platform
+import posixpath
 import re
+import secrets
 import shutil
 import subprocess
+import sys
+import tarfile
 import tempfile
 import time
 import urllib.error
@@ -257,6 +261,51 @@ def safe_extract_zip(archive: Path, destination: Path) -> None:
         bundle.extractall(destination)
 
 
+def safe_extract_tar(archive: Path, destination: Path) -> None:
+    """Extract a tar archive member by member with traversal and size checks."""
+    total = 0
+    with tarfile.open(archive, "r:*") as bundle:
+        members = bundle.getmembers()
+        for member in members:
+            pure = PurePosixPath(member.name.replace("\\", "/"))
+            if pure.is_absolute() or ".." in pure.parts:
+                raise ToolchainError(f"压缩包包含非法路径：{member.name}")
+            if member.ischr() or member.isblk() or member.isfifo() or member.islnk():
+                raise ToolchainError(f"压缩包包含不支持的条目：{member.name}")
+            if member.issym():
+                link = PurePosixPath(member.linkname.replace("\\", "/"))
+                combined = posixpath.normpath(str(pure.parent / link))
+                if link.is_absolute() or combined == ".." or combined.startswith("../"):
+                    raise ToolchainError(f"压缩包包含非法链接：{member.name}")
+            total += max(member.size, 0)
+            if total > MAX_EXTRACT_BYTES:
+                raise ToolchainError("压缩包解压后体积超过限制")
+        destination.mkdir(parents=True, exist_ok=True)
+        for member in members:
+            pure = PurePosixPath(member.name.replace("\\", "/"))
+            target = destination.joinpath(*pure.parts)
+            if member.isdir():
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if member.issym():
+                if target.exists() or target.is_symlink():
+                    target.unlink()
+                os.symlink(member.linkname, target)
+                continue
+            source = bundle.extractfile(member)
+            if source is None:
+                continue
+            with source, target.open("wb") as handle:
+                shutil.copyfileobj(source, handle, 256 * 1024)
+            mode = member.mode & 0o777
+            if mode:
+                try:
+                    target.chmod(mode)
+                except OSError:
+                    pass
+
+
 def _swap_directory(source: Path, target: Path) -> None:
     backup = target.with_name(target.name + ".old")
     if backup.exists():
@@ -296,8 +345,14 @@ def _write_json_file(path: Path, data: Mapping) -> None:
     os.replace(temp, path)
 
 
+def _secret_tool() -> str:
+    if not sys.platform.startswith("linux"):
+        return ""
+    return shutil.which("secret-tool") or ""
+
+
 def protect_secret(value: str) -> str:
-    """Store a secret with Windows DPAPI when available."""
+    """Store a secret with DPAPI or the Linux Secret Service when available."""
     text = (value or "").strip()
     if not text:
         return ""
@@ -309,7 +364,30 @@ def protect_secret(value: str) -> str:
         )
         return "dpapi:" + base64.b64encode(blob).decode("ascii")
     except Exception:
-        return "plain:" + base64.b64encode(text.encode("utf-8")).decode("ascii")
+        pass
+    tool = _secret_tool()
+    if tool:
+        account = secrets.token_hex(16)
+        try:
+            result = subprocess.run(
+                [
+                    tool,
+                    "store",
+                    "--label=AgentBell",
+                    "service",
+                    "agentbell",
+                    "account",
+                    account,
+                ],
+                input=text.encode("utf-8"),
+                capture_output=True,
+                timeout=10,
+            )
+            if result.returncode == 0:
+                return "secret:" + account
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return "plain:" + base64.b64encode(text.encode("utf-8")).decode("ascii")
 
 
 def reveal_secret(value: str) -> str:
@@ -324,6 +402,24 @@ def reveal_secret(value: str) -> str:
             return win32crypt.CryptUnprotectData(raw, None, None, None, 0)[1].decode(
                 "utf-8"
             )
+        if text.startswith("secret:"):
+            tool = _secret_tool()
+            if not tool:
+                return ""
+            result = subprocess.run(
+                [
+                    tool,
+                    "lookup",
+                    "service",
+                    "agentbell",
+                    "account",
+                    text[len("secret:") :],
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            return result.stdout.strip() if result.returncode == 0 else ""
         if text.startswith("plain:"):
             return base64.b64decode(text[len("plain:") :]).decode("utf-8")
     except Exception:
@@ -347,7 +443,15 @@ def runtime_env(
     """Environment that makes the portable runtime visible to child processes."""
     base_dir = Path(root) if root is not None else runtime_dir()
     env = dict(os.environ if base is None else base)
-    prefixes = [str(base_dir / "agents"), str(base_dir / "node")]
+    if os.name == "nt":
+        prefixes = [str(base_dir / "agents"), str(base_dir / "node")]
+    else:
+        prefixes = [
+            str(base_dir / "agents" / "bin"),
+            str(base_dir / "node" / "bin"),
+            str(base_dir / "agents"),
+            str(base_dir / "node"),
+        ]
     path = env.get("PATH", "")
     env["PATH"] = os.pathsep.join(prefixes + ([path] if path else []))
     env["AGENTBELL_RUNTIME"] = str(base_dir)
@@ -388,7 +492,9 @@ class ToolchainService:
 
     @property
     def npm_cli(self) -> Path:
-        return self.node_dir / "node_modules" / "npm" / "bin" / "npm-cli.js"
+        if os.name == "nt":
+            return self.node_dir / "node_modules" / "npm" / "bin" / "npm-cli.js"
+        return self.node_dir / "lib" / "node_modules" / "npm" / "bin" / "npm-cli.js"
 
     @property
     def agents_dir(self) -> Path:
@@ -491,7 +597,9 @@ class ToolchainService:
 
     # ---------- node ----------
 
-    def resolve_node_release(self, arch: str = "") -> tuple[str, str, str]:
+    def resolve_node_release(
+        self, arch: str = "", *, platform_name: str | None = None
+    ) -> tuple[str, str, str]:
         data = self._get_json(self._node_index_url)
         rows = data if isinstance(data, list) else []
         latest = ""
@@ -503,11 +611,13 @@ class ToolchainService:
                 break
         if not latest:
             raise ToolchainError("无法从 nodejs.org 解析最新 LTS 版本")
-        platform_arch = arch or _windows_arch()
-        filename = f"node-{latest}-{platform_arch}.zip"
-        zip_url = f"{NODE_DIST_ROOT}/{latest}/{filename}"
+        target = platform_name or ("windows" if os.name == "nt" else "linux")
+        extension = ".zip" if target == "windows" else ".tar.xz"
+        platform_arch = arch or _node_arch(target)
+        filename = f"node-{latest}-{platform_arch}{extension}"
+        archive_url = f"{NODE_DIST_ROOT}/{latest}/{filename}"
         shasums_url = f"{NODE_DIST_ROOT}/{latest}/SHASUMS256.txt"
-        return latest, zip_url, shasums_url
+        return latest, archive_url, shasums_url
 
     def node_version(self) -> str:
         block = self.manifest().get("node")
@@ -519,25 +629,31 @@ class ToolchainService:
 
     def install_node(self, progress: ProgressCallback | None = None) -> str:
         report = progress or _noop
-        if os.name != "nt":
-            raise ToolchainError("便携 Node 目前仅支持 Windows")
-        version, zip_url, shasums_url = self.resolve_node_release()
+        if os.name != "nt" and not sys.platform.startswith("linux"):
+            raise ToolchainError("便携 Node 目前仅支持 Windows 和 Linux")
+        version, archive_url, shasums_url = self.resolve_node_release()
         report(Progress(f"准备下载 Node {version}", 0))
         with tempfile.TemporaryDirectory(dir=str(self._temp_root())) as temp:
             temp_dir = Path(temp)
-            archive = temp_dir / Path(urlsplit(zip_url).path).name
+            archive = temp_dir / Path(urlsplit(archive_url).path).name
             report(Progress(f"下载 Node {version}", 0))
-            actual = self._download(zip_url, archive, report, f"下载 Node {version}")
+            actual = self._download(
+                archive_url, archive, report, f"下载 Node {version}"
+            )
             report(Progress("校验 Node 安装包", 99))
             expected = _parse_shasums(self._get_text(shasums_url), archive.name)
             if not expected or expected != actual:
                 raise ToolchainError("Node 安装包校验失败，文件可能不完整")
             report(Progress("解压 Node", -1))
             extracted = temp_dir / "unpacked"
-            safe_extract_zip(archive, extracted)
+            if archive.suffix.lower() == ".zip":
+                safe_extract_zip(archive, extracted)
+            else:
+                safe_extract_tar(archive, extracted)
             inner = _single_root(extracted)
-            if not (inner / "node.exe").exists():
-                raise ToolchainError("Node 安装包结构异常，未找到 node.exe")
+            node_binary = inner / ("node.exe" if os.name == "nt" else "bin/node")
+            if not node_binary.is_file():
+                raise ToolchainError("Node 安装包结构异常，未找到 node 可执行文件")
             _swap_directory(inner, self.node_dir)
         self._record(
             "node",
@@ -578,9 +694,16 @@ class ToolchainService:
         env["npm_config_fund"] = "false"
         env["npm_config_audit"] = "false"
         env["npm_config_update_notifier"] = "false"
-        env["PATH"] = os.pathsep.join(
-            [str(self.node_dir), str(self.agents_dir), env.get("PATH", "")]
+        paths = (
+            [str(self.node_dir), str(self.agents_dir)]
+            if os.name == "nt"
+            else [
+                str(self.node_dir / "bin"),
+                str(self.agents_dir / "bin"),
+                str(self.agents_dir),
+            ]
         )
+        env["PATH"] = os.pathsep.join([*paths, env.get("PATH", "")])
         return env
 
     def _run_npm(
@@ -680,17 +803,25 @@ class ToolchainService:
         return f"{tool.name} 已卸载"
 
     def _remove_tool_shims(self, tool: NpmToolSpec) -> None:
-        for suffix in ("", ".cmd", ".ps1", ".sh"):
-            candidate = self.agents_dir / f"{tool.command}{suffix}"
-            try:
-                candidate.unlink()
-            except OSError:
-                continue
+        roots = [self.agents_dir]
+        if os.name != "nt":
+            roots.append(self.agents_dir / "bin")
+        for root in roots:
+            for suffix in ("", ".cmd", ".ps1", ".sh"):
+                candidate = root / f"{tool.command}{suffix}"
+                try:
+                    candidate.unlink()
+                except OSError:
+                    continue
 
     def tool_executable(self, tool_id: str) -> Path | None:
         tool = _TOOL_BY_ID.get(tool_id)
         if tool is None:
             return None
+        if os.name != "nt":
+            candidate = self.agents_dir / "bin" / tool.command
+            if candidate.exists():
+                return candidate
         for suffix in (".cmd", ".exe", ""):
             candidate = self.agents_dir / f"{tool.command}{suffix}"
             if candidate.exists():
@@ -863,6 +994,15 @@ def _windows_arch() -> str:
     if machine in {"arm64", "aarch64"}:
         return "win-arm64"
     return "win-x64"
+
+
+def _node_arch(platform_name: str) -> str:
+    if platform_name == "windows":
+        return _windows_arch()
+    machine = platform.machine().lower()
+    if machine in {"arm64", "aarch64"}:
+        return "linux-arm64"
+    return "linux-x64"
 
 
 def _human_size(size: int) -> str:

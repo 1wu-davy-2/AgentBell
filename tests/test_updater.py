@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
+import tarfile
 import urllib.error
 
 import pytest
@@ -14,12 +16,15 @@ from agentbell.updater import (
     ReleaseAsset,
     ReleaseInfo,
     UpdateError,
+    asset_label,
     check_for_update,
     download_release_asset,
     fetch_latest_release,
+    host_platform,
     install_update,
     is_allowed_download_url,
     is_newer,
+    linux_arch,
     normalize_repo,
     select_asset,
     version_key,
@@ -91,9 +96,34 @@ def test_select_asset_prefers_stable_name_and_falls_back():
         "AgentBell-2.8.0.exe", "https://github.com/a/b/y.exe"
     )
     other = ReleaseAsset("notes.txt", "https://github.com/a/b/n.txt")
-    assert select_asset([versioned, stable, other]) is stable
-    assert select_asset([versioned, other]) is versioned
-    assert select_asset([other]) is None
+    assert (
+        select_asset([versioned, stable, other], platform_name="windows") is stable
+    )
+    assert (
+        select_asset([versioned, other], platform_name="windows") is versioned
+    )
+    assert select_asset([other], platform_name="windows") is None
+
+
+def test_select_asset_linux_picks_exact_arch_archive():
+    x64 = ReleaseAsset(
+        "AgentBell-linux-x64.tar.gz", "https://github.com/a/b/x64.tar.gz"
+    )
+    arm = ReleaseAsset(
+        "AgentBell-linux-arm64.tar.gz", "https://github.com/a/b/arm.tar.gz"
+    )
+    other = ReleaseAsset("AgentBell.exe", "https://github.com/a/b/x.exe")
+    assert (
+        select_asset([x64, arm, other], platform_name="linux", machine="x86_64")
+        is x64
+    )
+    assert (
+        select_asset([x64, arm, other], platform_name="linux", machine="aarch64")
+        is arm
+    )
+    assert select_asset([other], platform_name="linux") is None
+    assert asset_label("linux", "aarch64") == "AgentBell-linux-arm64.tar.gz"
+    assert asset_label("windows") == "AgentBell.exe"
 
 
 def test_check_for_update_is_disabled_without_repo():
@@ -130,6 +160,7 @@ def test_check_for_update_reports_up_to_date_and_available():
         "acme/AgentBell",
         current,
         fetch=lambda repo: ReleaseInfo(version="2.9.0"),
+        platform_name="windows",
     )
     assert without_asset.available is True
     assert without_asset.can_install is False
@@ -169,7 +200,9 @@ def test_fetch_latest_release_parses_github_payload():
     opener = FakeOpener([FakeResponse(payload, "https://api.github.com/x")])
 
     release = fetch_latest_release(
-        "https://github.com/acme/AgentBell", opener=opener
+        "https://github.com/acme/AgentBell",
+        opener=opener,
+        platform_name="windows",
     )
 
     assert release.version == "9.9.9"
@@ -311,6 +344,7 @@ def test_install_update_schedules_static_script_for_frozen_app(tmp_path):
         executable=str(target),
         script_dir=tmp_path / "updates",
         popen=fake_popen,
+        platform_name="windows",
     )
 
     assert result.ok is True
@@ -333,6 +367,99 @@ def test_install_update_schedules_static_script_for_frozen_app(tmp_path):
     assert "AGENTBELL_UPDATE_CWD" in REPLACE_SCRIPT
     assert kwargs["creationflags"]
     assert kwargs["close_fds"] is True
+
+
+def _tar_gz(entries: dict[str, bytes]) -> bytes:
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as bundle:
+        for name, data in entries.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            info.mode = 0o755
+            bundle.addfile(info, io.BytesIO(data))
+    return buffer.getvalue()
+
+
+def test_host_platform_and_linux_arch():
+    assert host_platform("linux") == "linux"
+    assert linux_arch("x86_64") == "x64"
+    assert linux_arch("aarch64") == "arm64"
+    assert linux_arch("arm64") == "arm64"
+
+
+def test_download_linux_asset_keeps_arch_in_name(tmp_path):
+    content = _tar_gz({"AgentBell": b"MZ linux"})
+    asset = ReleaseAsset(
+        "AgentBell-linux-arm64.tar.gz",
+        "https://github.com/acme/AgentBell/releases/download/v9/AgentBell-linux-arm64.tar.gz",
+        size=len(content),
+        digest="sha256:" + hashlib.sha256(content).hexdigest(),
+    )
+    target = download_release_asset(
+        ReleaseInfo(version="9.9.9", asset=asset),
+        dest_dir=tmp_path,
+        opener=FakeOpener([FakeResponse(content)]),
+    )
+    assert target == tmp_path / "AgentBell-9.9.9-linux-arm64.tar.gz"
+    assert target.read_bytes() == content
+
+
+def test_install_update_linux_extracts_and_schedules(tmp_path):
+    source = tmp_path / "AgentBell-linux-x64.tar.gz"
+    source.write_bytes(_tar_gz({"AgentBell": b"MZ linux"}))
+    target = tmp_path / "AgentBell"
+    target.write_bytes(b"MZ old")
+    calls = []
+
+    def fake_popen(args, **kwargs):
+        calls.append((args, kwargs))
+        return object()
+
+    config_arg = str(tmp_path / "my config.json")
+    result = install_update(
+        source,
+        pid=999,
+        args=["--config", config_arg],
+        frozen=True,
+        executable=str(target),
+        script_dir=tmp_path / "updates",
+        popen=fake_popen,
+        platform_name="linux",
+        version="9.9.9",
+    )
+
+    assert result.ok is True
+    updates = tmp_path / "updates"
+    staged = updates / "staged-9.9.9" / "AgentBell"
+    assert staged.read_bytes() == b"MZ linux"
+    script_path = updates / "apply_update.sh"
+    script = script_path.read_text(encoding="utf-8")
+    assert str(target) in script
+    assert "my config.json" in script
+    assert "@@RESTART@@" not in script
+    args, kwargs = calls[0]
+    assert args == ["/bin/sh", str(script_path)]
+    env = kwargs["env"]
+    assert env["AGENTBELL_UPDATE_PID"] == "999"
+    assert env["AGENTBELL_UPDATE_SOURCE"] == str(staged)
+    assert env["AGENTBELL_UPDATE_TARGET"] == str(target)
+    assert env["AGENTBELL_UPDATE_VERSION"] == "9.9.9"
+    assert kwargs["start_new_session"] is True
+
+
+def test_install_update_linux_rejects_archive_without_binary(tmp_path):
+    source = tmp_path / "bad.tar.gz"
+    source.write_bytes(_tar_gz({"README.md": b"hello"}))
+    result = install_update(
+        source,
+        frozen=True,
+        executable=str(tmp_path / "AgentBell"),
+        script_dir=tmp_path / "updates",
+        popen=lambda *args, **kwargs: object(),
+        platform_name="linux",
+    )
+    assert result.ok is False
+    assert "AgentBell" in result.message
 
 
 def test_install_update_rejects_missing_or_empty_file(tmp_path):

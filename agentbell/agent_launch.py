@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
@@ -65,10 +67,10 @@ class LaunchResult:
     prompt_sent: bool = False
 
     def focus_request(self) -> FocusRequest | None:
-        if not self.ok or self.pid <= 0:
+        if not self.ok or (self.pid <= 0 and not self.title):
             return None
         return FocusRequest(
-            pid=self.pid,
+            pid=self.pid if self.pid > 0 else None,
             window_title=self.title,
             working_dir=self.working_dir,
         )
@@ -247,9 +249,111 @@ def _powershell_path(env: Mapping[str, str]) -> str:
 
 
 def _safe_title(agent_name: str, project: Path) -> str:
-    title = f"AgentBell · {agent_name} · {project.name or project.drive}"
+    title = f"AgentBell · {agent_name} · {project.name or str(project)}"
     title = " ".join(title.replace("\x00", " ").split())
     return title[:MAX_TITLE_CHARS]
+
+
+def _linux_shell(env: Mapping[str, str]) -> str:
+    path = env.get("PATH", "")
+    for name in ("bash", "sh"):
+        found = shutil.which(name, path=path)
+        if found:
+            return found
+    return "/bin/sh"
+
+
+def _linux_terminal_command(
+    env: Mapping[str, str], title: str, shell: str
+) -> list[str] | None:
+    path = env.get("PATH", "")
+    script = (
+        "printf '\\033]0;%s\\007' \"$AGENTBELL_TITLE\"; "
+        "cd \"$AGENTBELL_CWD\" || exit 1; "
+        "if [ -n \"$AGENTBELL_PROMPT\" ]; then "
+        "\"$AGENTBELL_EXE\" \"$AGENTBELL_PROMPT\"; else "
+        "\"$AGENTBELL_EXE\"; fi; "
+        "exec \"${SHELL:-/bin/sh}\" -i"
+    )
+    shell_args = [shell, "-lc", script]
+    candidates: tuple[tuple[str, tuple[str, ...]], ...] = (
+        ("kgx", ("--",)),
+        ("gnome-terminal", ("--title", title, "--")),
+        ("konsole", ("-p", f"tabtitle={title}", "-e")),
+        ("xfce4-terminal", ("--title", title, "-x")),
+        ("mate-terminal", ("--title", title, "-x")),
+        ("tilix", ("-t", title, "-e", shlex.join(shell_args))),
+        ("kitty", ("--title", title)),
+        ("alacritty", ("--title", title, "-e")),
+        ("wezterm", ("start", "--")),
+        ("xterm", ("-T", title, "-e")),
+        ("urxvt", ("-title", title, "-e")),
+        ("st", ("-T", title, "-e")),
+        ("x-terminal-emulator", ("-e",)),
+    )
+    for name, prefix in candidates:
+        executable = shutil.which(name, path=path)
+        if not executable:
+            continue
+        if name == "tilix":
+            return [executable, *prefix]
+        return [executable, *prefix, *shell_args]
+    return None
+
+
+def _launch_linux_terminal(
+    availability: AgentAvailability,
+    project: Path,
+    prompt: str,
+    environment: dict[str, str],
+    popen: Callable[..., object],
+) -> LaunchResult:
+    spec = availability.spec
+    shell = _linux_shell(environment)
+    title = _safe_title(spec.name, project)
+    command = _linux_terminal_command(environment, title, shell)
+    if command is None:
+        return LaunchResult(
+            False,
+            "未找到可用的终端模拟器，请安装 gnome-terminal、konsole 或 xterm",
+            agent_id=spec.id,
+            agent_name=spec.name,
+        )
+    environment.update(
+        {
+            "AGENTBELL_EXE": availability.executable,
+            "AGENTBELL_PROMPT": prompt,
+            "AGENTBELL_CWD": str(project),
+            "AGENTBELL_TITLE": title,
+        }
+    )
+    environment.setdefault("SHELL", shell)
+    try:
+        process = popen(
+            command,
+            cwd=str(project),
+            env=environment,
+            close_fds=True,
+        )
+    except OSError as exc:
+        return LaunchResult(
+            False,
+            f"无法打开终端：{exc}",
+            agent_id=spec.id,
+            agent_name=spec.name,
+        )
+    return LaunchResult(
+        True,
+        f"已在终端中启动 {spec.name}" + ("，并输入了提示词" if prompt else ""),
+        agent_id=spec.id,
+        agent_name=spec.name,
+        agent_kind=spec.kind,
+        pid=int(getattr(process, "pid", 0) or 0),
+        title=title,
+        working_dir=str(project),
+        executable=availability.executable,
+        prompt_sent=bool(prompt),
+    )
 
 
 def launch_agent(
@@ -332,11 +436,19 @@ def launch_agent(
         )
 
     if os.name != "nt":
-        return LaunchResult(
-            False,
-            "打开终端目前仅支持 Windows",
-            agent_id=spec.id,
-            agent_name=spec.name,
+        if not sys.platform.startswith("linux"):
+            return LaunchResult(
+                False,
+                "打开终端目前仅支持 Windows 和 Linux",
+                agent_id=spec.id,
+                agent_name=spec.name,
+            )
+        return _launch_linux_terminal(
+            availability,
+            project,
+            prompt,
+            environment,
+            popen,
         )
 
     powershell = _powershell_path(environment)

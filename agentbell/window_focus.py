@@ -3,10 +3,12 @@ from __future__ import annotations
 import ctypes
 import json
 import os
+import sys
 from dataclasses import dataclass
 from ctypes import wintypes
 
 _IS_WINDOWS = os.name == "nt"
+_IS_LINUX = sys.platform.startswith("linux")
 
 _SW_SHOW = 5
 _SW_RESTORE = 9
@@ -91,6 +93,84 @@ _GENERIC_LABELS = {
     "Alacritty",
     "Tabby",
     "Hyper",
+}
+
+_LINUX_TERMINAL_EXES = {
+    "gnome-terminal-server",
+    "gnome-terminal",
+    "kgx",
+    "konsole",
+    "xfce4-terminal",
+    "mate-terminal",
+    "tilix",
+    "kitty",
+    "alacritty",
+    "wezterm-gui",
+    "wezterm",
+    "xterm",
+    "urxvt",
+    "st",
+    "qoder",
+    "cursor",
+    "windsurf",
+    "trae",
+    "code",
+    "claude",
+    "codex",
+    "gemini",
+    "opencode",
+}
+_LINUX_TERMINAL_CLASSES = {
+    "Gnome-terminal",
+    "kgx",
+    "konsole",
+    "Xfce4-terminal",
+    "Mate-terminal",
+    "Tilix",
+    "kitty",
+    "Alacritty",
+    "wezterm",
+    "xterm",
+    "URxvt",
+    "st",
+}
+_LINUX_APP_LABELS = {
+    "qoder": "Qoder",
+    "cursor": "Cursor",
+    "windsurf": "Windsurf",
+    "trae": "Trae",
+    "code": "VS Code",
+    "claude": "Claude Code",
+    "codex": "Codex",
+    "gemini": "Gemini CLI",
+    "opencode": "OpenCode",
+    "gnome-terminal-server": "GNOME Terminal",
+    "gnome-terminal": "GNOME Terminal",
+    "kgx": "GNOME Console",
+    "konsole": "Konsole",
+    "xfce4-terminal": "Xfce Terminal",
+    "mate-terminal": "MATE Terminal",
+    "tilix": "Tilix",
+    "kitty": "kitty",
+    "alacritty": "Alacritty",
+    "wezterm-gui": "WezTerm",
+    "xterm": "Xterm",
+    "bash": "Bash",
+    "zsh": "Zsh",
+}
+_LINUX_GENERIC_LABELS = {
+    "GNOME Terminal",
+    "GNOME Console",
+    "Konsole",
+    "Xfce Terminal",
+    "MATE Terminal",
+    "Tilix",
+    "kitty",
+    "Alacritty",
+    "WezTerm",
+    "Xterm",
+    "Bash",
+    "Zsh",
 }
 
 if _IS_WINDOWS:  # pragma: no branch - platform dependent
@@ -380,17 +460,39 @@ def _candidate_ranks(pid: int, table: dict[int, tuple[int, str]]) -> dict[int, f
 def _terminal_like(window: _WindowInfo) -> bool:
     return (
         window.exe in _TERMINAL_EXES
+        or window.exe in _LINUX_TERMINAL_EXES
         or window.class_name in _TERMINAL_CLASSES
+        or window.class_name in _LINUX_TERMINAL_CLASSES
         or "console" in window.class_name.lower()
     )
 
 
-def find_focus_choices(query: str, limit: int = 8) -> list[FocusChoice]:
-    query = " ".join((query or "").split())
-    if not query or not _IS_WINDOWS:
+def _linux_windows(table: dict[int, tuple[int, str]]) -> list[_WindowInfo]:
+    try:
+        from . import linux_desktop
+    except Exception:
         return []
+    try:
+        raw_windows = linux_desktop.x11().windows()
+    except Exception:
+        return []
+    return [
+        _WindowInfo(
+            handle=window.handle,
+            pid=window.pid,
+            title=window.title,
+            class_name=window.class_name,
+            exe=table.get(window.pid, (0, ""))[1],
+        )
+        for window in raw_windows
+        if window.pid > 0
+    ]
+
+
+def _focus_choices(
+    windows: list[_WindowInfo], query: str, limit: int
+) -> list[FocusChoice]:
     needle = query.casefold()
-    windows = _collect_windows(_process_table())
     matches = {
         (window.pid, window.title): window
         for window in windows
@@ -420,9 +522,39 @@ def find_focus_choices(query: str, limit: int = 8) -> list[FocusChoice]:
     return choices
 
 
+def find_focus_choices(query: str, limit: int = 8) -> list[FocusChoice]:
+    query = " ".join((query or "").split())
+    if not query:
+        return []
+    if _IS_LINUX:
+        try:
+            from . import linux_desktop
+
+            if not linux_desktop.x11_available():
+                return []
+            table = linux_desktop.process_table()
+            return _focus_choices(_linux_windows(table), query, limit)
+        except Exception:
+            return []
+    if not _IS_WINDOWS:
+        return []
+    return _focus_choices(_collect_windows(_process_table()), query, limit)
+
+
 def _resolve_window(target: FocusTarget) -> _WindowInfo | None:
-    table = _process_table()
-    windows = _collect_windows(table)
+    if _IS_LINUX:
+        try:
+            from . import linux_desktop
+
+            if not linux_desktop.x11_available():
+                return None
+            table = linux_desktop.process_table()
+            windows = _linux_windows(table)
+        except Exception:
+            return None
+    else:
+        table = _process_table()
+        windows = _collect_windows(table)
     ranked: list[tuple[float, _WindowInfo]] = []
     if target.pid is not None:
         ranks = _candidate_ranks(target.pid, table)
@@ -461,7 +593,7 @@ def _resolve_window(target: FocusTarget) -> _WindowInfo | None:
 
 def snapshot_focus(pid: int) -> FocusChoice | None:
     """Resolve the host window now so it survives the agent process exiting."""
-    if not _IS_WINDOWS or not isinstance(pid, int) or pid <= 0:
+    if not (_IS_WINDOWS or _IS_LINUX) or not isinstance(pid, int) or pid <= 0:
         return None
     window = _resolve_window(
         FocusTarget(pid=pid, window_title="", working_dir="")
@@ -498,11 +630,21 @@ def _select_owner_pid(
 
 
 def client_pid(local_port: int, remote_port: int | None = None) -> int | None:
-    """Resolve the process that owns a local TCP client socket (Windows only).
+    """Resolve the process that owns a local TCP client socket (Windows/Linux).
 
     Notifications that omit ``origin`` still arrive on a socket owned by the
     sender, so this is used as a best-effort fallback for the focus action.
     """
+    if _IS_LINUX:
+        if not isinstance(local_port, int) or local_port <= 0:
+            return None
+        try:
+            from . import linux_desktop
+
+            pid = linux_desktop.client_pid_for_port(local_port, remote_port)
+        except Exception:
+            return None
+        return pid if pid and pid != os.getpid() else None
     if not _IS_WINDOWS or not isinstance(local_port, int) or local_port <= 0:
         return None
     size = wintypes.DWORD(0)
@@ -549,8 +691,31 @@ def client_pid(local_port: int, remote_port: int | None = None) -> int | None:
     return pid
 
 
+def _linux_sender_label(pid: int) -> str:
+    try:
+        from . import linux_desktop
+
+        table = linux_desktop.process_table()
+    except Exception:
+        return ""
+    fallback = ""
+    for candidate in linux_desktop.process_ancestors(pid, table):
+        name = table.get(candidate, (0, ""))[1].rsplit(".", 1)[0]
+        if not name:
+            continue
+        label = _LINUX_APP_LABELS.get(name, "")
+        if label and label not in _LINUX_GENERIC_LABELS:
+            return label
+        fallback = fallback or label or name
+    return fallback[:32]
+
+
 def sender_label(pid: int) -> str:
     """Best-effort agent/app name for the process that sent a notification."""
+    if _IS_LINUX:
+        if not isinstance(pid, int) or pid <= 0:
+            return ""
+        return _linux_sender_label(pid)
     if not _IS_WINDOWS or not isinstance(pid, int) or pid <= 0:
         return ""
     table = _process_table()
@@ -650,12 +815,33 @@ def _activate_window(handle: int) -> tuple[bool, bool]:
     return False, raised
 
 
+def _focus_terminal_linux(target: FocusTarget) -> FocusResult:
+    try:
+        from . import linux_desktop
+    except Exception:
+        return FocusResult(False, "Linux 桌面组件不可用", target.working_dir)
+    if not linux_desktop.x11_available():
+        return FocusResult(
+            False,
+            "回到终端需要 X11 会话；Wayland 暂不支持",
+            target.working_dir,
+        )
+    window = _resolve_window(target)
+    if window is None:
+        return FocusResult(False, "未找到对应的终端窗口，可能已经关闭", target.working_dir)
+    if linux_desktop.x11().activate(window.handle):
+        return FocusResult(True, window.title, target.working_dir)
+    return FocusResult(False, "终端窗口无法切到前台", target.working_dir)
+
+
 def focus_terminal(raw: str) -> FocusResult:
     target = parse_focus_value(raw)
     if target is None:
         return FocusResult(False, "回到终端的参数无效")
+    if _IS_LINUX:
+        return _focus_terminal_linux(target)
     if not _IS_WINDOWS:
-        return FocusResult(False, "回到终端仅支持 Windows", target.working_dir)
+        return FocusResult(False, "回到终端仅支持 Windows 或 Linux X11", target.working_dir)
 
     window = _resolve_window(target)
     if window is None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import queue
 import sys
 from collections.abc import Sequence
@@ -51,8 +52,11 @@ def _port_error_text(port: int, error: Exception) -> str:
         "可能的处理方式：\n"
         "1. 修改 config.json 中的 port 为其他端口后重试；\n"
         "2. 关闭占用该端口的程序后重试。\n\n"
-        f"Windows 可执行以下命令查看占用：\n"
-        f"netstat -ano | findstr :{port}"
+        + (
+            f"Windows 可执行以下命令查看占用：\nnetstat -ano | findstr :{port}"
+            if os.name == "nt"
+            else f"Linux 可执行以下命令查看占用：\nss -ltnp | grep :{port}"
+        )
     )
 
 
@@ -75,6 +79,10 @@ def _resolve_history_path(config_path: Path, configured: str) -> Path:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = list(sys.argv if argv is None else argv)
+    if "--hook" in args[1:]:
+        from .hook_cli import main as hook_main
+
+        return hook_main(args[1:])
     options, qt_args = _parse_args(args[1:])
     QGuiApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough

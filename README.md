@@ -9,7 +9,7 @@
   <a href="https://github.com/1wu-davy-2/AgentBell/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/1wu-davy-2/AgentBell?label=release&color=2f6bff"></a>
   <a href="https://github.com/1wu-davy-2/AgentBell/actions/workflows/build.yml"><img alt="Build" src="https://github.com/1wu-davy-2/AgentBell/actions/workflows/build.yml/badge.svg"></a>
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-2f6bff"></a>
-  <img alt="Platform: Windows 10/11" src="https://img.shields.io/badge/platform-Windows%2010%2F11-2f6bff">
+  <img alt="Platform: Windows 10/11 · Linux x64/arm64" src="https://img.shields.io/badge/platform-Windows%2010%2F11%20%7C%20Linux%20x64%2Farm64-2f6bff">
 </p>
 
 <p align="center">
@@ -24,7 +24,7 @@
 
 ## 中文
 
-AgentBell 是一个只做提醒的 Windows 桌面工具。AI Agent 每轮任务结束时，向你本机的 HTTP 接口发一条消息，桌面右上角立刻弹出置顶提醒：
+AgentBell 是一个只做提醒的 Windows / Linux 桌面工具。AI Agent 每轮任务结束时，向你本机的 HTTP 接口发一条消息，桌面右上角立刻弹出置顶提醒：
 
 > 上一轮【生成竞品分析报告】已完成，请查看
 
@@ -47,6 +47,7 @@ AgentBell 是一个只做提醒的 Windows 桌面工具。AI Agent 每轮任务�
 
 ### 最近更新
 
+- **v2.16.0**：新增 Linux x64 / arm64 版本。Release 同时提供 `AgentBell-linux-x64.tar.gz` 和 `AgentBell-linux-arm64.tar.gz`，解压后直接运行 `AgentBell`；X11 桌面支持全局快捷键、回到终端、锁屏 / 空闲检测、终端启动和 Hook 接入，Wayland 下自动降级为基础提醒。Windows 行为保持不变，版本升到 2.16.0。
 - **v2.15.0**：全屏提醒支持「仅在主屏显示卡片」。多显示器仍逐屏铺满背景与遮罩，勾选后只有主屏绘制提醒卡片，副屏保留背景图；点击任意屏幕仍会关闭全部提醒。设置页「全屏显示区域」新增开关，配置项为 `overlay_area.card_on_primary_only`，默认关闭。
 - **v2.14.0**：一键接入提醒。运行环境页新增「提醒接入」，可把 Claude Code（`~/.claude/settings.json`）、Gemini CLI（`~/.gemini/settings.json`）和 Grok（`~/.grok/hooks/agentbell.json`）的等待确认、提问与每轮结束 Hook 写入用户配置；Codex 通过顶层 `notify` 支持每轮结束提醒。写入前展示完整改动并备份，只追加带标记的条目，已有 Hook 保持不变，可随时撤销；已存在的 Codex 自定义 `notify` 不会被覆盖。
 - **v2.13.0**：规则精细化。`rules` 新增 `wait_reason`、`needs_input`、`min_duration_seconds` / `max_duration_seconds` 与 `project` 条件，可把「等待权限」「测试项目」或「超过 10 分钟」的任务分流到不同优先级和通道；项目按工作目录名取末级、忽略大小写，时长从 `duration` 解析且边界包含，缺失时该条件不匹配。规则随设置保存立即生效，本地推断的等待通知同样参与匹配。通知中心的悬停提示同步收紧：仅在文字被截断时出现，限制为 32 字宽并统一浅色样式，不再用整卡大提示遮挡相邻记录。
@@ -97,9 +98,11 @@ AgentBell 是一个只做提醒的 Windows 桌面工具。AI Agent 每轮任务�
 
 ### 安装
 
-**系统要求**：Windows 10/11。托盘、全局快捷键、全屏 / 会议检测、回到终端等完整功能目前仅 Windows 可用；macOS / Linux 可运行基础弹窗与通知中心。
+**系统要求**：Windows 10/11，或带 X11 的 Linux 桌面（x64 / arm64）。Windows 提供完整功能；Linux X11 支持托盘、全局快捷键、全屏 / 会议检测、回到终端与终端启动；Wayland 会停用全局快捷键、窗口聚焦与前台检测，仅保留弹窗、通知中心、Hook、运行环境和托盘。
 
 #### 方式一：下载安装包（推荐）
+
+**Windows**
 
 1. 打开 [Releases](https://github.com/1wu-davy-2/AgentBell/releases/latest)，下载 `AgentBell.exe`。
 2. 放到一个**可写目录**，例如 `D:\Tools\AgentBell`，双击运行。
@@ -108,6 +111,23 @@ AgentBell 是一个只做提醒的 Windows 桌面工具。AI Agent 每轮任务�
 5. 关闭窗口只是隐藏到托盘；要彻底退出，用托盘菜单或左侧栏的「退出 AgentBell」。
 
 Release 提供稳定命名的 `AgentBell.exe` 和 `SHA256SUMS.txt`；自动更新只使用 `AgentBell.exe`，请勿改名。带构建编号的 `AgentBell-*.exe` 是同一文件的版本化副本，下载时选 `AgentBell.exe` 即可。
+
+**Linux（x64 / arm64）**
+
+1. 按架构下载 `AgentBell-linux-x64.tar.gz` 或 `AgentBell-linux-arm64.tar.gz`。
+2. 解压到可写目录并运行：
+
+```bash
+mkdir -p ~/AgentBell
+tar -xzf AgentBell-linux-x64.tar.gz -C ~/AgentBell
+chmod +x ~/AgentBell/AgentBell
+~/AgentBell/AgentBell
+```
+
+3. 首次运行会在程序旁生成 `config.json`、`logs/`、`agentbell.db` 和 `chat/`。设置页的「登录桌面后自动启动」会写入 `~/.config/autostart/agentbell.desktop`。
+4. 自动更新只使用当前架构对应的 `AgentBell-linux-<arch>.tar.gz`，下载后会校验大小与 SHA-256，再替换并重启。
+
+Linux 需要系统具备 `libegl1`、`libgl1`、`libxkbcommon-x11-0`、`libxcb-*` 等 Qt 运行库；Debian / Ubuntu 可安装 `libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-xfixes0`。
 
 **开启自动更新**：首次运行生成的 `config.json` 默认填入 `1wu-davy-2/AgentBell` 并勾选「启动时自动检查」，启动约 9 秒后检查 Releases，也可从托盘或 Agent 启动页手动检查。打包版会在下载完成、程序退出后自动备份、替换并重启；源码模式只下载安装包，不会替换正在运行的 Python 程序。从旧版本升级且仓库为空时，在「偏好设置 → 常规 → 程序更新」填写即可。
 
@@ -283,14 +303,22 @@ Agent 停下来等你处理时，可以让它显式上报一条 `status="running
 
 ```powershell
 pip install -r requirements-dev.txt
-python -m PyInstaller --noconfirm --clean AgentBell26.spec
-# 产物：dist\AgentBell-26.exe
+python -m PyInstaller --noconfirm --clean AgentBell29.spec
+# 产物：dist\AgentBell-29.exe
 ```
 
-推送到 `develop` 会触发测试与打包；推送 `v*` 标签会校验标签与 `agentbell/__init__.py` 的 `__version__` 一致，然后自动发布 Release。工作流会自动选用编号最大的 `AgentBell*.spec`，并把产物复制为稳定命名的 `AgentBell.exe`。
+Linux 原生构建（不跨架构编译）：
 
 ```bash
-git tag v2.14.0
+pip install -r requirements-dev.txt
+python -m PyInstaller --noconfirm AgentBell-linux.spec
+tar -czf dist/AgentBell-linux-x64.tar.gz -C dist AgentBell
+```
+
+推送到 `develop` 会触发 Windows 与 Linux（x64 / arm64）测试和打包；推送 `v*` 标签会校验标签与 `agentbell/__init__.py` 的 `__version__` 一致，然后自动发布 Release。工作流会选用编号最大的 `AgentBell<N>.spec` 并把产物复制为稳定命名的 `AgentBell.exe`；Linux 则按架构生成 `AgentBell-linux-x64.tar.gz` 与 `AgentBell-linux-arm64.tar.gz`，最后合并一份 `SHA256SUMS.txt`。
+
+```bash
+git tag v2.16.0
 git push origin develop --tags
 ```
 

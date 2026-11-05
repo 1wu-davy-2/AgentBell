@@ -5,6 +5,8 @@ import io
 import json
 import os
 import subprocess
+import sys
+import tarfile
 import zipfile
 from pathlib import Path
 
@@ -111,10 +113,24 @@ def test_resolve_node_release_prefers_lts(tmp_path: Path):
     service = tc.ToolchainService(
         tmp_path / "runtime", opener=FakeOpener(routes), registry=tc.NPM_REGISTRY_OFFICIAL
     )
-    version, zip_url, shasums_url = service.resolve_node_release()
+    version, zip_url, shasums_url = service.resolve_node_release(
+        platform_name="windows"
+    )
     assert version == "v26.13.0"
     assert zip_url.endswith(f"node-v26.13.0-{tc._windows_arch()}.zip")
     assert shasums_url.endswith("/SHASUMS256.txt")
+
+
+def test_resolve_node_release_linux_archives(tmp_path: Path):
+    routes, _ = _node_routes()
+    service = tc.ToolchainService(
+        tmp_path / "runtime", opener=FakeOpener(routes), registry=tc.NPM_REGISTRY_OFFICIAL
+    )
+    version, archive_url, _ = service.resolve_node_release(
+        platform_name="linux", arch="linux-arm64"
+    )
+    assert version == "v26.13.0"
+    assert archive_url.endswith("node-v26.13.0-linux-arm64.tar.xz")
 
 
 @pytest.mark.skipif(os.name != "nt", reason="portable Node install is Windows-only")
@@ -149,6 +165,63 @@ def test_install_node_rejects_bad_checksum(tmp_path: Path):
         pytest.skip("portable Node install is Windows-only")
     with pytest.raises(tc.ToolchainError):
         service.install_node()
+
+
+def _node_tar_routes(version: str = "v26.13.0") -> tuple[dict, bytes]:
+    arch = tc._node_arch("linux")
+    folder = f"node-{version}-{arch}"
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:xz") as bundle:
+        script = b"#!/bin/sh\necho v26.13.0\n"
+        info = tarfile.TarInfo(f"{folder}/bin/node")
+        info.size = len(script)
+        info.mode = 0o755
+        bundle.addfile(info, io.BytesIO(script))
+        npm = b"// npm"
+        npm_info = tarfile.TarInfo(
+            f"{folder}/lib/node_modules/npm/bin/npm-cli.js"
+        )
+        npm_info.size = len(npm)
+        npm_info.mode = 0o644
+        bundle.addfile(npm_info, io.BytesIO(npm))
+    archive = buffer.getvalue()
+    digest = hashlib.sha256(archive).hexdigest()
+    filename = f"{folder}.tar.xz"
+    index = json.dumps(
+        [
+            {"version": "v27.0.0-nightly", "lts": False},
+            {"version": version, "lts": "Lithium", "date": "2026-10-28"},
+        ]
+    ).encode("utf-8")
+    routes = {
+        tc.NODE_INDEX_URL: (index, {}),
+        f"{tc.NODE_DIST_ROOT}/{version}/{filename}": (archive, {}),
+        f"{tc.NODE_DIST_ROOT}/{version}/SHASUMS256.txt": (
+            f"{digest}  {filename}\n".encode("utf-8"),
+            {},
+        ),
+    }
+    return routes, archive
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"), reason="Linux portable Node install"
+)
+def test_install_node_linux_tar_xz(tmp_path: Path):
+    routes, archive = _node_tar_routes()
+    service = tc.ToolchainService(
+        tmp_path / "runtime", opener=FakeOpener(routes), registry=tc.NPM_REGISTRY_OFFICIAL
+    )
+    events: list[tc.Progress] = []
+    version = service.install_node(events.append)
+    assert version == "v26.13.0"
+    assert service.node_exe.is_file()
+    assert os.access(service.node_exe, os.X_OK)
+    assert service.npm_cli.is_file()
+    assert service.node_version() == "v26.13.0"
+    manifest = service.manifest()
+    assert manifest["node"]["runtime"]["archive_sha256"] == hashlib.sha256(archive).hexdigest()
+    assert events and events[-1].percent == 100
 
 
 def _fake_node(service: tc.ToolchainService) -> None:
@@ -212,7 +285,7 @@ def test_install_tool_builds_args_without_shell(tmp_path: Path):
     _fake_node(service)
     service.install_tool("claude-code")
     command = recorded[0]
-    assert command[0].endswith("node.exe")
+    assert Path(command[0]).name == ("node.exe" if os.name == "nt" else "node")
     assert command[1].endswith("npm-cli.js")
     assert "install" in command and "-g" in command
     assert "@anthropic-ai/claude-code" in command
@@ -354,8 +427,12 @@ def test_deepseek_env_only_when_key_present():
 def test_runtime_env_prepends_portable_dirs(tmp_path: Path):
     env = tc.runtime_env(tmp_path / "runtime", base={"PATH": "C:/Windows"})
     parts = env["PATH"].split(os.pathsep)
-    assert parts[0].endswith("agents")
-    assert parts[1].endswith("node")
+    if os.name == "nt":
+        assert parts[0].endswith("agents")
+        assert parts[1].endswith("node")
+    else:
+        assert parts[0].endswith(os.path.join("agents", "bin"))
+        assert parts[1].endswith(os.path.join("node", "bin"))
     assert parts[-1] == "C:/Windows"
     assert env["AGENTBELL_RUNTIME"].endswith("runtime")
 
