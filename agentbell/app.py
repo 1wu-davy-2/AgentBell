@@ -3,7 +3,9 @@ from __future__ import annotations
 import logging
 import os
 import queue
+import shutil
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -831,13 +833,29 @@ class AgentBellApp(QObject):
         if not Path(path).is_file():
             return
         try:
-            import winsound
+            if os.name == "nt":
+                import winsound
 
-            winsound.PlaySound(
-                str(path),
-                winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT,
+                winsound.PlaySound(
+                    str(path),
+                    winsound.SND_FILENAME
+                    | winsound.SND_ASYNC
+                    | winsound.SND_NODEFAULT,
+                )
+                return
+            if sys.platform == "darwin":
+                player = shutil.which("afplay")
+            else:
+                player = shutil.which("paplay") or shutil.which("aplay")
+            if not player:
+                raise RuntimeError("未找到可用的音频播放器")
+            subprocess.Popen(
+                [player, str(path)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                close_fds=True,
             )
-        except (ImportError, RuntimeError) as exc:
+        except (ImportError, RuntimeError, OSError) as exc:
             self.logger.warning("播放提示音失败：%s", exc)
 
     # ---------- ui ----------

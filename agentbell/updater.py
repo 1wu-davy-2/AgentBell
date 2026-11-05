@@ -243,7 +243,7 @@ def host_platform(platform_name: str | None = None) -> str:
     return sys.platform
 
 
-def linux_arch(machine: str = "") -> str:
+def target_arch(machine: str = "") -> str:
     text = (machine or _platform.machine()).strip().lower()
     if text in {"aarch64", "arm64"}:
         return "arm64"
@@ -253,9 +253,15 @@ def linux_arch(machine: str = "") -> str:
 def asset_label(
     platform_name: str | None = None, machine: str = ""
 ) -> str:
-    if host_platform(platform_name) == "linux":
-        return f"AgentBell-linux-{linux_arch(machine)}.tar.gz"
-    return "AgentBell.exe"
+    platform = host_platform(platform_name)
+    arch = target_arch(machine)
+    if platform == "linux":
+        return f"AgentBell-linux-{arch}.tar.gz"
+    if platform == "windows":
+        return "AgentBell-arm64.exe" if arch == "arm64" else "AgentBell.exe"
+    if platform == "darwin":
+        return f"AgentBell-macos-{arch}.dmg"
+    return f"AgentBell-{platform}"
 
 
 def select_asset(
@@ -264,8 +270,9 @@ def select_asset(
     platform_name: str | None = None,
     machine: str = "",
 ) -> ReleaseAsset | None:
-    if host_platform(platform_name) == "linux":
-        arch = linux_arch(machine)
+    platform = host_platform(platform_name)
+    arch = target_arch(machine)
+    if platform == "linux":
         candidates = [
             asset
             for asset in assets
@@ -281,18 +288,38 @@ def select_asset(
         if exact:
             return exact[0]
         return candidates[0] if candidates else None
+    if platform == "darwin":
+        # macOS updates are manual: unsigned apps cannot swap their own bundle.
+        return None
+    if platform != "windows":
+        return None
     candidates = [
         asset
         for asset in assets
         if asset.name.lower().endswith(".exe")
         and "agentbell" in asset.name.lower()
     ]
+    if arch == "arm64":
+        exact = [
+            asset
+            for asset in candidates
+            if asset.name.lower() == "agentbell-arm64.exe"
+        ]
+        if exact:
+            return exact[0]
+        arm = [
+            asset for asset in candidates if "arm64" in asset.name.lower()
+        ]
+        return arm[0] if arm else None
+    native = [
+        asset for asset in candidates if "arm64" not in asset.name.lower()
+    ]
     exact = [
-        asset for asset in candidates if asset.name.lower() == "agentbell.exe"
+        asset for asset in native if asset.name.lower() == "agentbell.exe"
     ]
     if exact:
         return exact[0]
-    return candidates[0] if candidates else None
+    return native[0] if native else None
 
 
 def fetch_latest_release(
@@ -393,11 +420,12 @@ def check_for_update(
         return UpdateCheck(
             "up_to_date", f"已是最新版本 {current}", current, normalized, release
         )
-    suffix = (
-        ""
-        if release.asset
-        else f"；该 Release 没有 {asset_label(platform_name, machine)}"
-    )
+    if host_platform(platform_name) == "darwin":
+        suffix = "；macOS 版请在 Release 页面下载新的 .dmg 或 .zip 替换应用"
+    elif release.asset:
+        suffix = ""
+    else:
+        suffix = f"；该 Release 没有 {asset_label(platform_name, machine)}"
     return UpdateCheck(
         "available",
         f"发现新版本 {release.version}{suffix}",
@@ -435,9 +463,11 @@ def download_release_asset(
     else:
         raise UpdateError("该 Release 的安装包格式不受支持")
     arch = ""
-    match = re.search(r"(linux-(?:x64|arm64))", lower_name)
+    match = re.search(r"(linux-(?:x64|arm64)|macos-(?:x64|arm64))", lower_name)
     if match:
         arch = f"-{match.group(1)}"
+    elif "arm64" in lower_name:
+        arch = "-windows-arm64"
     target = directory / f"AgentBell-{safe_version}{arch}{extension}"
     part = target.with_name(target.name + ".part")
 
@@ -713,6 +743,12 @@ def install_update(
             env=env,
             popen=popen,
             version=safe_version,
+        )
+    if target_platform == "darwin":
+        return InstallResult(
+            False,
+            "macOS 版本不支持原地更新，请从 Release 页面下载新的 .dmg 或 .zip，"
+            "替换「应用程序」中的 AgentBell.app",
         )
     return _install_windows_update(
         source,

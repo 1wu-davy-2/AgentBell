@@ -9,7 +9,7 @@
   <a href="https://github.com/1wu-davy-2/AgentBell/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/1wu-davy-2/AgentBell?label=release&color=2f6bff"></a>
   <a href="https://github.com/1wu-davy-2/AgentBell/actions/workflows/build.yml"><img alt="Build" src="https://github.com/1wu-davy-2/AgentBell/actions/workflows/build.yml/badge.svg"></a>
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-2f6bff"></a>
-  <img alt="Platform: Windows 10/11 · Linux x64/arm64" src="https://img.shields.io/badge/platform-Windows%2010%2F11%20%7C%20Linux%20x64%2Farm64-2f6bff">
+  <img alt="Platform: Windows x64/arm64 · macOS 14+ · Linux x64/arm64" src="https://img.shields.io/badge/platform-Windows%20x64%2Farm64%20%7C%20macOS%2014%2B%20%7C%20Linux%20x64%2Farm64-2f6bff">
 </p>
 
 <p align="center">
@@ -24,7 +24,7 @@
 
 ## 中文
 
-AgentBell 是一个只做提醒的 Windows / Linux 桌面工具。AI Agent 每轮任务结束时，向你本机的 HTTP 接口发一条消息，桌面右上角立刻弹出置顶提醒：
+AgentBell 是一个只做提醒的 Windows / macOS / Linux 桌面工具。AI Agent 每轮任务结束时，向你本机的 HTTP 接口发一条消息，桌面右上角立刻弹出置顶提醒：
 
 > 上一轮【生成竞品分析报告】已完成，请查看
 
@@ -47,6 +47,7 @@ AgentBell 是一个只做提醒的 Windows / Linux 桌面工具。AI Agent 每�
 
 ### 最近更新
 
+- **v2.18.0**：新增 Windows ARM64 与 macOS 版本。Windows ARM64 使用原生 Arm64 Python 与 PySide6 构建，发布 `AgentBell-arm64.exe`，更新器按架构选择资产；macOS 提供 Intel / Apple Silicon 两种 `.dmg` 与 `.zip`，配置与数据存放在 `~/Library/Application Support/AgentBell/`。macOS 版保留托盘、弹窗、通知中心、会话与 Hook，暂不支持全局快捷键、回到终端、空闲 / 全屏推断、便携 Node 安装与原地自动更新，更新时跳转 Release 页面下载。
 - **v2.17.1**：Linux 安装包扩展为四种格式。x64 与 arm64 现在各提供 `tar.gz`、`AppImage`、`deb` 与 `rpm`：tar.gz 解压即用并保留原地自动更新，AppImage 单文件直接运行，deb / rpm 可交给系统包管理器安装与卸载。全部格式由同一条 CI 流水线构建，并附 SHA-256 校验；AppImage 与系统包安装不再尝试原地替换，更新时下载新包或用包管理器升级。Windows 行为保持不变。v2.17.0 标签因 CI 未通过而没有发布，2.17.1 修复了 AppImage 工具路径与等待扫描测试的时序边界，功能与 2.17.0 相同。
 - **v2.16.1**：新增 Linux x64 / arm64 版本。Release 同时提供 `AgentBell-linux-x64.tar.gz` 和 `AgentBell-linux-arm64.tar.gz`，解压后直接运行 `AgentBell`；X11 桌面支持全局快捷键、回到终端、锁屏 / 空闲检测、终端启动和 Hook 接入，Wayland 下自动降级为基础提醒。Windows 行为保持不变。v2.16.0 标签因 Linux CI 测试未通过而没有发布，2.16.1 修复了跨平台路径解析与测试假设，功能与 2.16.0 相同。
 - **v2.15.0**：全屏提醒支持「仅在主屏显示卡片」。多显示器仍逐屏铺满背景与遮罩，勾选后只有主屏绘制提醒卡片，副屏保留背景图；点击任意屏幕仍会关闭全部提醒。设置页「全屏显示区域」新增开关，配置项为 `overlay_area.card_on_primary_only`，默认关闭。
@@ -99,19 +100,28 @@ AgentBell 是一个只做提醒的 Windows / Linux 桌面工具。AI Agent 每�
 
 ### 安装
 
-**系统要求**：Windows 10/11，或带 X11 的 Linux 桌面（x64 / arm64）。Windows 提供完整功能；Linux X11 支持托盘、全局快捷键、全屏 / 会议检测、回到终端与终端启动；Wayland 会停用全局快捷键、窗口聚焦与前台检测，仅保留弹窗、通知中心、Hook、运行环境和托盘。
+**系统要求**：Windows 10/11（x64 / ARM64）、macOS 14+（Intel / Apple Silicon），或带 X11 的 Linux 桌面（x64 / arm64）。Windows 提供完整功能；macOS 保留托盘、弹窗、通知中心、会话、Hook 与提示音，暂不支持全局快捷键、回到终端、空闲 / 全屏 / 会议 / 锁屏推断、便携 Node 安装与原地自动更新；Linux X11 支持托盘、全局快捷键、全屏 / 会议检测、回到终端与终端启动；Wayland 会停用全局快捷键、窗口聚焦与前台检测，仅保留弹窗、通知中心、Hook、运行环境和托盘。
 
 #### 方式一：下载安装包（推荐）
 
 **Windows**
 
-1. 打开 [Releases](https://github.com/1wu-davy-2/AgentBell/releases/latest)，下载 `AgentBell.exe`。
+1. 打开 [Releases](https://github.com/1wu-davy-2/AgentBell/releases/latest)：x64 下载 `AgentBell.exe`，ARM64 下载 `AgentBell-arm64.exe`。
 2. 放到一个**可写目录**，例如 `D:\Tools\AgentBell`，双击运行。
 3. 首次运行会在 exe 旁边生成 `config.json`、`logs/`、`agentbell.db` 和 `chat/`；在「运行环境」页安装组件时生成 `runtime/`。
 4. 如果 Windows SmartScreen 提示“未知发布者”，点「更多信息 → 仍要运行」。程序没有代码签名，这是正常提示。
 5. 关闭窗口只是隐藏到托盘；要彻底退出，用托盘菜单或左侧栏的「退出 AgentBell」。
 
-Release 提供稳定命名的 `AgentBell.exe` 和 `SHA256SUMS.txt`；自动更新只使用 `AgentBell.exe`，请勿改名。带构建编号的 `AgentBell-*.exe` 是同一文件的版本化副本，下载时选 `AgentBell.exe` 即可。
+Release 提供稳定命名的 `AgentBell.exe` / `AgentBell-arm64.exe` 和 `SHA256SUMS.txt`；自动更新按当前架构选择对应文件，请勿改名。带构建编号的 `AgentBell-<构建号>[-arm64].exe` 是同一构件的版本化副本，下载时选稳定命名即可。
+
+**macOS（Intel / Apple Silicon）**
+
+1. 打开 [Releases](https://github.com/1wu-davy-2/AgentBell/releases/latest)：Intel 下载 `AgentBell-macos-x64.dmg`，Apple Silicon 下载 `AgentBell-macos-arm64.dmg`；也可以使用同名 `.zip`。
+2. 打开 dmg，把 `AgentBell.app` 拖进「应用程序」后启动。
+3. 应用使用 ad-hoc 签名，没有 Apple Developer ID 公证。首次启动若被 Gatekeeper 拦截，在 Finder 中右键应用选择「打开」，或到「系统设置 → 隐私与安全性」点「仍要打开」。
+4. 首次运行会在 `~/Library/Application Support/AgentBell/` 生成 `config.json`、`logs/`、`agentbell.db` 和 `chat/`；应用包保持只读，不写入 `Applications`。
+5. 「登录后自动启动」写入 `~/Library/LaunchAgents/com.agentbell.app.plist`。
+6. macOS 版不执行原地更新：发现新版本时提示并打开 Release 页面，请下载新的 dmg / zip 覆盖旧版。
 
 **Linux（x64 / arm64）**
 
@@ -147,7 +157,7 @@ AppImage 与 deb / rpm 安装不支持原地自动更新：AppImage 请下载新
 
 Linux 需要系统具备 `libegl1`、`libgl1`、`libxkbcommon-x11-0`、`libxcb-*` 等 Qt 运行库；Debian / Ubuntu 可安装 `libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-xfixes0`。
 
-**开启自动更新**：首次运行生成的 `config.json` 默认填入 `1wu-davy-2/AgentBell` 并勾选「启动时自动检查」，启动约 9 秒后检查 Releases，也可从托盘或 Agent 启动页手动检查。打包版会在下载完成、程序退出后自动备份、替换并重启；源码模式只下载安装包，不会替换正在运行的 Python 程序。从旧版本升级且仓库为空时，在「偏好设置 → 常规 → 程序更新」填写即可。
+**开启自动更新**：首次运行生成的 `config.json` 默认填入 `1wu-davy-2/AgentBell` 并勾选「启动时自动检查」，启动约 9 秒后检查 Releases，也可从托盘或 Agent 启动页手动检查。Windows 与 Linux 打包版会在下载完成、程序退出后自动备份、替换并重启；macOS 只提示并打开 Release 页面；源码模式只下载安装包，不会替换正在运行的 Python 程序。从旧版本升级且仓库为空时，在「偏好设置 → 常规 → 程序更新」填写即可。
 
 #### 方式二：从源码运行
 
@@ -331,16 +341,26 @@ Linux 原生构建（不跨架构编译）：
 pip install -r requirements-dev.txt
 python -m PyInstaller --noconfirm AgentBell-linux.spec
 # 仅 tar.gz + deb + rpm（不传 AppImage 工具）
-python scripts/build_linux_packages.py --binary dist/AgentBell --version 2.17.1 --arch x64
+python scripts/build_linux_packages.py --binary dist/AgentBell --version 2.18.0 --arch x64
 # 生成全部四种格式
-python scripts/build_linux_packages.py --binary dist/AgentBell --version 2.17.1 --arch x64 \
+python scripts/build_linux_packages.py --binary dist/AgentBell --version 2.18.0 --arch x64 \
   --appimagetool ./appimagetool --appimage-runtime ./runtime-x86_64
 ```
 
-推送到 `develop` 会触发 Windows 与 Linux（x64 / arm64）测试和打包；推送 `v*` 标签会校验标签与 `agentbell/__init__.py` 的 `__version__` 一致，然后自动发布 Release。工作流会选用编号最大的 `AgentBell<N>.spec` 并把产物复制为稳定命名的 `AgentBell.exe`；Linux 按架构生成 `AgentBell-linux-<arch>.tar.gz`、`.AppImage`、`.deb` 与 `.rpm`，每个架构附一份 `SHA256SUMS-linux-<arch>.txt`，最后合并一份 `SHA256SUMS.txt`。
+macOS 原生构建（需在对应架构的 Mac 或 CI runner 上执行）：
 
 ```bash
-git tag v2.17.1
+pip install -r requirements-dev.txt
+python scripts/make_macos_icon.py
+python -m PyInstaller --noconfirm AgentBell-macos.spec
+python scripts/build_macos_packages.py \
+  --app dist/AgentBell.app --version 2.18.0 --arch arm64
+```
+
+推送到 `develop` 会触发 Windows（x64 / arm64）、Linux（x64 / arm64）与 macOS（x64 / arm64）测试和打包；推送 `v*` 标签会校验标签与 `agentbell/__init__.py` 的 `__version__` 一致，然后自动发布 Release。Windows 工作流会选用编号最大的 `AgentBell<N>.spec`，x64 产物复制为 `AgentBell.exe`，ARM64 命名 `AgentBell-arm64.exe`；Linux 按架构生成 `AgentBell-linux-<arch>.tar.gz`、`.AppImage`、`.deb` 与 `.rpm`；macOS 生成 `AgentBell-macos-<arch>.dmg` 与 `.zip`。每个平台与架构附一份校验文件，最后合并一份 `SHA256SUMS.txt`。
+
+```bash
+git tag v2.18.0
 git push origin develop --tags
 ```
 

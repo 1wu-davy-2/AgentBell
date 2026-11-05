@@ -5,8 +5,11 @@ from pathlib import Path
 
 
 def app_dir() -> Path:
-    """Directory that owns config.json and logs/ (portable, beside the exe)."""
+    """Directory that owns config.json and logs/."""
     if getattr(sys, "frozen", False):
+        if sys.platform == "darwin":
+            # The bundle in /Applications is read-only for config and updates.
+            return Path.home() / "Library" / "Application Support" / "AgentBell"
         return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parent.parent
 

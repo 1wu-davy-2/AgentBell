@@ -12,7 +12,9 @@ import pytest
 
 from agentbell import hooks
 
-POWERSHELL = shutil.which("powershell.exe") or shutil.which("powershell")
+POWERSHELL = (
+    shutil.which("powershell.exe") or shutil.which("powershell")
+) if os.name == "nt" else None
 requires_powershell = pytest.mark.skipif(
     POWERSHELL is None, reason="Windows PowerShell is required for helper tests"
 )

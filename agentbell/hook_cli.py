@@ -11,6 +11,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Sequence
 
+from .paths import app_dir as default_app_dir
+
 MAX_TITLE = 100
 MAX_SUMMARY = 200
 MAX_SESSION = 120
@@ -88,9 +90,7 @@ def _turn() -> str:
 
 
 def _app_dir() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
-    return Path(__file__).resolve().parent.parent
+    return default_app_dir()
 
 
 def _state_path(app_dir: Path, agent: str, session_id: str) -> Path:

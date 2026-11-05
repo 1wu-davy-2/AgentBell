@@ -127,7 +127,9 @@ def test_hook_cli_ignores_unknown_events_and_completion_notifications(tmp_path, 
     )
 
 
-@pytest.mark.skipif(os.name == "nt", reason="Linux path layout")
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"), reason="Linux path layout"
+)
 def test_hook_cli_linux_source_command_is_quoted(tmp_path):
     from agentbell import hooks
 

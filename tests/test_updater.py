@@ -25,10 +25,10 @@ from agentbell.updater import (
     install_update,
     is_allowed_download_url,
     is_newer,
-    linux_arch,
     linux_install_blocker,
     normalize_repo,
     select_asset,
+    target_arch,
     version_key,
 )
 
@@ -399,11 +399,77 @@ def _tar_gz(entries: dict[str, bytes]) -> bytes:
     return buffer.getvalue()
 
 
-def test_host_platform_and_linux_arch():
+def test_host_platform_and_target_arch():
     assert host_platform("linux") == "linux"
-    assert linux_arch("x86_64") == "x64"
-    assert linux_arch("aarch64") == "arm64"
-    assert linux_arch("arm64") == "arm64"
+    assert target_arch("x86_64") == "x64"
+    assert target_arch("aarch64") == "arm64"
+    assert target_arch("arm64") == "arm64"
+    assert target_arch("AMD64") == "x64"
+
+
+def test_select_asset_windows_arm64_prefers_native_build():
+    x64 = ReleaseAsset("AgentBell.exe", "https://github.com/a/b/x.exe")
+    x64_versioned = ReleaseAsset(
+        "AgentBell-2.18.0.exe", "https://github.com/a/b/x2.exe"
+    )
+    arm = ReleaseAsset(
+        "AgentBell-arm64.exe", "https://github.com/a/b/a.exe"
+    )
+    arm_versioned = ReleaseAsset(
+        "AgentBell-2.18.0-arm64.exe", "https://github.com/a/b/a2.exe"
+    )
+    assets = [x64, x64_versioned, arm_versioned, arm]
+
+    assert (
+        select_asset(assets, platform_name="windows", machine="ARM64") is arm
+    )
+    assert (
+        select_asset(
+            [x64, x64_versioned, arm_versioned],
+            platform_name="windows",
+            machine="aarch64",
+        )
+        is arm_versioned
+    )
+    assert (
+        select_asset(assets, platform_name="windows", machine="AMD64") is x64
+    )
+    assert (
+        select_asset(
+            [arm, x64_versioned], platform_name="windows", machine="x86_64"
+        )
+        is x64_versioned
+    )
+    assert select_asset(
+        [x64, x64_versioned], platform_name="windows", machine="arm64"
+    ) is None
+    assert (
+        asset_label("windows", "ARM64") == "AgentBell-arm64.exe"
+    )
+    assert asset_label("windows", "x86_64") == "AgentBell.exe"
+    assert (
+        asset_label("darwin", "arm64") == "AgentBell-macos-arm64.dmg"
+    )
+
+
+def test_darwin_has_no_auto_update_asset():
+    dmg = ReleaseAsset(
+        "AgentBell-macos-arm64.dmg", "https://github.com/a/b/x.dmg"
+    )
+    assert (
+        select_asset([dmg], platform_name="darwin", machine="arm64") is None
+    )
+    result = check_for_update(
+        "acme/AgentBell",
+        "2.17.1",
+        fetch=lambda repo: ReleaseInfo(version="2.18.0"),
+        platform_name="darwin",
+        machine="arm64",
+    )
+    assert result.status == "available"
+    assert result.can_install is False
+    assert "Release 页面" in result.message
+    assert "AgentBell-macos-arm64.dmg" not in result.message
 
 
 def test_download_linux_asset_keeps_arch_in_name(tmp_path):
@@ -534,3 +600,35 @@ def test_install_update_rejects_missing_or_empty_file(tmp_path):
         script_dir=tmp_path / "updates",
     )
     assert result.ok is False
+
+
+def test_download_windows_arm64_asset_keeps_arch_in_name(tmp_path):
+    content = b"MZ arm64 executable"
+    asset = ReleaseAsset(
+        "AgentBell-arm64.exe",
+        "https://github.com/acme/AgentBell/releases/download/v9/AgentBell-arm64.exe",
+        size=len(content),
+        digest="sha256:" + hashlib.sha256(content).hexdigest(),
+    )
+    target = download_release_asset(
+        ReleaseInfo(version="9.9.9", asset=asset),
+        dest_dir=tmp_path,
+        opener=FakeOpener([FakeResponse(content)]),
+    )
+    assert target == tmp_path / "AgentBell-9.9.9-windows-arm64.exe"
+    assert target.read_bytes() == content
+
+
+def test_install_update_blocks_macos_auto_install(tmp_path):
+    source = tmp_path / "AgentBell-macos-arm64.dmg"
+    source.write_bytes(b"dmg payload")
+    result = install_update(
+        source,
+        frozen=True,
+        executable=str(tmp_path / "AgentBell"),
+        script_dir=tmp_path / "updates",
+        platform_name="darwin",
+    )
+    assert result.ok is False
+    assert ".dmg" in result.message
+    assert not (tmp_path / "updates").exists()

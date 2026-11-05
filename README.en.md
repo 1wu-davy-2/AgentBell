@@ -10,12 +10,12 @@
   <a href="https://github.com/1wu-davy-2/AgentBell/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/1wu-davy-2/AgentBell?label=release&color=2f6bff"></a>
   <a href="https://github.com/1wu-davy-2/AgentBell/actions/workflows/build.yml"><img alt="Build" src="https://github.com/1wu-davy-2/AgentBell/actions/workflows/build.yml/badge.svg"></a>
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-2f6bff"></a>
-  <img alt="Platform: Windows 10/11 · Linux x64/arm64" src="https://img.shields.io/badge/platform-Windows%2010%2F11%20%7C%20Linux%20x64%2Farm64-2f6bff">
+  <img alt="Platform: Windows x64/arm64 · macOS 14+ · Linux x64/arm64" src="https://img.shields.io/badge/platform-Windows%20x64%2Farm64%20%7C%20macOS%2014%2B%20%7C%20Linux%20x64%2Farm64-2f6bff">
 </p>
 
 ---
 
-AgentBell is a local-first Windows / Linux notification desk for AI agents. When an agent finishes a round, it sends one message to a loopback-only HTTP endpoint; AgentBell immediately shows a top-most card in the corner of your desktop, keeps a searchable history, and stays in the system tray after you close the window.
+AgentBell is a local-first Windows / macOS / Linux notification desk for AI agents. When an agent finishes a round, it sends one message to a loopback-only HTTP endpoint; AgentBell immediately shows a top-most card in the corner of your desktop, keeps a searchable history, and stays in the system tray after you close the window.
 
 It does not orchestrate agents, proxy model requests, upload data, or ship a web console. The HTTP server binds to `127.0.0.1` only, and every screen is a native PySide6 window. The UI is currently Chinese-first; the HTTP API and configuration are language-neutral.
 
@@ -37,6 +37,7 @@ AgentBell does one thing well: **tell you the moment a round ends, and let you g
 
 ## Recent updates
 
+- **v2.18.0**: Windows arm64 and macOS builds. Windows now ships `AgentBell.exe` (x64) plus `AgentBell-arm64.exe` for Arm64 devices; the updater picks the asset that matches the running architecture and never swaps x64 and arm64 binaries. macOS 14+ gets native `.dmg` and `.zip` builds for Apple Silicon and Intel, signed ad-hoc for local use. The packaged macOS app keeps config, logs, and the database in `~/Library/Application Support/AgentBell` and registers a LaunchAgent. macOS supports cards, the notification center, history, audio, and hooks, but not global hotkeys, focus-terminal, fullscreen/meeting/idle detection, the portable runtime, or in-place updates; install a new `.dmg`/`.zip` manually. Linux gained audio playback and a native port-conflict hint.
 - **v2.17.1**: Four Linux package formats. Each architecture now ships `tar.gz`, `AppImage`, `deb`, and `rpm`: the tarball stays portable and self-updating, the AppImage runs as a single file, and deb/rpm installs are managed by the system package manager. All formats come from the same CI pipeline with SHA-256 checksums. AppImage and system-package installs no longer attempt in-place updates; download a new package or upgrade with the package manager. Windows behavior is unchanged. The v2.17.0 tag was never published because its CI run failed; 2.17.1 fixes AppImage tool path resolution and a timing boundary in the wait-scanner test without changing behavior.
 - **v2.16.1**: Linux x64 and arm64 builds. Releases now include `AgentBell-linux-x64.tar.gz` and `AgentBell-linux-arm64.tar.gz`; extract and run the `AgentBell` binary. On X11 it supports global hotkeys, back-to-terminal, idle/lock detection, terminal launch, and hook installation; on Wayland these degrade to basic notifications. Windows behavior is unchanged. The v2.16.0 tag was never published because its Linux CI tests failed; 2.16.1 fixes cross-platform path parsing and test assumptions without changing behavior.
 - **v2.15.0**: Fullscreen alerts can keep the card on the primary display only. Every monitor still gets the backdrop and scrim, but secondary screens show just the background image; clicking any screen still dismisses the alert everywhere. Toggle it under Preferences → Popup appearance → Fullscreen area, or set `overlay_area.card_on_primary_only` (off by default).
@@ -67,14 +68,23 @@ AgentBell does one thing well: **tell you the moment a round ends, and let you g
 
 ## Install
 
-**Requirements**: Windows 10/11, or a Linux desktop with X11 (x64 / arm64). Windows has the full feature set. Linux X11 supports the tray, global hotkeys, fullscreen/meeting detection, focus-terminal, and terminal launch. On Wayland, global hotkeys, window focus, and foreground detection are disabled; popups, the notification center, hooks, the runtime manager, and the tray remain available.
+**Requirements**: Windows 10/11 (x64 / arm64), macOS 14 or later (Apple Silicon / Intel), or a Linux desktop with X11 (x64 / arm64). Windows has the full feature set. macOS supports cards, the notification center, history, search, statistics, audio, and reminder hooks, but not global hotkeys, back-to-terminal, fullscreen/meeting/idle/lock detection, the portable runtime manager, or in-place updates. Linux X11 supports the tray, global hotkeys, fullscreen/meeting detection, focus-terminal, and terminal launch. On Wayland, global hotkeys, window focus, and foreground detection are disabled; popups, the notification center, hooks, the runtime manager, and the tray remain available.
 
 ### Download (recommended)
 
 **Windows**
 
-1. Download `AgentBell.exe` from [Releases](https://github.com/1wu-davy-2/AgentBell/releases/latest).
+1. Download `AgentBell.exe` (x64) or `AgentBell-arm64.exe` (Arm64) from [Releases](https://github.com/1wu-davy-2/AgentBell/releases/latest).
 2. Put it in a writable directory and run it. `config.json`, `logs/`, `agentbell.db`, and `chat/` are created beside the executable.
+
+**macOS (14+, Apple Silicon / Intel)**
+
+1. Open [Releases](https://github.com/1wu-davy-2/AgentBell/releases/latest): Intel downloads `AgentBell-macos-x64.dmg`, Apple Silicon downloads `AgentBell-macos-arm64.dmg`; matching `.zip` archives are also available.
+2. Open the dmg and drag `AgentBell.app` into **Applications**, then launch it.
+3. The build uses ad-hoc signing without an Apple Developer ID notarization. If Gatekeeper blocks the first launch, right-click the app in Finder and choose **Open**, or allow it under **System Settings → Privacy & Security**.
+4. The first run creates `config.json`, `logs/`, `agentbell.db`, and `chat/` in `~/Library/Application Support/AgentBell/`; the app bundle stays read-only and nothing is written into `Applications`.
+5. **Launch at login** writes `~/Library/LaunchAgents/com.agentbell.app.plist`.
+6. macOS builds do not update in place: when a new version is found, AgentBell points you to the Release page; download the new dmg/zip and replace the app.
 
 **Linux (x64 / arm64)**
 
@@ -101,15 +111,15 @@ Use the arm64 assets on arm64. The portable updater selects the tarball for the 
 
 ### Windows quick start
 
-1. Open [Releases](https://github.com/1wu-davy-2/AgentBell/releases/latest) and download `AgentBell.exe`.
+1. Open [Releases](https://github.com/1wu-davy-2/AgentBell/releases/latest) and download `AgentBell.exe` (x64) or `AgentBell-arm64.exe` (Arm64).
 2. Put it in a **writable directory**, such as `D:\Tools\AgentBell`, and double-click it.
 3. On first launch, `config.json`, `logs/`, `agentbell.db`, and `chat/` are created in the same directory; installing components from the **Runtime** page creates `runtime/`.
 4. If SmartScreen warns about an unknown publisher, choose **More info → Run anyway**. The build is not code-signed.
 5. Closing the window hides it to the tray. Use the tray menu or **退出 AgentBell** in the sidebar to quit.
 
-The release ships `AgentBell.exe` and `SHA256SUMS.txt`. The updater only uses `AgentBell.exe`, so do not rename it. A build-numbered `AgentBell-*.exe` is a byte-identical copy; downloading `AgentBell.exe` is enough.
+The release ships the stable names `AgentBell.exe` / `AgentBell-arm64.exe` and `SHA256SUMS.txt`. The updater picks the file that matches the running architecture, so do not rename them. A build-numbered `AgentBell-<build>[-arm64].exe` is a byte-identical copy; downloading the stable name is enough.
 
-**Enable self-update**: the first-run `config.json` defaults to `1wu-davy-2/AgentBell` with the startup check enabled. AgentBell checks Releases about 9 seconds after launch; the tray menu and the Agent launcher page can also trigger a manual check. Packaged builds download, verify, back up, replace, and restart automatically after exit. Source mode only downloads the installer and never replaces the running Python process. If you upgraded from an older version with an empty repo, fill it in under **Preferences → General → Program update**.
+**Enable self-update**: the first-run `config.json` defaults to `1wu-davy-2/AgentBell` with the startup check enabled. AgentBell checks Releases about 9 seconds after launch; the tray menu and the Agent launcher page can also trigger a manual check. Packaged Windows and Linux builds download, verify, back up, replace, and restart automatically after exit; macOS shows a prompt and opens the Release page; source mode only downloads the installer and never replaces the running Python process. If you upgraded from an older version with an empty repo, fill it in under **Preferences → General → Program update**.
 
 ### From source
 
@@ -269,16 +279,26 @@ Linux builds must run natively per architecture:
 pip install -r requirements-dev.txt
 python -m PyInstaller --noconfirm AgentBell-linux.spec
 # tar.gz + deb + rpm only
-python scripts/build_linux_packages.py --binary dist/AgentBell --version 2.17.1 --arch x64
+python scripts/build_linux_packages.py --binary dist/AgentBell --version 2.18.0 --arch x64
 # all four formats
-python scripts/build_linux_packages.py --binary dist/AgentBell --version 2.17.1 --arch x64 \
+python scripts/build_linux_packages.py --binary dist/AgentBell --version 2.18.0 --arch x64 \
   --appimagetool ./appimagetool --appimage-runtime ./runtime-x86_64
 ```
 
-Pushing to `develop` runs tests and packaging on Windows and Linux (x64 / arm64). Pushing a `v*` tag verifies that the tag matches `__version__` in `agentbell/__init__.py`, then publishes a GitHub Release automatically. The workflow picks the highest-numbered `AgentBell<N>.spec` and copies its output to the stable `AgentBell.exe` name; Linux produces `AgentBell-linux-<arch>.tar.gz`, `.AppImage`, `.deb`, and `.rpm`, with a `SHA256SUMS-linux-<arch>.txt` per architecture, and the release job merges a single `SHA256SUMS.txt`.
+macOS builds also run natively on a Mac or CI runner of the target architecture:
 
 ```bash
-git tag v2.17.1
+pip install -r requirements-dev.txt
+python scripts/make_macos_icon.py
+python -m PyInstaller --noconfirm AgentBell-macos.spec
+python scripts/build_macos_packages.py \
+  --app dist/AgentBell.app --version 2.18.0 --arch arm64
+```
+
+Pushing to `develop` runs tests and packaging on Windows (x64 / arm64), Linux (x64 / arm64), and macOS (x64 / arm64). Pushing a `v*` tag verifies that the tag matches `__version__` in `agentbell/__init__.py`, then publishes a GitHub Release automatically. The Windows workflow picks the highest-numbered `AgentBell<N>.spec`, copies the x64 output to `AgentBell.exe`, and names the arm64 build `AgentBell-arm64.exe`; Linux produces `AgentBell-linux-<arch>.tar.gz`, `.AppImage`, `.deb`, and `.rpm`; macOS produces `AgentBell-macos-<arch>.dmg` and `.zip`. Each platform and architecture writes its own checksum file, and the release job merges a single `SHA256SUMS.txt`.
+
+```bash
+git tag v2.18.0
 git push origin develop --tags
 ```
 

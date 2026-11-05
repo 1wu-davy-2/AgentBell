@@ -46,17 +46,22 @@ def _pick_ui_font() -> str:
 
 
 def _port_error_text(port: int, error: Exception) -> str:
+    if os.name == "nt":
+        hint = f"Windows 可执行以下命令查看占用：\nnetstat -ano | findstr :{port}"
+    elif sys.platform == "darwin":
+        hint = (
+            "macOS 可执行以下命令查看占用：\n"
+            f"lsof -nP -iTCP:{port} -sTCP:LISTEN"
+        )
+    else:
+        hint = f"Linux 可执行以下命令查看占用：\nss -ltnp | grep :{port}"
     return (
         f"无法在 127.0.0.1:{port} 启动 HTTP 服务。\n\n"
         f"{error}\n\n"
         "可能的处理方式：\n"
         "1. 修改 config.json 中的 port 为其他端口后重试；\n"
         "2. 关闭占用该端口的程序后重试。\n\n"
-        + (
-            f"Windows 可执行以下命令查看占用：\nnetstat -ano | findstr :{port}"
-            if os.name == "nt"
-            else f"Linux 可执行以下命令查看占用：\nss -ltnp | grep :{port}"
-        )
+        + hint
     )
 
 
