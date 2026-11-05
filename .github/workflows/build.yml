@@ -2,7 +2,7 @@ name: Build AgentBell
 
 on:
   push:
-    branches: [main, master, develop]
+    branches: [main, master, develop, develop-integrations]
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
@@ -57,7 +57,20 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements-dev.txt
       - name: Run tests
-        run: python -m pytest tests -q
+        shell: bash
+        run: |
+          set +e
+          python -m pytest tests -q --tb=short 2>&1 | tee pytest.log
+          code=${PIPESTATUS[0]}
+          if [ "$code" -ne 0 ]; then
+            {
+              echo "## Pytest failure (Linux ${{ matrix.arch }})"
+              echo '```'
+              tail -n 150 pytest.log
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$code"
 
   build:
     name: Package AgentBell.exe
