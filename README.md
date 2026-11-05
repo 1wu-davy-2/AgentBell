@@ -47,6 +47,7 @@ AgentBell 是一个只做提醒的 Windows / macOS / Linux 桌面工具。AI Age
 
 ### 最近更新
 
+- **v2.18.1**：修复 arm64 平台上的 CI 测试。更新器与资产选择测试此前依赖宿主机架构，在 Windows / Linux / macOS 的 arm64 runner 上会按 arm64 选包而失败；现在测试显式传入 `machine`，不再受构建机影响。同时把时间格式测试的夏令时换算改为按本地时区校验。功能与 2.18.0 相同，2.18.0 标签因 arm64 测试未通过而没有发布。
 - **v2.18.0**：新增 Windows ARM64 与 macOS 版本。Windows ARM64 使用原生 Arm64 Python 与 PySide6 构建，发布 `AgentBell-arm64.exe`，更新器按架构选择资产；macOS 提供 Intel / Apple Silicon 两种 `.dmg` 与 `.zip`，配置与数据存放在 `~/Library/Application Support/AgentBell/`。macOS 版保留托盘、弹窗、通知中心、会话与 Hook，暂不支持全局快捷键、回到终端、空闲 / 全屏推断、便携 Node 安装与原地自动更新，更新时跳转 Release 页面下载。
 - **v2.17.1**：Linux 安装包扩展为四种格式。x64 与 arm64 现在各提供 `tar.gz`、`AppImage`、`deb` 与 `rpm`：tar.gz 解压即用并保留原地自动更新，AppImage 单文件直接运行，deb / rpm 可交给系统包管理器安装与卸载。全部格式由同一条 CI 流水线构建，并附 SHA-256 校验；AppImage 与系统包安装不再尝试原地替换，更新时下载新包或用包管理器升级。Windows 行为保持不变。v2.17.0 标签因 CI 未通过而没有发布，2.17.1 修复了 AppImage 工具路径与等待扫描测试的时序边界，功能与 2.17.0 相同。
 - **v2.16.1**：新增 Linux x64 / arm64 版本。Release 同时提供 `AgentBell-linux-x64.tar.gz` 和 `AgentBell-linux-arm64.tar.gz`，解压后直接运行 `AgentBell`；X11 桌面支持全局快捷键、回到终端、锁屏 / 空闲检测、终端启动和 Hook 接入，Wayland 下自动降级为基础提醒。Windows 行为保持不变。v2.16.0 标签因 Linux CI 测试未通过而没有发布，2.16.1 修复了跨平台路径解析与测试假设，功能与 2.16.0 相同。

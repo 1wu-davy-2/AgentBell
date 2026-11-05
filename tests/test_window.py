@@ -323,7 +323,8 @@ def test_time_formatting():
 
     assert format_received_at(today, now) == "今天 09:05"
     assert format_received_at(yesterday, now) == "昨天 20:30"
-    assert format_received_at(older, now) == f"{older:%m-%d %H:%M}"
+    # older 可能跨越夏令时，期望值按本地时区换算。
+    assert format_received_at(older, now) == f"{older.astimezone():%m-%d %H:%M}"
 
 
 def test_format_seconds():

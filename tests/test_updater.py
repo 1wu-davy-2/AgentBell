@@ -99,12 +99,18 @@ def test_select_asset_prefers_stable_name_and_falls_back():
     )
     other = ReleaseAsset("notes.txt", "https://github.com/a/b/n.txt")
     assert (
-        select_asset([versioned, stable, other], platform_name="windows") is stable
+        select_asset(
+            [versioned, stable, other], platform_name="windows", machine="x86_64"
+        )
+        is stable
     )
     assert (
-        select_asset([versioned, other], platform_name="windows") is versioned
+        select_asset([versioned, other], platform_name="windows", machine="x86_64")
+        is versioned
     )
-    assert select_asset([other], platform_name="windows") is None
+    assert (
+        select_asset([other], platform_name="windows", machine="x86_64") is None
+    )
 
 
 def test_select_asset_linux_picks_exact_arch_archive():
@@ -141,7 +147,7 @@ def test_select_asset_linux_picks_exact_arch_archive():
     assert select_asset([other], platform_name="linux") is None
     assert select_asset(package_assets, platform_name="linux") is None
     assert asset_label("linux", "aarch64") == "AgentBell-linux-arm64.tar.gz"
-    assert asset_label("windows") == "AgentBell.exe"
+    assert asset_label("windows", "x86_64") == "AgentBell.exe"
 
 
 def test_check_for_update_is_disabled_without_repo():
@@ -168,6 +174,8 @@ def test_check_for_update_reports_up_to_date_and_available():
         "acme/AgentBell",
         current,
         fetch=lambda repo: ReleaseInfo(version="2.9.0", asset=asset),
+        platform_name="windows",
+        machine="x86_64",
     )
     assert newer.status == "available"
     assert newer.available is True
@@ -179,6 +187,7 @@ def test_check_for_update_reports_up_to_date_and_available():
         current,
         fetch=lambda repo: ReleaseInfo(version="2.9.0"),
         platform_name="windows",
+        machine="x86_64",
     )
     assert without_asset.available is True
     assert without_asset.can_install is False
@@ -221,6 +230,7 @@ def test_fetch_latest_release_parses_github_payload():
         "https://github.com/acme/AgentBell",
         opener=opener,
         platform_name="windows",
+        machine="x86_64",
     )
 
     assert release.version == "9.9.9"
