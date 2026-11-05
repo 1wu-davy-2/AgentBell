@@ -9,6 +9,7 @@ import plistlib
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import Sequence
 
@@ -66,6 +67,19 @@ def build_zip(
     return destination
 
 
+def _run_with_retry(
+    command: list[str], *, attempts: int = 3, delay: float = 2.0
+) -> None:
+    for attempt in range(1, attempts + 1):
+        try:
+            subprocess.run(command, check=True)
+            return
+        except subprocess.CalledProcessError:
+            if attempt == attempts:
+                raise
+            time.sleep(delay * attempt)
+
+
 def build_dmg(
     app: Path, destination: Path, *, hdiutil: str = "hdiutil"
 ) -> Path:
@@ -75,7 +89,8 @@ def build_dmg(
         staging = Path(raw)
         shutil.copytree(app, staging / app.name, symlinks=True)
         (staging / "Applications").symlink_to("/Applications")
-        subprocess.run(
+        # hdiutil 偶发 "Resource busy"，重试几次即可。
+        _run_with_retry(
             [
                 hdiutil,
                 "create",
@@ -87,8 +102,7 @@ def build_dmg(
                 "-format",
                 "UDZO",
                 str(destination),
-            ],
-            check=True,
+            ]
         )
     return destination
 
