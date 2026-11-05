@@ -975,6 +975,8 @@ def test_session_view_renders_searches_and_exports(window_factory, tmp_path, mon
     cards = window._session_host.findChildren(AgentSessionCard)
     assert len(cards) == 1
     title = cards[0].findChildren(QLabel, "sessionTitle")[0]
+    title.resize(40, 24)
+    title._apply_elision()
     assert title.toolTip() == "帮我重构设置页的布局"
 
     window._session_search.setText("重构设置页")

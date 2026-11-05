@@ -284,6 +284,10 @@ if _IS_WINDOWS:  # pragma: no branch - platform dependent
         wintypes.DWORD,
     ]
     _iphlpapi.GetExtendedTcpTable.restype = wintypes.DWORD
+else:  # pragma: no cover - platform dependent
+    _user32 = None
+    _kernel32 = None
+    _iphlpapi = None
 
 
 @dataclass(frozen=True, slots=True)

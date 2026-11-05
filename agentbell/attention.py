@@ -297,8 +297,9 @@ def _project_label(session_path: Path) -> str:
     folder = session_path.parent.name.strip()
     if len(folder) >= 3 and folder[1:3] == "--" and folder[0].isalpha():
         rest = folder[3:].replace("-", "\\")
-        name = Path(rest).name
-        return name or folder
+        parts = [part for part in re.split(r"[\\/]+", rest) if part]
+        if parts:
+            return parts[-1]
     return folder
 
 

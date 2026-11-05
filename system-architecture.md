@@ -48,7 +48,7 @@
 
 2.12.0 新增只读动作：`/notify` 的 `actions` 接受 `session` 与 `timeline`，分别打开内置会话记录与本次运行时间线。两类动作只读取通知自身的 `session_id` / `run_id`，忽略 `value`，不执行任何外部命令；未知标识或缺少标识时给出非阻塞提示。动作顺序固定为 `focus` → `session` → `timeline` → 其他，弹窗与通知中心的首个按钮因此总是「回到终端」或「查看记录」。不提供批准权限、自动继续或发送提示词的动作，审批必须回到终端完成。
 
-2.16.0 新增 Linux x64 / arm64 通用版：窗口聚焦、「回到终端」、全屏 / 会议 / 锁屏检测、全局快捷键、托盘、终端启动与包内更新全部按平台实现。X11 会话功能完整；Wayland 会话可正常弹窗与使用通知中心，但自动降级为无全局快捷键、无窗口聚焦、无全屏 / 空闲检测，并在界面与日志中提示。Release 同时提供 `AgentBell.exe`、`AgentBell-linux-x64.tar.gz` 与 `AgentBell-linux-arm64.tar.gz`，更新器按当前架构选择资产；插件 Hook 在 Linux 上改用 `AgentBell --hook` 子命令，便携 Node 与 Agent CLI 支持 Linux `tar.xz`，配置中的 API Key 在 Linux 优先写入 Secret Service。
+2.16.1 新增 Linux x64 / arm64 通用版：窗口聚焦、「回到终端」、全屏 / 会议 / 锁屏检测、全局快捷键、托盘、终端启动与包内更新全部按平台实现。X11 会话功能完整；Wayland 会话可正常弹窗与使用通知中心，但自动降级为无全局快捷键、无窗口聚焦、无全屏 / 空闲检测，并在界面与日志中提示。Release 同时提供 `AgentBell.exe`、`AgentBell-linux-x64.tar.gz` 与 `AgentBell-linux-arm64.tar.gz`，更新器按当前架构选择资产；插件 Hook 在 Linux 上改用 `AgentBell --hook` 子命令，便携 Node 与 Agent CLI 支持 Linux `tar.xz`，配置中的 API Key 在 Linux 优先写入 Secret Service。2.16.0 标签因 Linux CI 测试未通过而未发布。
 
 2.15.0 新增「仅在主屏显示提醒卡片」：全屏遮挡仍逐屏铺满所有显示器并覆盖任务栏，启用 `overlay_area.card_on_primary_only` 后只有主屏绘制卡片，副屏仅保留背景图与遮罩；点击任意屏幕仍会关闭全部提醒，必须确认的通知仍按脉冲提示处理。设置页「全屏显示区域」提供同名开关，默认关闭以保持每屏显示卡片的行为；旧配置缺少该字段时按 `false` 解析。
 
@@ -491,7 +491,7 @@ runtime/
 发布约定：
 
 - Release 资产包含稳定命名的 `AgentBell.exe`、`AgentBell-linux-x64.tar.gz` 与 `AgentBell-linux-arm64.tar.gz`，并合并各平台校验文件为一个 `SHA256SUMS.txt`。Windows 工作流自动选用编号最大的 `AgentBell<数字>.spec`（忽略 `AgentBell-linux.spec`），把产物复制一份为 `AgentBell.exe`；Linux 使用 `AgentBell-linux.spec`，产物名固定为 `AgentBell` 后打包。
-- 打 tag 前先把 `agentbell/__init__.py` 的 `__version__` 改成同一版本；工作流会校验 `v2.16.0` 与 `2.16.0` 一致，不一致时拒绝发布。
+- 打 tag 前先把 `agentbell/__init__.py` 的 `__version__` 改成同一版本；工作流会校验 `v2.16.1` 与 `2.16.1` 一致，不一致时拒绝发布。
 - 发布使用 GitHub Actions 的 `contents: write` 权限；fork 或 PR 构建只上传 artifact，不会发 Release。
 
 ### 历史
@@ -1104,11 +1104,11 @@ Linux 包解压后直接运行 `./AgentBell`；`config.json`、`logs/`、`agentb
 发布新版本：
 
 ```bash
-# 1. 修改 agentbell/__init__.py 的 __version__，例如 2.16.0
+# 1. 修改 agentbell/__init__.py 的 __version__，例如 2.16.1
 # 2. 提交并打同版本 tag（tag 去掉 v 后必须与 __version__ 完全一致）
 git add -A
-git commit -m "feat: 升级 AgentBell 2.16.0 ..."
-git tag v2.16.0
+git commit -m "feat: 升级 AgentBell 2.16.1 ..."
+git tag v2.16.1
 git push origin develop --tags
 ```
 

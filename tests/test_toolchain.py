@@ -425,7 +425,8 @@ def test_deepseek_env_only_when_key_present():
 
 
 def test_runtime_env_prepends_portable_dirs(tmp_path: Path):
-    env = tc.runtime_env(tmp_path / "runtime", base={"PATH": "C:/Windows"})
+    base_path = "C:/Windows" if os.name == "nt" else "/usr/bin"
+    env = tc.runtime_env(tmp_path / "runtime", base={"PATH": base_path})
     parts = env["PATH"].split(os.pathsep)
     if os.name == "nt":
         assert parts[0].endswith("agents")
@@ -433,7 +434,7 @@ def test_runtime_env_prepends_portable_dirs(tmp_path: Path):
     else:
         assert parts[0].endswith(os.path.join("agents", "bin"))
         assert parts[1].endswith(os.path.join("node", "bin"))
-    assert parts[-1] == "C:/Windows"
+    assert parts[-1] == base_path
     assert env["AGENTBELL_RUNTIME"].endswith("runtime")
 
 

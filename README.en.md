@@ -37,7 +37,7 @@ AgentBell does one thing well: **tell you the moment a round ends, and let you g
 
 ## Recent updates
 
-- **v2.16.0**: Linux x64 and arm64 builds. Releases now include `AgentBell-linux-x64.tar.gz` and `AgentBell-linux-arm64.tar.gz`; extract and run the `AgentBell` binary. On X11 it supports global hotkeys, back-to-terminal, idle/lock detection, terminal launch, and hook installation; on Wayland these degrade to basic notifications. Windows behavior is unchanged.
+- **v2.16.1**: Linux x64 and arm64 builds. Releases now include `AgentBell-linux-x64.tar.gz` and `AgentBell-linux-arm64.tar.gz`; extract and run the `AgentBell` binary. On X11 it supports global hotkeys, back-to-terminal, idle/lock detection, terminal launch, and hook installation; on Wayland these degrade to basic notifications. Windows behavior is unchanged. The v2.16.0 tag was never published because its Linux CI tests failed; 2.16.1 fixes cross-platform path parsing and test assumptions without changing behavior.
 - **v2.15.0**: Fullscreen alerts can keep the card on the primary display only. Every monitor still gets the backdrop and scrim, but secondary screens show just the background image; clicking any screen still dismisses the alert everywhere. Toggle it under Preferences → Popup appearance → Fullscreen area, or set `overlay_area.card_on_primary_only` (off by default).
 - **v2.14.0**: One-click reminder hooks. The Runtime page can install waiting, question, and round-finish hooks into Claude Code (`~/.claude/settings.json`), Gemini CLI (`~/.gemini/settings.json`), and Grok (`~/.grok/hooks/agentbell.json`); Codex uses the top-level `notify` key for finish-only reminders. Every change is previewed and backed up, only marked entries are appended, existing hooks stay untouched, and an existing custom Codex `notify` is never overwritten.
 - **v2.13.0**: Fine-grained rules. `rules` gain `wait_reason`, `needs_input`, `min_duration_seconds` / `max_duration_seconds`, and `project` conditions, so permission waits, test projects, or runs longer than 10 minutes can be routed to different priorities and channels. Projects match the last segment of the working directory case-insensitively; durations come from `duration` with inclusive bounds, and a rule with duration bounds does not match when it is missing. Rule changes take effect on save, and locally inferred waiting notifications participate too. Hover tips are now shown only for truncated text, wrap at 32 characters, and use the light UI style instead of a full-card tooltip covering the next row.
@@ -261,7 +261,7 @@ tar -czf dist/AgentBell-linux-x64.tar.gz -C dist AgentBell
 Pushing to `develop` runs tests and packaging on Windows and Linux (x64 / arm64). Pushing a `v*` tag verifies that the tag matches `__version__` in `agentbell/__init__.py`, then publishes a GitHub Release automatically. The workflow picks the highest-numbered `AgentBell<N>.spec` and copies its output to the stable `AgentBell.exe` name; Linux produces `AgentBell-linux-x64.tar.gz` and `AgentBell-linux-arm64.tar.gz`, and the release job merges a single `SHA256SUMS.txt`.
 
 ```bash
-git tag v2.16.0
+git tag v2.16.1
 git push origin develop --tags
 ```
 

@@ -40,6 +40,7 @@ def test_discover_agents_puts_installed_first_and_detects_cli():
     assert len(found) == 11
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows desktop app paths")
 def test_discover_agents_detects_desktop_path(monkeypatch):
     monkeypatch.setenv("LOCALAPPDATA", r"C:\AppData\Local")
     target = r"C:\AppData\Local\Programs\Antigravity\Antigravity.exe"

@@ -261,14 +261,18 @@ def _decode_project(folder: str) -> str:
     return text.replace("-", "\\")
 
 
+def _path_name(value: str) -> str:
+    parts = [part for part in re.split(r"[\\/]+", value) if part]
+    return parts[-1] if parts else ""
+
+
 def _project_name(folder: str, project_path: str) -> str:
-    path = Path(project_path) if project_path else Path()
     if project_path:
-        name = path.name
+        name = _path_name(project_path)
         if name:
             return name
     decoded = _decode_project(folder)
-    name = Path(decoded).name if decoded else ""
+    name = _path_name(decoded)
     return name or folder
 
 

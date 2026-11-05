@@ -268,7 +268,10 @@ def test_codex_notify_is_inserted_before_tables_and_undone(tmp_path):
     data = __import__("tomllib").loads(text)
     assert data["model"] == "gpt-5"
     assert data["model_providers"]["custom"]["name"] == "demo"
-    assert any("agentbell-hook.ps1" in item for item in data["notify"])
+    if os.name == "nt":
+        assert any("agentbell-hook.ps1" in item for item in data["notify"])
+    else:
+        assert any("--hook" in item for item in data["notify"])
 
     again = hooks.install_hook("codex", home=home, root=root)
     assert again.changed is False

@@ -325,6 +325,7 @@ def test_install_update_requires_frozen_mode(tmp_path):
     assert calls == []
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows uses the PowerShell replacement script")
 def test_install_update_schedules_static_script_for_frozen_app(tmp_path):
     source = tmp_path / "new.exe"
     source.write_bytes(b"MZ new")
