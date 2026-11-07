@@ -40,6 +40,7 @@ AgentBell does one thing well: **tell you the moment a round ends, and let you g
 
 ## Recent updates
 
+- **v2.19.1**: Fixes the Linux tray menu lifetime. The context menu was only passed as a local variable, so after Python collected it, opening submenus such as Do Not Disturb raised `QMenu already deleted`; the tray now keeps a strong reference. The macOS window-focus tests also reset the platform flags so the mocked Windows paths run as intended. Behavior matches 2.19.0, which was never published because its Linux arm64 and macOS tests failed.
 - **v2.19.0**: Four new session sources (Codex, Gemini, Grok, and OpenCode's read-only database); waiting inference now also covers Codex, Gemini, and Grok. Search gains `status:` / `source:` field filters, statistics gain 7/30/90-day ranges and CSV export, and notifications can be batch-archived and grouped by date or source. The tray adds quick Do Not Disturb, and rules gain a test run. Platform parity brings macOS global hotkeys, back-to-terminal, presence inference, portable Node, and in-place zip updates; Wayland registers hotkeys through the XDG GlobalShortcuts portal. CI now supports Windows Authenticode and macOS Developer ID signing plus Apple notarization.
 - **v2.18.2**: Fixes the release checksums. The Windows x64 and arm64 packaging jobs both wrote `SHA256SUMS.txt`, so the merged file dropped the arm64 executables; each architecture now writes `SHA256SUMS-windows-<arch>.txt` and all 16 assets are covered. Behavior matches 2.18.1.
 - **v2.18.1**: Fixes arm64 CI tests. The updater and asset-selection tests assumed the x64 host architecture and failed on Windows, Linux, and macOS arm64 runners; they now pass `machine` explicitly and no longer depend on the build host. The time-formatting test also checks the local-time conversion across DST. Behavior matches 2.18.0, which was never published because its arm64 tests failed.
@@ -277,7 +278,7 @@ Preferences cover skins, popup modes, fullscreen background and card placement, 
 ```powershell
 pip install -r requirements-dev.txt
 python -m PyInstaller --noconfirm --clean AgentBell32.spec
-# Output: dist\AgentBell-32.exe
+# Output: dist\AgentBell-33.exe
 ```
 
 To Authenticode-sign the frozen executable locally, provide the PFX as base64 and its password through environment variables (never on the command line):
@@ -285,7 +286,7 @@ To Authenticode-sign the frozen executable locally, provide the PFX as base64 an
 ```powershell
 $env:WINDOWS_CERT_PFX_BASE64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes("cert.pfx"))
 $env:WINDOWS_CERT_PASSWORD = "pfx-password"
-python scripts/sign_windows.py --target dist\AgentBell-32.exe
+python scripts/sign_windows.py --target dist\AgentBell-33.exe
 ```
 
 Signing uses SHA-256 digests and an RFC 3161 timestamp (`http://timestamp.digicert.com` by default) and verifies with `signtool verify /pa /all`. `--pfx` and `--thumbprint` are also supported, and the password is only read from `WINDOWS_CERT_PASSWORD`; command output masks it.
@@ -296,9 +297,9 @@ Linux builds must run natively per architecture:
 pip install -r requirements-dev.txt
 python -m PyInstaller --noconfirm AgentBell-linux.spec
 # tar.gz + deb + rpm only
-python scripts/build_linux_packages.py --binary dist/AgentBell --version 2.19.0 --arch x64
+python scripts/build_linux_packages.py --binary dist/AgentBell --version 2.19.1 --arch x64
 # all four formats
-python scripts/build_linux_packages.py --binary dist/AgentBell --version 2.19.0 --arch x64 \
+python scripts/build_linux_packages.py --binary dist/AgentBell --version 2.19.1 --arch x64 \
   --appimagetool ./appimagetool --appimage-runtime ./runtime-x86_64
 ```
 
@@ -310,10 +311,10 @@ python scripts/make_macos_icon.py
 python -m PyInstaller --noconfirm AgentBell-macos.spec
 # ad-hoc signing
 python scripts/build_macos_packages.py \
-  --app dist/AgentBell.app --version 2.19.0 --arch arm64
+  --app dist/AgentBell.app --version 2.19.1 --arch arm64
 # Developer ID + Hardened Runtime + notarization
 python scripts/build_macos_packages.py \
-  --app dist/AgentBell.app --version 2.19.0 --arch arm64 \
+  --app dist/AgentBell.app --version 2.19.1 --arch arm64 \
   --identity "Developer ID Application: Example (TEAMID)" \
   --entitlements assets/macos_entitlements.plist --notarize \
   --notary-key AuthKey.p8 --notary-key-id KEYID --notary-issuer ISSUER-UUID
@@ -322,7 +323,7 @@ python scripts/build_macos_packages.py \
 Pushing to `develop` runs tests and packaging on Windows (x64 / arm64), Linux (x64 / arm64), and macOS (x64 / arm64). Pushing a `v*` tag verifies that the tag matches `__version__` in `agentbell/__init__.py`, then publishes a GitHub Release automatically. The Windows workflow picks the highest-numbered `AgentBell<N>.spec`, copies the x64 output to `AgentBell.exe`, and names the arm64 build `AgentBell-arm64.exe`; if `WINDOWS_CERT_PFX_BASE64` is configured, the exe is Authenticode-signed before copying. Linux produces `AgentBell-linux-<arch>.tar.gz`, `.AppImage`, `.deb`, and `.rpm`; macOS produces `AgentBell-macos-<arch>.dmg` and `.zip`, signed with Developer ID and notarized when `MACOS_CERT_P12_BASE64` and the App Store Connect API key secrets are configured, otherwise signed ad-hoc. Each platform and architecture writes its own checksum file, and the release job merges a single `SHA256SUMS.txt`.
 
 ```bash
-git tag v2.19.0
+git tag v2.19.1
 git push origin develop --tags
 ```
 

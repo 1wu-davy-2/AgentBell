@@ -48,6 +48,8 @@
 
 2.12.0 新增只读动作：`/notify` 的 `actions` 接受 `session` 与 `timeline`，分别打开内置会话记录与本次运行时间线。两类动作只读取通知自身的 `session_id` / `run_id`，忽略 `value`，不执行任何外部命令；未知标识或缺少标识时给出非阻塞提示。动作顺序固定为 `focus` → `session` → `timeline` → 其他，弹窗与通知中心的首个按钮因此总是「回到终端」或「查看记录」。不提供批准权限、自动继续或发送提示词的动作，审批必须回到终端完成。
 
+2.19.1 修复 Linux 托盘菜单生命周期：`QSystemTrayIcon` 不持有上下文菜单的所有权，菜单此前只作为局部变量传给 `setContextMenu`，Python 回收后打开「勿扰模式」等子菜单会触发 `QMenu already deleted`；现在 `TrayIcon` 保存菜单的强引用。同步修正 macOS 测试夹具，在非 Windows 环境同时关闭 `_IS_LINUX` 与 `_IS_MACOS`，让 mock 的 Windows 路径按预期执行。功能与 2.19.0 相同，2.19.0 标签因 Linux arm64 与 macOS 测试未通过而没有发布。
+
 2.19.0 扩充日常观测、规则调试与平台能力：会话页新增 Codex / Gemini / Grok / OpenCode 只读扫描，等待输入推断扩展到 Codex / Gemini / Grok；通知中心搜索支持 `status:` / `source:` / `priority:` / `session:` / `run:` / `ack:` 字段过滤，统计支持 7 / 30 / 90 天区间与 CSV 导出，并可批量归档、按日期或来源分组；托盘新增 30 分钟 / 1 小时 / 到明早的快捷免打扰；设置页规则区新增「试运行」，用一条样例通知展示命中的规则与最终字段。平台侧补齐 macOS 的全局快捷键、回到终端、空闲 / 全屏 / 会议 / 锁屏推断、便携 Node 与原地更新；Linux Wayland 通过 XDG GlobalShortcuts portal 注册全局快捷键，窗口聚焦明确提示系统限制；Windows Authenticode 与 macOS Developer ID 签名 / 公证接入 CI。签名证书、密码与 App Store Connect 密钥只从环境变量或 GitHub Secrets 读取，不写入仓库、命令行日志或构建产物。
 
 2.18.0 新增 Windows ARM64 与 macOS 双架构：Windows 在 `windows-11-arm` runner 上用原生 Arm64 Python、Arm64 PySide6 与 PyInstaller 构建，产物命名 `AgentBell-arm64.exe`，与 x64 的 `AgentBell.exe` 并存。更新器新增按架构选资产：Arm64 只接受名称含 `arm64` 的 exe，x64 排除 arm64 资产，绝不交叉替换。macOS 使用 `AgentBell-macos.spec` 生成 `.app`（`EXE` + `COLLECT` + `BUNDLE`），`scripts/make_macos_icon.py` 通过 QSvgRenderer 与 `iconutil` 生成 `.icns`，`scripts/build_macos_packages.py` 负责 ad-hoc `codesign`、`ditto` zip 与 `hdiutil` dmg，并按架构输出 `AgentBell-macos-<arch>.dmg` / `.zip`。冻结的 macOS 应用把 `config.json`、`logs/`、`agentbell.db` 与 `chat/` 写入 `~/Library/Application Support/AgentBell`，应用包保持只读；自启写入 `~/Library/LaunchAgents/com.agentbell.app.plist`。提示音在 macOS 走 `afplay`，Linux 走 `paplay` / `aplay`，端口占用提示按平台给出 `lsof` / `ss` / `netstat` 命令。
@@ -180,7 +182,7 @@ agentbell/
 ├─ requirements.txt       运行依赖
 ├─ requirements-dev.txt   测试/打包依赖
 ├─ run.py                 源码启动入口
-├─ AgentBell32.spec       PyInstaller 配置（Windows，AgentBell-32.exe，含 Hook 脚本资源）
+├─ AgentBell33.spec       PyInstaller 配置（Windows，AgentBell-33.exe，含 Hook 脚本资源）
 ├─ AgentBell-macos.spec   PyInstaller 配置（macOS，AgentBell.app，含 icns 与版本信息）
 ├─ AgentBell-linux.spec   PyInstaller 配置（Linux x64/arm64，产物名 AgentBell，不含 PowerShell 脚本）
 ├─ LICENSE                MIT 许可证
@@ -517,7 +519,7 @@ runtime/
 发布约定：
 
 - Release 资产包含 `AgentBell.exe`、`AgentBell-arm64.exe`、每种架构的 `AgentBell-macos-<arch>.dmg` / `.zip` 与 `AgentBell-linux-<arch>.tar.gz`、`.AppImage`、`.deb`、`.rpm`，并合并各平台校验文件为一个 `SHA256SUMS.txt`。Windows 工作流自动选用编号最大的 `AgentBell<数字>.spec`（忽略 Linux / macOS spec）：x64 产物复制为 `AgentBell.exe`，arm64 产物复制为 `AgentBell-arm64.exe`；macOS 使用 `AgentBell-macos.spec`，由 `scripts/build_macos_packages.py` 生成 dmg 与 zip；Linux 使用 `AgentBell-linux.spec`，产物名固定为 `AgentBell` 后交给 `scripts/build_linux_packages.py` 生成四种格式。
-- 打 tag 前先把 `agentbell/__init__.py` 的 `__version__` 改成同一版本；工作流会校验 `v2.19.0` 与 `2.19.0` 一致，不一致时拒绝发布。
+- 打 tag 前先把 `agentbell/__init__.py` 的 `__version__` 改成同一版本；工作流会校验 `v2.19.1` 与 `2.19.1` 一致，不一致时拒绝发布。
 - 发布使用 GitHub Actions 的 `contents: write` 权限；fork 或 PR 构建只上传 artifact，不会发 Release。
 
 ### 历史
@@ -1075,8 +1077,8 @@ PyInstaller 不能跨平台交叉编译，请在目标系统上分别打包。Wi
 ```bash
 pip install -r requirements-dev.txt
 
-# 产物：dist\AgentBell-32.exe（在原生 Arm64 Python 上构建即为 arm64 产物）
-python -m PyInstaller --noconfirm --clean AgentBell32.spec
+# 产物：dist\AgentBell-33.exe（在原生 Arm64 Python 上构建即为 arm64 产物）
+python -m PyInstaller --noconfirm --clean AgentBell33.spec
 ```
 
 Windows ARM64 构建要求原生 Arm64 Python 3.12、提供 `win_arm64` 轮子的 PySide6 与支持 win_arm64 的 PyInstaller；CI 使用 `windows-11-arm` runner 与 `actions/setup-python` 的 `architecture: arm64`。x64 与 arm64 不共用产物，工作流分别上传后命名为 `AgentBell.exe` 与 `AgentBell-arm64.exe`。
@@ -1085,10 +1087,10 @@ Windows ARM64 构建要求原生 Arm64 Python 3.12、提供 `win_arm64` 轮子�
 
 ```bash
 copy config.json dist\config.json
-dist\AgentBell-32.exe
+dist\AgentBell-33.exe
 ```
 
-> 新旧版本默认共用单实例锁：若托盘中已有 AgentBell 在运行，双击 AgentBell-32 只会唤醒旧实例。切换版本前先从托盘退出旧版，再启动新 exe。工作流会自动选用编号最大的 `AgentBell<数字>.spec`，旧 spec 不需要手工维护。
+> 新旧版本默认共用单实例锁：若托盘中已有 AgentBell 在运行，双击 AgentBell-33 只会唤醒旧实例。切换版本前先从托盘退出旧版，再启动新 exe。工作流会自动选用编号最大的 `AgentBell<数字>.spec`，旧 spec 不需要手工维护。
 
 打包后 `config.json`、`logs/`、`agentbell.db`、`chat/` 与 `updates/` 都位于 exe 所在目录。单文件模式首次启动需要解压到临时目录，通常会有 1–3 秒延迟。
 
@@ -1105,7 +1107,7 @@ python -m PyInstaller --noconfirm --clean AgentBell-linux.spec
 # 四种格式（x64 机器；不传 AppImage 工具时只生成 tar.gz + deb + rpm）
 python scripts/build_linux_packages.py \
   --binary dist/AgentBell \
-  --version 2.19.0 \
+  --version 2.19.1 \
   --arch x64 \
   --appimagetool ./appimagetool \
   --appimage-runtime ./runtime-x86_64
@@ -1143,13 +1145,13 @@ python -m PyInstaller --noconfirm --clean AgentBell-macos.spec
 # ad-hoc 签名 + dmg / zip + SHA256SUMS-macos-<arch>.txt
 python scripts/build_macos_packages.py \
   --app dist/AgentBell.app \
-  --version 2.19.0 \
+  --version 2.19.1 \
   --arch arm64
 
 # 本地有 Developer ID 与公证凭据时（推荐发布用）
 python scripts/build_macos_packages.py \
   --app dist/AgentBell.app \
-  --version 2.19.0 \
+  --version 2.19.1 \
   --arch arm64 \
   --identity "Developer ID Application: Example (TEAMID)" \
   --entitlements assets/macos_entitlements.plist \
@@ -1198,7 +1200,7 @@ python scripts/build_macos_packages.py \
 ```powershell
 $env:WINDOWS_CERT_PFX_BASE64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes("cert.pfx"))
 $env:WINDOWS_CERT_PASSWORD = "pfx-password"
-python scripts/sign_windows.py --target dist/AgentBell-32.exe
+python scripts/sign_windows.py --target dist/AgentBell-33.exe
 ```
 
 也可以直接传 `--pfx cert.pfx`，或用 `--thumbprint` 使用证书存储中的证书；密码只从 `WINDOWS_CERT_PASSWORD` 读取，签名命令输出会把密码替换为 `******`。`signtool` 默认从 PATH 或 Windows SDK 目录发现，也可用 `--signtool` 指定。
@@ -1206,11 +1208,11 @@ python scripts/sign_windows.py --target dist/AgentBell-32.exe
 发布新版本：
 
 ```bash
-# 1. 修改 agentbell/__init__.py 的 __version__，例如 2.19.0
+# 1. 修改 agentbell/__init__.py 的 __version__，例如 2.19.1
 # 2. 提交并打同版本 tag（tag 去掉 v 后必须与 __version__ 完全一致）
 git add -A
-git commit -m "feat: 升级 AgentBell 2.19.0 ..."
-git tag v2.19.0
+git commit -m "fix: 修复托盘菜单生命周期并发布 2.19.1"
+git tag v2.19.1
 git push origin develop --tags
 ```
 

@@ -48,6 +48,7 @@ AgentBell 是一个只做提醒的 Windows / macOS / Linux 桌面工具。AI Age
 
 ### 最近更新
 
+- **v2.19.1**：修复 Linux 托盘菜单生命周期问题。托盘上下文菜单此前只作为局部变量传入，Python 回收后打开「勿扰模式」等子菜单会触发 `QMenu already deleted`；现在托盘持有菜单的强引用。同时修正 macOS 上窗口聚焦测试的平台标志，让 Windows 路径用例在 macOS 上按预期执行。功能与 2.19.0 相同，2.19.0 标签因 Linux arm64 与 macOS 测试未通过而没有发布。
 - **v2.19.0**：会话页新增 Codex / Gemini / Grok / OpenCode 来源，等待推断扩到 Codex / Gemini / Grok；搜索支持 `status:` / `source:` 等字段过滤，统计支持 7 / 30 / 90 天区间与 CSV 导出，通知可批量归档并按日期或来源分组；托盘新增快捷勿扰，规则区新增试运行。平台侧补齐 macOS 的快捷键、回到终端、推断、便携 Node 与原地更新；Wayland 通过 XDG 门户注册全局快捷键；CI 接入 Windows Authenticode 与 macOS Developer ID 签名 / 公证。
 - **v2.18.2**：修复 Release 校验文件。Windows x64 与 arm64 打包任务此前都输出同名的 `SHA256SUMS.txt`，合并发布时互相覆盖，导致 `SHA256SUMS.txt` 缺少 `AgentBell.exe` / `AgentBell-arm64.exe` 中的 arm64 条目；现在各架构分别输出 `SHA256SUMS-windows-<arch>.txt`，合并后 16 个产物全部可校验。功能与 2.18.1 相同。
 - **v2.18.1**：修复 arm64 平台上的 CI 测试。更新器与资产选择测试此前依赖宿主机架构，在 Windows / Linux / macOS 的 arm64 runner 上会按 arm64 选包而失败；现在测试显式传入 `machine`，不再受构建机影响。同时把时间格式测试的夏令时换算改为按本地时区校验。功能与 2.18.0 相同，2.18.0 标签因 arm64 测试未通过而没有发布。
@@ -339,7 +340,7 @@ Agent 停下来等你处理时，可以让它显式上报一条 `status="running
 ```powershell
 pip install -r requirements-dev.txt
 python -m PyInstaller --noconfirm --clean AgentBell32.spec
-# 产物：dist\AgentBell-32.exe
+# 产物：dist\AgentBell-33.exe
 ```
 
 Windows 配置 Authenticode 证书后，可对产物签名并验证：
@@ -347,7 +348,7 @@ Windows 配置 Authenticode 证书后，可对产物签名并验证：
 ```powershell
 $env:WINDOWS_CERT_PFX_BASE64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes("cert.pfx"))
 $env:WINDOWS_CERT_PASSWORD = "pfx-password"
-python scripts/sign_windows.py --target dist/AgentBell-32.exe
+python scripts/sign_windows.py --target dist/AgentBell-33.exe
 ```
 
 Linux 原生构建（不跨架构编译）：
@@ -356,9 +357,9 @@ Linux 原生构建（不跨架构编译）：
 pip install -r requirements-dev.txt
 python -m PyInstaller --noconfirm AgentBell-linux.spec
 # 仅 tar.gz + deb + rpm（不传 AppImage 工具）
-python scripts/build_linux_packages.py --binary dist/AgentBell --version 2.19.0 --arch x64
+python scripts/build_linux_packages.py --binary dist/AgentBell --version 2.19.1 --arch x64
 # 生成全部四种格式
-python scripts/build_linux_packages.py --binary dist/AgentBell --version 2.19.0 --arch x64 \
+python scripts/build_linux_packages.py --binary dist/AgentBell --version 2.19.1 --arch x64 \
   --appimagetool ./appimagetool --appimage-runtime ./runtime-x86_64
 ```
 
@@ -370,10 +371,10 @@ python scripts/make_macos_icon.py
 python -m PyInstaller --noconfirm AgentBell-macos.spec
 # ad-hoc 签名
 python scripts/build_macos_packages.py \
-  --app dist/AgentBell.app --version 2.19.0 --arch arm64
+  --app dist/AgentBell.app --version 2.19.1 --arch arm64
 # Developer ID 签名 + 公证（凭据也可用环境变量提供）
 python scripts/build_macos_packages.py \
-  --app dist/AgentBell.app --version 2.19.0 --arch arm64 \
+  --app dist/AgentBell.app --version 2.19.1 --arch arm64 \
   --identity "Developer ID Application: Example (TEAMID)" \
   --entitlements assets/macos_entitlements.plist \
   --notarize \
@@ -383,7 +384,7 @@ python scripts/build_macos_packages.py \
 推送到 `develop` 会触发 Windows（x64 / arm64）、Linux（x64 / arm64）与 macOS（x64 / arm64）测试和打包；推送 `v*` 标签会校验标签与 `agentbell/__init__.py` 的 `__version__` 一致，然后自动发布 Release。Windows 工作流会选用编号最大的 `AgentBell<N>.spec`，x64 产物复制为 `AgentBell.exe`，ARM64 命名 `AgentBell-arm64.exe`；Linux 按架构生成 `AgentBell-linux-<arch>.tar.gz`、`.AppImage`、`.deb` 与 `.rpm`；macOS 生成 `AgentBell-macos-<arch>.dmg` 与 `.zip`。每个平台与架构附一份校验文件，最后合并一份 `SHA256SUMS.txt`。配置 GitHub Secrets 后，Windows 产物会用 signtool 签名，macOS 会做 Developer ID 签名、公证与 staple。
 
 ```bash
-git tag v2.19.0
+git tag v2.19.1
 git push origin develop --tags
 ```
 
