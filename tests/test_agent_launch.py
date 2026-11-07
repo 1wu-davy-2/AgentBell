@@ -9,15 +9,18 @@ from types import SimpleNamespace
 
 import pytest
 
+from agentbell import agent_launch
 from agentbell.agent_launch import (
     AgentAvailability,
     LaunchResult,
+    _desktop_command,
+    _launch_macos_terminal,
     agent_spec,
     discover_agents,
     launch_agent,
     launch_focus_value,
 )
-from agentbell.window_focus import parse_focus_value
+from agentbell.window_focus import FocusRequest, parse_focus_value
 
 
 def _availability(agent_id: str, executable: str = "") -> AgentAvailability:
@@ -38,6 +41,21 @@ def test_discover_agents_puts_installed_first_and_detects_cli():
     assert all(item.installed for item in found[:2])
     assert all(not item.installed for item in found[2:])
     assert len(found) == 11
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows desktop app paths")
+def test_discover_agents_accepts_absolute_desktop_path():
+    target = "/Applications/Claude.app"
+
+    found = discover_agents(
+        env={"PATH": ""},
+        which=lambda *args, **kwargs: None,
+        exists=lambda path: path == target,
+    )
+
+    claude = next(item for item in found if item.spec.id == "claude-desktop")
+    assert claude.installed is True
+    assert claude.executable == target
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows desktop app paths")
@@ -274,3 +292,55 @@ def test_desktop_result_without_pid_has_no_focus_request(tmp_path):
 
     assert result.focus_request() is None
     assert launch_focus_value(result) == ""
+
+
+def test_desktop_command_uses_open_for_macos_bundle(monkeypatch):
+    monkeypatch.setattr(agent_launch.sys, "platform", "darwin")
+    assert _desktop_command("/Applications/Claude.app") == [
+        "open",
+        "-a",
+        "/Applications/Claude.app",
+    ]
+    assert _desktop_command("/usr/local/bin/claude") == [
+        "/usr/local/bin/claude"
+    ]
+
+
+def test_launch_macos_terminal_passes_arguments_not_inline(tmp_path):
+    captured: dict[str, object] = {}
+
+    def fake_popen(args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return SimpleNamespace(pid=77)
+
+    project = tmp_path / "demo"
+    project.mkdir()
+    prompt = '请阅读项目；带 & 中文 " 引号'
+    availability = _availability("claude-code", "/usr/local/bin/claude")
+
+    result = _launch_macos_terminal(
+        availability, project, prompt, {"PATH": ""}, fake_popen
+    )
+
+    assert result.ok is True
+    assert result.pid == 0
+    assert result.prompt_sent is True
+    assert "已在终端中启动" in result.message
+    args = captured["args"]
+    assert args[0] == "osascript"
+    assert args[1] == "-e"
+    assert "quoted form of targetPrompt" in args[2]
+    assert prompt not in args[2]
+    assert args[3:] == [
+        str(project),
+        "/usr/local/bin/claude",
+        prompt,
+        result.title,
+    ]
+    assert captured["kwargs"]["env"] == {"PATH": ""}
+    assert captured["kwargs"]["cwd"] == str(project)
+    request = result.focus_request()
+    assert request == FocusRequest(
+        pid=None, window_title=result.title, working_dir=str(project)
+    )

@@ -39,6 +39,7 @@ from ..config import (
     save_config,
 )
 from ..models import (
+    ATTENTION_AGENT_LABELS,
     OVERLAY_ANCHOR_LABELS,
     OVERLAY_ANCHORS,
     OVERLAY_CARD_WIDTH_DEFAULT,
@@ -51,8 +52,14 @@ from ..models import (
     POPUP_MODES,
     POPUP_SKIN_LABELS,
     POPUP_SKINS,
+    PRIORITIES,
+    PRIORITY_LABELS,
+    STATUSES,
+    STATUS_LABELS,
+    WAIT_REASON_LABELS,
     Notification,
 )
+from ..policy import apply_rules
 from .icons import make_app_icon
 from .overlay_editor import OverlayAreaEditor
 from .toast import ToastWindow
@@ -243,6 +250,114 @@ QPushButton#testButton:hover {
     background-color: #EAF1FF;
 }
 """
+
+
+class RuleTesterDialog(QDialog):
+    def __init__(self, config: AppConfig, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.config = config
+        self.setWindowTitle("规则试运行")
+        self.setMinimumWidth(520)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 16, 18, 14)
+        layout.setSpacing(10)
+
+        hint = QLabel(
+            "构造一条示例通知，检查当前规则会命中哪些条目、覆盖哪些字段。"
+            "只做本地计算，不会发送通知。",
+            self,
+        )
+        hint.setObjectName("dialogHint")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        form = QFormLayout()
+        form.setSpacing(8)
+        self._source = QLineEdit("claude", self)
+        self._title = QLineEdit("生成周报", self)
+        self._status = QComboBox(self)
+        for key in STATUSES:
+            self._status.addItem(STATUS_LABELS[key], key)
+        self._priority = QComboBox(self)
+        for key in PRIORITIES:
+            self._priority.addItem(PRIORITY_LABELS[key], key)
+            if key == "normal":
+                self._priority.setCurrentIndex(self._priority.count() - 1)
+        self._project = QLineEdit("", self)
+        self._duration = QLineEdit("1m", self)
+        self._needs_input = QCheckBox("等待用户输入", self)
+        self._wait_reason = QComboBox(self)
+        self._wait_reason.addItem("无", "")
+        for key, label in WAIT_REASON_LABELS.items():
+            self._wait_reason.addItem(label, key)
+        form.addRow("来源", self._source)
+        form.addRow("标题", self._title)
+        form.addRow("状态", self._status)
+        form.addRow("优先级", self._priority)
+        form.addRow("项目", self._project)
+        form.addRow("耗时", self._duration)
+        form.addRow("", self._needs_input)
+        form.addRow("等待原因", self._wait_reason)
+        layout.addLayout(form)
+
+        buttons = QHBoxLayout()
+        run = QPushButton("运行测试", self)
+        run.setObjectName("primaryButton")
+        run.setFixedHeight(32)
+        run.clicked.connect(self._run)
+        close = QPushButton("关闭", self)
+        close.setObjectName("secondaryButton")
+        close.setFixedHeight(32)
+        close.clicked.connect(self.accept)
+        buttons.addStretch(1)
+        buttons.addWidget(close)
+        buttons.addWidget(run)
+        layout.addLayout(buttons)
+
+        self._result = QPlainTextEdit(self)
+        self._result.setReadOnly(True)
+        self._result.setMinimumHeight(180)
+        layout.addWidget(self._result)
+
+        self._run()
+
+    def _run(self) -> None:
+        reason = self._wait_reason.currentData() or None
+        notification = Notification(
+            id="rule-test",
+            title=self._title.text().strip() or "示例通知",
+            status=self._status.currentData(),
+            priority=self._priority.currentData(),
+            source=self._source.text().strip(),
+            duration=self._duration.text().strip(),
+            needs_input=self._needs_input.isChecked(),
+            wait_reason=reason,
+        )
+        result = apply_rules(
+            notification, self.config.rules, self._project.text().strip()
+        )
+        if not result.rule_name:
+            self._result.setPlainText(
+                "未命中任何规则。\n\n通知将保持输入值："
+                f"\n优先级：{notification.priority_label}"
+                f"\n静默：{'是' if notification.silent else '否'}"
+                f"\n待确认：{'是' if notification.require_ack else '否'}"
+            )
+            return
+        channels = "、".join(result.channel_types) or "（按渠道配置）"
+        lines = [
+            f"命中规则：{result.rule_name}",
+            "",
+            f"优先级：{notification.priority_label} → {result.priority_label}",
+            f"静默：{'是' if result.silent else '否'}",
+            f"待确认：{'是' if result.require_ack else '否'}",
+            f"自动关闭：{result.auto_close_seconds} 秒",
+            f"免勿扰：{'是' if result.bypass_quiet_hours else '否'}",
+            f"弹窗模式：{POPUP_MODE_LABELS.get(result.popup_mode or self.config.popup_mode, result.popup_mode or self.config.popup_mode)}",
+            f"弹窗皮肤：{POPUP_SKIN_LABELS.get(result.popup_skin or self.config.popup_skin, result.popup_skin or self.config.popup_skin)}",
+            f"渠道：{channels}",
+        ]
+        self._result.setPlainText("\n".join(lines))
 
 
 class SettingsDialog(QDialog):
@@ -911,7 +1026,8 @@ class SettingsDialog(QDialog):
         form.addRow("", hint)
 
         paths = QLabel(
-            "扫描位置：~/.claude/projects/*/*.jsonl 与 ~/.qoder/projects/*/*/state.json",
+            "扫描位置：~/.claude/projects、~/.qoder/projects、~/.codex/sessions、"
+            "~/.gemini/tmp、~/.grok/sessions 与 OpenCode 本地数据库",
             group,
         )
         paths.setObjectName("editorHint")
@@ -931,7 +1047,8 @@ class SettingsDialog(QDialog):
         attention_form.addRow("", self._attention_enabled_check)
 
         self._attention_infer_check = QCheckBox(
-            "从 Claude Code / Qoder 会话文件推断等待状态", attention
+            "从 Claude Code / Qoder / Codex / Gemini / Grok 会话文件推断等待状态",
+            attention,
         )
         self._attention_infer_check.setChecked(self.config.attention.infer)
         attention_form.addRow("", self._attention_infer_check)
@@ -961,16 +1078,12 @@ class SettingsDialog(QDialog):
         agents_row = QHBoxLayout()
         agents_row.setContentsMargins(0, 0, 0, 0)
         agents_row.setSpacing(12)
-        self._attention_claude_check = QCheckBox("Claude Code", attention)
-        self._attention_claude_check.setChecked(
-            "claude" in self.config.attention.agents
-        )
-        self._attention_qoder_check = QCheckBox("Qoder", attention)
-        self._attention_qoder_check.setChecked(
-            "qoder" in self.config.attention.agents
-        )
-        agents_row.addWidget(self._attention_claude_check)
-        agents_row.addWidget(self._attention_qoder_check)
+        self._attention_agent_checks: dict[str, QCheckBox] = {}
+        for agent, label in ATTENTION_AGENT_LABELS.items():
+            check = QCheckBox(label, attention)
+            check.setChecked(agent in self.config.attention.agents)
+            agents_row.addWidget(check)
+            self._attention_agent_checks[agent] = check
         agents_row.addStretch(1)
         attention_form.addRow("推断范围", agents_row)
 
@@ -993,14 +1106,14 @@ class SettingsDialog(QDialog):
         return page
 
     def _sync_attention_controls(self, enabled: bool) -> None:
-        for widget in (
+        widgets = [
             self._attention_infer_check,
             self._attention_idle_spin,
             self._attention_poll_spin,
             self._attention_question_popup_check,
-            self._attention_claude_check,
-            self._attention_qoder_check,
-        ):
+            *self._attention_agent_checks.values(),
+        ]
+        for widget in widgets:
             widget.setEnabled(enabled)
 
     def _build_rules_tab(self) -> QWidget:
@@ -1024,6 +1137,12 @@ class SettingsDialog(QDialog):
             lambda: self._fill_example(self._rules_editor, _RULES_EXAMPLE)
         )
         rules_header.addWidget(rules_example)
+        rules_test = QPushButton("试运行…", page)
+        rules_test.setObjectName("ghostButton")
+        rules_test.setFixedHeight(24)
+        rules_test.setCursor(Qt.CursorShape.PointingHandCursor)
+        rules_test.clicked.connect(self._open_rule_tester)
+        rules_header.addWidget(rules_test)
         layout.addLayout(rules_header)
 
         self._rules_editor = QPlainTextEdit(page)
@@ -1092,6 +1211,22 @@ class SettingsDialog(QDialog):
     @staticmethod
     def _fill_example(editor: QPlainTextEdit, payload: list[dict]) -> None:
         editor.setPlainText(json.dumps(payload, ensure_ascii=False, indent=2))
+
+    def _open_rule_tester(self) -> None:
+        try:
+            rules = self._collect_rules()
+        except ConfigError as exc:
+            self._show_error(str(exc))
+            return
+        tester = RuleTesterDialog(replace(self.config, rules=rules), self)
+        tester.exec()
+        tester.deleteLater()
+
+    def _collect_rules(self):
+        raw = self._read_list(self._rules_editor, "规则")
+        data = config_to_dict(self.config)
+        data["rules"] = raw
+        return config_from_dict(data).rules
 
     def _preview_popup(self) -> None:
         if self._preview is not None:
@@ -1195,10 +1330,7 @@ class SettingsDialog(QDialog):
                     ),
                     "agents": [
                         name
-                        for name, check in (
-                            ("claude", self._attention_claude_check),
-                            ("qoder", self._attention_qoder_check),
-                        )
+                        for name, check in self._attention_agent_checks.items()
                         if check.isChecked()
                     ],
                 },

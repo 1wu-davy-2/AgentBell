@@ -4,7 +4,7 @@ import logging
 import threading
 from collections import deque
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from .models import (
@@ -14,6 +14,7 @@ from .models import (
     RunEventKind,
     duration_to_seconds,
 )
+from .search_query import SearchQuery, parse_search
 from .storage import NotificationStorage
 
 DEFAULT_HISTORY_LIMIT = 1000
@@ -173,6 +174,35 @@ class NotificationStore:
             if self._storage is not None:
                 self._storage.delete(notification_id)
 
+    def archive(
+        self, notification_ids: list[str], archived: bool = True
+    ) -> int:
+        """Archive or restore notifications without deleting their history."""
+        target = {item for item in notification_ids if item}
+        if not target:
+            return 0
+        now = datetime.now().astimezone()
+        with self._lock:
+            changed = 0
+            items = list(self._items)
+            for index, item in enumerate(items):
+                if item.id not in target or item.archived == archived:
+                    continue
+                updated = replace(
+                    item,
+                    archived=archived,
+                    archived_at=now if archived else None,
+                )
+                items[index] = updated
+                self._by_id[item.id] = updated
+                changed += 1
+            if changed:
+                self._items = deque(items, maxlen=self._limit)
+            if self._storage is not None:
+                rows = self._storage.set_archived(list(target), archived)
+                return rows or changed
+            return changed
+
     def clear(self) -> None:
         with self._lock:
             self._items.clear()
@@ -204,29 +234,29 @@ class NotificationStore:
             existing_id = self._dedupe_index.get(dedupe_key)
             return self._by_id.get(existing_id) if existing_id else None
 
-    def search(self, query: str, limit: int = 200) -> list[Notification]:
-        text = (query or "").strip()
+    def search(
+        self, query: str | SearchQuery, limit: int = 200
+    ) -> list[Notification]:
+        spec = query if isinstance(query, SearchQuery) else parse_search(query)
         with self._lock:
-            if not text:
+            if not spec.has_filters:
                 return list(self._items)[:limit]
             if self._storage is not None:
-                return self._storage.search(text, limit)
-            lowered = text.lower()
-            found = [
-                item
-                for item in self._items
-                if lowered in item.title.lower()
-                or lowered in item.summary.lower()
-                or lowered in (item.error or "").lower()
-                or lowered in item.source.lower()
-            ]
-            return found[:limit]
+                return self._storage.search(spec, limit)
+            return [item for item in self._items if spec.matches(item)][:limit]
 
     def stats(self, days: int = 7) -> dict[str, Any]:
         with self._lock:
             if self._storage is not None:
                 return self._storage.stats(days)
             return self._memory_stats_locked()
+
+    def export(self, days: int = 7) -> list[Notification]:
+        with self._lock:
+            if self._storage is not None:
+                return self._storage.export_notifications(days)
+            cutoff = datetime.now().astimezone() - timedelta(days=max(1, days))
+            return [item for item in self._items if item.received_at >= cutoff]
 
     def __len__(self) -> int:
         with self._lock:

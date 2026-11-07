@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from PySide6.QtCore import QTimer, Signal
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
@@ -25,6 +27,7 @@ class TrayIcon(QSystemTrayIcon):
     open_center_requested = Signal()
     check_updates_requested = Signal()
     about_requested = Signal()
+    pause_requested = Signal(int)
     quit_requested = Signal()
 
     def __init__(
@@ -39,6 +42,7 @@ class TrayIcon(QSystemTrayIcon):
         self._alert_icon = make_alert_icon()
         self._recent: list[Notification] = []
         self._unread = 0
+        self._pause_until: datetime | None = None
         self._base_tooltip = (
             f"AgentBell · 127.0.0.1:{port} · "
             f"{'已鉴权' if auth_enabled else '未鉴权'}"
@@ -70,6 +74,27 @@ class TrayIcon(QSystemTrayIcon):
         open_center.triggered.connect(self.open_center_requested.emit)
         self._recent_menu = menu.addMenu("显示最近通知")
         self._recent_menu.aboutToShow.connect(self._rebuild_recent_menu)
+
+        self._pause_menu = menu.addMenu("勿扰模式")
+        self._pause_status = self._pause_menu.addAction("未开启")
+        self._pause_status.setEnabled(False)
+        self._pause_menu.addSeparator()
+        for minutes, label in (
+            (30, "暂停 30 分钟"),
+            (60, "暂停 1 小时"),
+            (-1, "暂停到明早 8 点"),
+        ):
+            action = self._pause_menu.addAction(label)
+            action.triggered.connect(
+                lambda checked=False, value=minutes: self.pause_requested.emit(value)
+            )
+        self._pause_menu.addSeparator()
+        self._resume_action = self._pause_menu.addAction("关闭勿扰")
+        self._resume_action.setEnabled(False)
+        self._resume_action.triggered.connect(
+            lambda checked=False: self.pause_requested.emit(0)
+        )
+
         menu.addSeparator()
         self._update_action = menu.addAction("检查更新…")
         self._update_action.triggered.connect(self.check_updates_requested.emit)
@@ -88,8 +113,31 @@ class TrayIcon(QSystemTrayIcon):
         self._unread = max(0, int(count))
         self._unread_action.setText(f"{self._unread} 条未读通知")
         self._unread_action.setVisible(self._unread > 0)
-        suffix = f" · {self._unread} 条未读" if self._unread else ""
-        self.setToolTip(self._base_tooltip + suffix)
+        self._apply_tooltip()
+
+    def set_pause_until(self, until: datetime | None) -> None:
+        self._pause_until = until
+        if until is None:
+            self._pause_status.setText("未开启")
+            self._pause_menu.setTitle("勿扰模式")
+            self._resume_action.setEnabled(False)
+        else:
+            remaining = until - datetime.now().astimezone()
+            minutes = max(1, int(remaining.total_seconds() // 60))
+            self._pause_status.setText(
+                f"已开启 · 剩余约 {minutes} 分钟 · 至 {until.strftime('%m-%d %H:%M')}"
+            )
+            self._pause_menu.setTitle(f"勿扰模式 · 至 {until.strftime('%H:%M')}")
+            self._resume_action.setEnabled(True)
+        self._apply_tooltip()
+
+    def _apply_tooltip(self) -> None:
+        parts = [self._base_tooltip]
+        if self._unread:
+            parts.append(f"{self._unread} 条未读")
+        if self._pause_until is not None:
+            parts.append(f"勿扰至 {self._pause_until.strftime('%H:%M')}")
+        self.setToolTip(" · ".join(parts))
 
     def set_update_available(self, version: str = "") -> None:
         if version:

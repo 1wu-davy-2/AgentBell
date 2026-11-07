@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import logging
 import re
+import sqlite3
 import threading
+import urllib.parse
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -28,6 +30,22 @@ _SYSTEM_TAG = re.compile(
     r"command-name|command-message|command-args)>.*?</\1>",
     re.DOTALL,
 )
+_CONTEXT_TAG = re.compile(
+    r"<(environment_context|session_context|user_info|git_status|rules|"
+    r"project_context|skills_instructions|user_instructions)>.*?</\1>",
+    re.DOTALL,
+)
+_USER_QUERY = re.compile(r"<user_query>(.*?)</user_query>", re.DOTALL)
+_CONTEXT_PREFIXES = (
+    "<environment_context>",
+    "<session_context>",
+    "<user_info>",
+    "<git_status>",
+    "<rules>",
+    "<project_context>",
+    "<skills_instructions>",
+    "<user_instructions>",
+)
 _FILE_TOOLS = {"Edit", "Write", "NotebookEdit", "MultiEdit", "ApplyPatch"}
 
 
@@ -46,12 +64,19 @@ class AgentSession:
 
     @property
     def agent_label(self) -> str:
-        return {"claude": "Claude Code", "qoder": "Qoder"}.get(
-            self.agent, self.agent
-        )
+        return {
+            "claude": "Claude Code",
+            "qoder": "Qoder",
+            "codex": "Codex",
+            "gemini": "Gemini CLI",
+            "grok": "Grok",
+            "opencode": "OpenCode",
+        }.get(self.agent, self.agent)
 
     @property
     def folder(self) -> str:
+        if not self.path:
+            return self.project_path
         path = Path(self.path)
         return str(path.parent if path.is_file() else path)
 
@@ -183,7 +208,9 @@ def _content_text(content: object) -> str:
             if not isinstance(block, dict):
                 continue
             kind = block.get("type")
-            if kind == "text":
+            if kind in {"text", "input_text", "output_text", "summary_text"} or (
+                kind is None and isinstance(block.get("text"), str)
+            ):
                 value = block.get("text")
                 if isinstance(value, str) and value:
                     parts.append(value)
@@ -196,6 +223,73 @@ def _content_text(content: object) -> str:
             if isinstance(value, str) and value:
                 return value
     return ""
+
+
+def _any_text(value: object) -> str:
+    text = _content_text(value)
+    if text:
+        return text
+    if isinstance(value, (dict, list)):
+        try:
+            return json.dumps(value, ensure_ascii=False)
+        except (TypeError, ValueError):
+            return ""
+    if isinstance(value, (int, float)):
+        return str(value)
+    return ""
+
+
+def _prompt_text(text: str) -> str:
+    cleaned = _clean_text(text)
+    query = _USER_QUERY.search(cleaned)
+    if query:
+        cleaned = query.group(1)
+    else:
+        cleaned = _CONTEXT_TAG.sub("", cleaned)
+    lines = [
+        line
+        for line in cleaned.splitlines()
+        if not line.strip().startswith(_CONTEXT_PREFIXES)
+    ]
+    return "\n".join(lines).strip()
+
+
+def _text_blocks(content: object) -> list[dict]:
+    blocks: list[dict] = []
+    raw = content if isinstance(content, list) else [content]
+    for block in raw:
+        if isinstance(block, str):
+            if block.strip():
+                blocks.append({"type": "text", "text": block})
+            continue
+        if not isinstance(block, dict):
+            continue
+        kind = block.get("type")
+        if kind == "image":
+            blocks.append({"type": "image"})
+            continue
+        if kind in {None, "text", "input_text", "output_text"}:
+            text = block.get("text")
+            if isinstance(text, str) and text.strip():
+                blocks.append({"type": "text", "text": text})
+    return blocks
+
+
+def _iter_jsonl(path: Path):
+    try:
+        with path.open("r", encoding="utf-8", errors="ignore") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if isinstance(entry, dict):
+                    yield entry
+    except OSError:
+        return
 
 
 def _entry_text(entry: dict) -> str:
@@ -404,24 +498,325 @@ def default_qoder_root() -> Path:
     return Path.home() / ".qoder" / "projects"
 
 
+def default_codex_root() -> Path:
+    return Path.home() / ".codex" / "sessions"
+
+
+def default_gemini_root() -> Path:
+    return Path.home() / ".gemini" / "tmp"
+
+
+def default_grok_root() -> Path:
+    return Path.home() / ".grok" / "sessions"
+
+
+def default_opencode_db() -> Path:
+    return Path.home() / ".local" / "share" / "opencode" / "opencode.db"
+
+
+def _first_prompt(messages: object) -> str:
+    if not isinstance(messages, list):
+        return ""
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        if message.get("type") not in {"user", "human"}:
+            continue
+        text = _prompt_text(_content_text(message.get("content")))
+        for line in text.splitlines():
+            collapsed = " ".join(line.split())
+            if not collapsed:
+                continue
+            return _title_from_text(collapsed)
+    return ""
+
+
+def _codex_meta(path: Path) -> tuple[str, str, datetime | None, str]:
+    session_id = ""
+    cwd = ""
+    created: datetime | None = None
+    title = ""
+    try:
+        with path.open("r", encoding="utf-8", errors="ignore") as handle:
+            for _ in range(_TITLE_READ_LINES):
+                line = handle.readline(_MAX_META_BYTES)
+                if not line:
+                    break
+                try:
+                    entry = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if not isinstance(entry, dict):
+                    continue
+                payload = entry.get("payload")
+                if not isinstance(payload, dict):
+                    continue
+                if entry.get("type") == "session_meta":
+                    candidate = payload.get("session_id") or payload.get("id")
+                    if isinstance(candidate, str) and candidate.strip():
+                        session_id = candidate.strip()
+                    value = payload.get("cwd")
+                    if isinstance(value, str) and value.strip():
+                        cwd = value.strip()
+                    created = created or _parse_time(payload.get("timestamp"))
+                elif payload.get("type") == "message" and not title:
+                    role = payload.get("role")
+                    if role == "user":
+                        title = _first_prompt(
+                            [{"type": "user", "content": payload.get("content")}]
+                        )
+                if session_id and cwd and title and created is not None:
+                    break
+    except OSError:
+        pass
+    return session_id, cwd, created, title
+
+
+def _codex_sessions(root: Path, now: datetime) -> list[AgentSession]:
+    if not root.is_dir():
+        return []
+    sessions: list[AgentSession] = []
+    for path in root.rglob("rollout-*.jsonl"):
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        session_id, cwd, created, title = _codex_meta(path)
+        sessions.append(
+            AgentSession(
+                agent="codex",
+                session_id=session_id or path.stem,
+                project=_project_name(path.parent.name, cwd),
+                project_path=cwd,
+                path=str(path),
+                updated_at=_local(stat.st_mtime) or now,
+                created_at=created,
+                message_count=0,
+                size_bytes=int(stat.st_size),
+                title=title,
+            )
+        )
+    return sessions
+
+
+def _gemini_project_map(root: Path) -> dict[str, str]:
+    data = _load_json(root.parent / "projects.json") or {}
+    projects = data.get("projects")
+    if not isinstance(projects, dict):
+        return {}
+    return {
+        str(slug): str(path)
+        for path, slug in projects.items()
+        if isinstance(path, str) and isinstance(slug, str)
+    }
+
+
+def _gemini_messages(path: Path) -> tuple[dict, list[dict]]:
+    meta: dict = {}
+    messages: list[dict] = []
+    if path.suffix == ".json":
+        data = _load_json(path) or {}
+        meta = data
+        raw = data.get("messages")
+        if isinstance(raw, list):
+            messages = [item for item in raw if isinstance(item, dict)]
+        return meta, messages
+    try:
+        with path.open("r", encoding="utf-8", errors="ignore") as handle:
+            for index, line in enumerate(handle):
+                if index > _TITLE_READ_LINES * 20:
+                    break
+                try:
+                    entry = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if not isinstance(entry, dict):
+                    continue
+                if index == 0:
+                    meta = entry
+                patch = entry.get("$set")
+                if isinstance(patch, dict) and isinstance(patch.get("messages"), list):
+                    messages = [
+                        item for item in patch["messages"] if isinstance(item, dict)
+                    ]
+                elif entry.get("type") in {"user", "gemini", "error", "info"}:
+                    messages.append(entry)
+    except OSError:
+        pass
+    return meta, messages
+
+
+def _gemini_file_meta(
+    path: Path,
+) -> tuple[str, datetime | None, datetime | None, int, str]:
+    session_id = path.stem
+    meta, messages = _gemini_messages(path)
+    value = meta.get("sessionId")
+    if isinstance(value, str) and value.strip():
+        session_id = value.strip()
+    created = _parse_time(meta.get("startTime"))
+    updated = _parse_time(meta.get("lastUpdated"))
+    for message in messages:
+        stamp = _parse_time(message.get("timestamp"))
+        if stamp is not None and (updated is None or stamp > updated):
+            updated = stamp
+    title = _first_prompt(messages)
+    return session_id, created, updated, len(messages), title
+
+
+def _gemini_sessions(root: Path, now: datetime) -> list[AgentSession]:
+    if not root.is_dir():
+        return []
+    projects = _gemini_project_map(root)
+    sessions: list[AgentSession] = []
+    for path in root.glob("*/chats/session-*"):
+        if path.suffix not in {".json", ".jsonl"}:
+            continue
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        session_id, created, updated, count, title = _gemini_file_meta(path)
+        folder = path.parent.parent.name
+        project_path = projects.get(folder, "")
+        sessions.append(
+            AgentSession(
+                agent="gemini",
+                session_id=session_id,
+                project=_project_name(folder, project_path),
+                project_path=project_path or folder,
+                path=str(path),
+                updated_at=updated or _local(stat.st_mtime) or now,
+                created_at=created,
+                message_count=count,
+                size_bytes=int(stat.st_size),
+                title=title,
+            )
+        )
+    return sessions
+
+
+def _grok_sessions(root: Path, now: datetime) -> list[AgentSession]:
+    if not root.is_dir():
+        return []
+    sessions: list[AgentSession] = []
+    for path in root.glob("*/*/summary.json"):
+        data = _load_json(path)
+        if data is None:
+            continue
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        session_dir = path.parent
+        folder = session_dir.parent.name
+        decoded = urllib.parse.unquote(folder)
+        project_path = data.get("git_root_dir")
+        if not isinstance(project_path, str) or not project_path.strip():
+            project_path = decoded
+        title = data.get("generated_title")
+        if not isinstance(title, str):
+            title = ""
+        try:
+            count = int(data.get("num_chat_messages") or 0)
+        except (TypeError, ValueError):
+            count = 0
+        sessions.append(
+            AgentSession(
+                agent="grok",
+                session_id=session_dir.name,
+                project=_project_name(folder, project_path),
+                project_path=project_path,
+                path=str(session_dir),
+                updated_at=(
+                    _parse_time(data.get("last_active_at"))
+                    or _parse_time(data.get("updated_at"))
+                    or _local(stat.st_mtime)
+                    or now
+                ),
+                created_at=_parse_time(data.get("created_at")),
+                message_count=count,
+                size_bytes=int(stat.st_size),
+                title=_title_from_text(title),
+            )
+        )
+    return sessions
+
+
+def _opencode_sessions(db: Path, now: datetime) -> list[AgentSession]:
+    if not db.is_file():
+        return []
+    sessions: list[AgentSession] = []
+    try:
+        connection = sqlite3.connect(
+            f"file:{db.as_posix()}?mode=ro", uri=True, timeout=1.0
+        )
+    except sqlite3.Error:
+        return []
+    try:
+        rows = connection.execute(
+            "SELECT id, directory, title, time_created, time_updated "
+            "FROM session WHERE IFNULL(time_archived, 0) = 0 "
+            "ORDER BY time_updated DESC LIMIT 300"
+        ).fetchall()
+    except sqlite3.Error:
+        rows = []
+    finally:
+        connection.close()
+    for session_id, directory, title, created, updated in rows:
+        project_path = directory if isinstance(directory, str) else ""
+        sessions.append(
+            AgentSession(
+                agent="opencode",
+                session_id=str(session_id),
+                project=_project_name("", project_path),
+                project_path=project_path,
+                path="",
+                updated_at=_parse_time(updated) or now,
+                created_at=_parse_time(created),
+                title=_title_from_text(title if isinstance(title, str) else ""),
+            )
+        )
+    return sessions
+
+
 def scan_sessions(
     claude_root: Path | None = None,
     qoder_root: Path | None = None,
     max_sessions: int = 80,
     now: datetime | None = None,
+    *,
+    codex_root: Path | None = None,
+    gemini_root: Path | None = None,
+    grok_root: Path | None = None,
+    opencode_db: Path | None = None,
 ) -> list[AgentSession]:
     current = now or datetime.now().astimezone()
     sessions = _claude_sessions(claude_root or default_claude_root(), current)
     sessions.extend(_qoder_sessions(qoder_root or default_qoder_root(), current))
+    if codex_root is not None:
+        sessions.extend(_codex_sessions(codex_root, current))
+    if gemini_root is not None:
+        sessions.extend(_gemini_sessions(gemini_root, current))
+    if grok_root is not None:
+        sessions.extend(_grok_sessions(grok_root, current))
+    if opencode_db is not None:
+        sessions.extend(_opencode_sessions(opencode_db, current))
     sessions.sort(key=lambda item: item.updated_at, reverse=True)
     return sessions[: max(1, int(max_sessions))]
 
 
 def _resolve_transcript_path(session: AgentSession) -> Path | None:
+    if session.agent == "opencode":
+        return None
     path = Path(session.path)
     if path.is_file():
         return path
     if path.is_dir():
+        if session.agent == "grok":
+            history = path / "chat_history.jsonl"
+            if history.is_file():
+                return history
         sibling = path.parent / f"{path.name}.jsonl"
         if sibling.is_file():
             return sibling
@@ -601,11 +996,268 @@ def _handle_assistant_entry(
             )
 
 
+def _parse_tool_input(value: object) -> dict:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip().startswith("{"):
+        try:
+            parsed = json.loads(value)
+        except (json.JSONDecodeError, ValueError):
+            parsed = None
+        if isinstance(parsed, dict):
+            return parsed
+    if isinstance(value, str) and value.strip():
+        return {"input": value.strip()}
+    return {}
+
+
+def _codex_entries(path: Path):
+    for entry in _iter_jsonl(path):
+        if entry.get("type") != "response_item":
+            continue
+        payload = entry.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        kind = payload.get("type")
+        timestamp = entry.get("timestamp")
+        if kind == "message":
+            role = payload.get("role")
+            if role not in {"user", "assistant"}:
+                continue
+            blocks = _text_blocks(payload.get("content"))
+            if role == "user":
+                normalized: list[dict] = []
+                for block in blocks:
+                    if block.get("type") == "text":
+                        text = _prompt_text(block.get("text") or "")
+                        if text:
+                            normalized.append({"type": "text", "text": text})
+                    else:
+                        normalized.append(block)
+                blocks = normalized
+            if blocks:
+                yield {
+                    "type": role,
+                    "timestamp": timestamp,
+                    "message": {"content": blocks},
+                }
+        elif kind in {"function_call", "custom_tool_call"}:
+            name = payload.get("name")
+            name = name if isinstance(name, str) and name else "工具"
+            call_id = payload.get("call_id") or payload.get("id")
+            raw = payload.get("arguments")
+            if kind == "custom_tool_call":
+                raw = payload.get("input")
+            yield {
+                "type": "assistant",
+                "timestamp": timestamp,
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": call_id,
+                            "name": name,
+                            "input": _parse_tool_input(raw),
+                        }
+                    ]
+                },
+            }
+        elif kind in {"function_call_output", "custom_tool_call_output"}:
+            text, truncated = _clip(
+                _any_text(payload.get("output")), _MAX_ITEM_CHARS
+            )
+            yield {
+                "type": "user",
+                "timestamp": timestamp,
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": payload.get("call_id"),
+                            "content": text,
+                            "is_error": str(payload.get("status") or "").lower()
+                            in {"error", "failed"},
+                            "truncated": truncated,
+                        }
+                    ]
+                },
+            }
+        elif kind == "reasoning":
+            text = _content_text(payload.get("summary"))
+            if text.strip():
+                yield {
+                    "type": "assistant",
+                    "timestamp": timestamp,
+                    "message": {
+                        "content": [{"type": "thinking", "thinking": text}]
+                    },
+                }
+
+
+def _gemini_entries(path: Path):
+    _, messages = _gemini_messages(path)
+    for message in messages:
+        kind = message.get("type")
+        timestamp = message.get("timestamp")
+        content = message.get("content")
+        calls = message.get("toolCalls")
+        if kind == "user":
+            blocks: list[dict] = []
+            for block in _text_blocks(content):
+                if block.get("type") == "text":
+                    text = _prompt_text(block.get("text") or "")
+                    if text:
+                        blocks.append({"type": "text", "text": text})
+                else:
+                    blocks.append(block)
+            if blocks:
+                yield {
+                    "type": "user",
+                    "timestamp": timestamp,
+                    "message": {"content": blocks},
+                }
+        elif kind == "gemini":
+            blocks = _text_blocks(content)
+            results: list[dict] = []
+            if isinstance(calls, list):
+                for call in calls:
+                    if not isinstance(call, dict):
+                        continue
+                    name = call.get("name")
+                    name = name if isinstance(name, str) and name else "工具"
+                    call_id = call.get("id")
+                    blocks.append(
+                        {
+                            "type": "tool_use",
+                            "id": call_id,
+                            "name": name,
+                            "input": _parse_tool_input(call.get("args")),
+                        }
+                    )
+                    result = call.get("result")
+                    if result is not None:
+                        results.append(
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": call_id,
+                                "content": _any_text(result),
+                                "is_error": str(call.get("status") or "").lower()
+                                in {"error", "failed"},
+                            }
+                        )
+            if blocks:
+                yield {
+                    "type": "assistant",
+                    "timestamp": timestamp,
+                    "message": {"content": blocks},
+                }
+            if results:
+                yield {
+                    "type": "user",
+                    "timestamp": timestamp,
+                    "message": {"content": results},
+                }
+        elif kind == "error":
+            text = _any_text(content).strip()
+            if text:
+                yield {
+                    "type": "assistant",
+                    "timestamp": timestamp,
+                    "message": {
+                        "content": [{"type": "text", "text": f"[错误] {text}"}]
+                    },
+                }
+
+
+def _grok_entries(path: Path):
+    for entry in _iter_jsonl(path):
+        kind = entry.get("type")
+        timestamp = entry.get("ts") or entry.get("timestamp")
+        if kind == "user":
+            blocks: list[dict] = []
+            for block in _text_blocks(entry.get("content")):
+                if block.get("type") == "text":
+                    text = _prompt_text(block.get("text") or "")
+                    if text:
+                        blocks.append({"type": "text", "text": text})
+                else:
+                    blocks.append(block)
+            if blocks:
+                yield {
+                    "type": "user",
+                    "timestamp": timestamp,
+                    "message": {"content": blocks},
+                }
+        elif kind == "assistant":
+            blocks = _text_blocks(entry.get("content"))
+            calls = entry.get("tool_calls")
+            if isinstance(calls, list):
+                for call in calls:
+                    if not isinstance(call, dict):
+                        continue
+                    name = call.get("name")
+                    name = name if isinstance(name, str) and name else "工具"
+                    blocks.append(
+                        {
+                            "type": "tool_use",
+                            "id": call.get("id"),
+                            "name": name,
+                            "input": _parse_tool_input(call.get("arguments")),
+                        }
+                    )
+            if blocks:
+                yield {
+                    "type": "assistant",
+                    "timestamp": timestamp,
+                    "message": {"content": blocks},
+                }
+        elif kind == "reasoning":
+            text = _content_text(entry.get("summary"))
+            if text.strip():
+                yield {
+                    "type": "assistant",
+                    "timestamp": timestamp,
+                    "message": {
+                        "content": [{"type": "thinking", "thinking": text}]
+                    },
+                }
+        elif kind == "tool_result":
+            yield {
+                "type": "user",
+                "timestamp": timestamp,
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": entry.get("tool_call_id"),
+                            "content": _any_text(entry.get("content")),
+                        }
+                    ]
+                },
+            }
+
+
+def _iter_entries(session: AgentSession, path: Path):
+    if session.agent == "codex":
+        yield from _codex_entries(path)
+    elif session.agent == "gemini":
+        yield from _gemini_entries(path)
+    elif session.agent == "grok":
+        yield from _grok_entries(path)
+    else:
+        yield from _iter_jsonl(path)
+
+
 def parse_session_transcript(
     session: AgentSession, max_turns: int = _MAX_TURNS
 ) -> SessionTranscript:
     path = _resolve_transcript_path(session)
     if path is None:
+        if session.agent == "opencode":
+            return SessionTranscript(
+                session=session,
+                note="OpenCode 会话内容存放在本地数据库中，当前仅支持查看元数据。",
+            )
         return SessionTranscript(
             session=session, note="未找到该会话的记录文件，仅能查看元数据。"
         )
@@ -623,28 +1275,15 @@ def parse_session_transcript(
     drafts: list[_TurnDraft] = []
     turn = _TurnDraft()
     tool_names: dict[str, str] = {}
-    try:
-        with path.open("r", encoding="utf-8", errors="ignore") as handle:
-            for line in handle:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                except (json.JSONDecodeError, ValueError):
-                    continue
-                if not isinstance(entry, dict):
-                    continue
-                kind = entry.get("type")
-                if kind == "user":
-                    updated = _handle_user_entry(entry, turn, tool_names)
-                    if updated is not turn:
-                        drafts.append(turn)
-                        turn = updated
-                elif kind == "assistant":
-                    _handle_assistant_entry(entry, turn, tool_names)
-    except OSError as exc:
-        return SessionTranscript(session=session, note=f"读取会话文件失败：{exc}")
+    for entry in _iter_entries(session, path):
+        kind = entry.get("type")
+        if kind == "user":
+            updated = _handle_user_entry(entry, turn, tool_names)
+            if updated is not turn:
+                drafts.append(turn)
+                turn = updated
+        elif kind == "assistant":
+            _handle_assistant_entry(entry, turn, tool_names)
     if turn.prompt or turn.items:
         drafts.append(turn)
 
@@ -763,12 +1402,20 @@ class AgentSessionScanner(QObject):
         parent: QObject | None = None,
         claude_root: Path | None = None,
         qoder_root: Path | None = None,
+        codex_root: Path | None = None,
+        gemini_root: Path | None = None,
+        grok_root: Path | None = None,
+        opencode_db: Path | None = None,
     ) -> None:
         super().__init__(parent)
         self._config = config
         self._logger = logger
         self._claude_root = claude_root or default_claude_root()
         self._qoder_root = qoder_root or default_qoder_root()
+        self._codex_root = codex_root or default_codex_root()
+        self._gemini_root = gemini_root or default_gemini_root()
+        self._grok_root = grok_root or default_grok_root()
+        self._opencode_db = opencode_db or default_opencode_db()
         self._stop_event = threading.Event()
         self._wake_event = threading.Event()
         self._thread: threading.Thread | None = None
@@ -806,17 +1453,37 @@ class AgentSessionScanner(QObject):
                         self._claude_root,
                         self._qoder_root,
                         config.max_sessions,
+                        codex_root=self._codex_root,
+                        gemini_root=self._gemini_root,
+                        grok_root=self._grok_root,
+                        opencode_db=self._opencode_db,
                     )
                 except Exception as exc:  # pragma: no cover - defensive
                     self._logger.warning("扫描 Agent 会话失败：%s", exc)
                     self.failed.emit(str(exc))
                 else:
                     self.scanned.emit(sessions)
+                    counts = {
+                        agent: sum(1 for item in sessions if item.agent == agent)
+                        for agent in (
+                            "claude",
+                            "qoder",
+                            "codex",
+                            "gemini",
+                            "grok",
+                            "opencode",
+                        )
+                    }
                     self._logger.info(
-                        "已扫描 Agent 会话：%d 个（Claude=%d Qoder=%d）",
+                        "已扫描 Agent 会话：%d 个（Claude=%d Qoder=%d "
+                        "Codex=%d Gemini=%d Grok=%d OpenCode=%d）",
                         len(sessions),
-                        sum(1 for item in sessions if item.agent == "claude"),
-                        sum(1 for item in sessions if item.agent == "qoder"),
+                        counts["claude"],
+                        counts["qoder"],
+                        counts["codex"],
+                        counts["gemini"],
+                        counts["grok"],
+                        counts["opencode"],
                     )
             interval = max(30, int(config.scan_interval_seconds))
             self._wake_event.wait(interval)

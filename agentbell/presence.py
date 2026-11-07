@@ -7,11 +7,13 @@ from ctypes import wintypes
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
+from . import macos_desktop
 from .config import AppConfig
 from .policy import Presence
 
 _IS_WINDOWS = os.name == "nt"
 _IS_LINUX = sys.platform.startswith("linux")
+_IS_MACOS = sys.platform == "darwin"
 
 if _IS_WINDOWS:  # pragma: no branch - platform dependent
     _user32 = ctypes.WinDLL("user32", use_last_error=True)
@@ -149,6 +151,11 @@ def _session_flags() -> int | None:
 
 
 def idle_seconds() -> float:
+    if _IS_MACOS:
+        try:
+            return macos_desktop.idle_seconds()
+        except Exception:
+            return 0.0
     if _IS_LINUX:
         try:
             from . import linux_desktop
@@ -168,6 +175,11 @@ def idle_seconds() -> float:
 
 
 def foreground_window_class() -> str:
+    if _IS_MACOS:
+        try:
+            return macos_desktop.foreground_process_name()
+        except Exception:
+            return ""
     if _IS_LINUX:
         try:
             from . import linux_desktop
@@ -186,6 +198,11 @@ def foreground_window_class() -> str:
 
 
 def foreground_process_name() -> str:
+    if _IS_MACOS:
+        try:
+            return macos_desktop.foreground_process_name()
+        except Exception:
+            return ""
     if _IS_LINUX:
         try:
             from . import linux_desktop
@@ -220,6 +237,11 @@ def foreground_process_name() -> str:
 
 
 def foreground_is_fullscreen() -> bool:
+    if _IS_MACOS:
+        try:
+            return macos_desktop.foreground_fullscreen()
+        except Exception:
+            return False
     if _IS_LINUX:
         try:
             from . import linux_desktop
@@ -312,6 +334,11 @@ def _input_desktop_name() -> str:
 
 def session_locked() -> bool:
     """Best-effort detection of lock screen, screensaver or monitor sleep."""
+    if _IS_MACOS:
+        try:
+            return macos_desktop.session_locked()
+        except Exception:
+            return False
     if _IS_LINUX:
         try:
             from . import linux_desktop

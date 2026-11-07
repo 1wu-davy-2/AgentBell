@@ -48,7 +48,9 @@
 
 2.12.0 新增只读动作：`/notify` 的 `actions` 接受 `session` 与 `timeline`，分别打开内置会话记录与本次运行时间线。两类动作只读取通知自身的 `session_id` / `run_id`，忽略 `value`，不执行任何外部命令；未知标识或缺少标识时给出非阻塞提示。动作顺序固定为 `focus` → `session` → `timeline` → 其他，弹窗与通知中心的首个按钮因此总是「回到终端」或「查看记录」。不提供批准权限、自动继续或发送提示词的动作，审批必须回到终端完成。
 
-2.18.0 新增 Windows ARM64 与 macOS 双架构：Windows 在 `windows-11-arm` runner 上用原生 Arm64 Python、Arm64 PySide6 与 PyInstaller 构建，产物命名 `AgentBell-arm64.exe`，与 x64 的 `AgentBell.exe` 并存。更新器新增按架构选资产：Arm64 只接受名称含 `arm64` 的 exe，x64 排除 arm64 资产，绝不交叉替换。macOS 使用 `AgentBell-macos.spec` 生成 `.app`（`EXE` + `COLLECT` + `BUNDLE`），`scripts/make_macos_icon.py` 通过 QSvgRenderer 与 `iconutil` 生成 `.icns`，`scripts/build_macos_packages.py` 负责 ad-hoc `codesign`、`ditto` zip 与 `hdiutil` dmg，并按架构输出 `AgentBell-macos-<arch>.dmg` / `.zip`。冻结的 macOS 应用把 `config.json`、`logs/`、`agentbell.db` 与 `chat/` 写入 `~/Library/Application Support/AgentBell`，应用包保持只读；自启写入 `~/Library/LaunchAgents/com.agentbell.app.plist`。macOS 不参与原地自动更新，更新器只打开 Release 页面。提示音在 macOS 走 `afplay`，Linux 走 `paplay` / `aplay`，端口占用提示按平台给出 `lsof` / `ss` / `netstat` 命令。
+2.19.0 扩充日常观测、规则调试与平台能力：会话页新增 Codex / Gemini / Grok / OpenCode 只读扫描，等待输入推断扩展到 Codex / Gemini / Grok；通知中心搜索支持 `status:` / `source:` / `priority:` / `session:` / `run:` / `ack:` 字段过滤，统计支持 7 / 30 / 90 天区间与 CSV 导出，并可批量归档、按日期或来源分组；托盘新增 30 分钟 / 1 小时 / 到明早的快捷免打扰；设置页规则区新增「试运行」，用一条样例通知展示命中的规则与最终字段。平台侧补齐 macOS 的全局快捷键、回到终端、空闲 / 全屏 / 会议 / 锁屏推断、便携 Node 与原地更新；Linux Wayland 通过 XDG GlobalShortcuts portal 注册全局快捷键，窗口聚焦明确提示系统限制；Windows Authenticode 与 macOS Developer ID 签名 / 公证接入 CI。签名证书、密码与 App Store Connect 密钥只从环境变量或 GitHub Secrets 读取，不写入仓库、命令行日志或构建产物。
+
+2.18.0 新增 Windows ARM64 与 macOS 双架构：Windows 在 `windows-11-arm` runner 上用原生 Arm64 Python、Arm64 PySide6 与 PyInstaller 构建，产物命名 `AgentBell-arm64.exe`，与 x64 的 `AgentBell.exe` 并存。更新器新增按架构选资产：Arm64 只接受名称含 `arm64` 的 exe，x64 排除 arm64 资产，绝不交叉替换。macOS 使用 `AgentBell-macos.spec` 生成 `.app`（`EXE` + `COLLECT` + `BUNDLE`），`scripts/make_macos_icon.py` 通过 QSvgRenderer 与 `iconutil` 生成 `.icns`，`scripts/build_macos_packages.py` 负责 ad-hoc `codesign`、`ditto` zip 与 `hdiutil` dmg，并按架构输出 `AgentBell-macos-<arch>.dmg` / `.zip`。冻结的 macOS 应用把 `config.json`、`logs/`、`agentbell.db` 与 `chat/` 写入 `~/Library/Application Support/AgentBell`，应用包保持只读；自启写入 `~/Library/LaunchAgents/com.agentbell.app.plist`。提示音在 macOS 走 `afplay`，Linux 走 `paplay` / `aplay`，端口占用提示按平台给出 `lsof` / `ss` / `netstat` 命令。
 
 2.18.2 修复 Release 校验文件：Windows x64 与 arm64 打包任务此前都写 `dist/SHA256SUMS.txt`，两个 artifact 经 `download-artifact` 合并后同名文件互相覆盖，最终 `SHA256SUMS.txt` 只保留 x64 的两个 exe。现在按架构输出 `SHA256SUMS-windows-<arch>.txt`，与 Linux / macOS 的命名方式一致，合并后覆盖全部 16 个可下载产物。
 
@@ -69,7 +71,7 @@
 - 只监听 `127.0.0.1:8765`（可在 `config.json` 改端口），不暴露到局域网。
 - 弹窗置顶、不抢键盘焦点，打字不会被打断。
 - 状态：成功 / 失败 / 取消 / 进行中；进行中通知可带 0–100 进度并在原卡片更新。
-- 等待输入：进行中通知可带 `needs_input` 与等待原因（权限、提问、限流、上下文超限、其他），卡片与「进行中」页的活跃会话同步标记；「待输入」子筛选只显示等待中的通知与会话。显式上报为主，Claude Code / Qoder 尾部只读推断为可关闭的兜底。
+- 等待输入：进行中通知可带 `needs_input` 与等待原因（权限、提问、限流、上下文超限、其他），卡片与「进行中」页的活跃会话同步标记；「待输入」子筛选只显示等待中的通知与会话。显式上报为主，Claude Code / Qoder / Codex / Gemini / Grok 尾部只读推断为可关闭的兜底。
 - 一键接入提醒：在运行环境页写入 Claude Code / Gemini CLI / Grok 的等待与结束 Hook，Codex 支持结束提醒；写入前预览，按时间戳备份，使用配置锁与原子替换，只追加带标记的条目，可随时撤销。
 - 运行时间线：同一 `run_id` 的事件写入只追加的 `run_events`，卡片「时间线」按钮展示阶段、相对耗时、状态与来源；会话详情显示最近一次运行摘要，统计页增加运行数、运行成功率、P50/P90 耗时与累计等待。
 - 只读动作：通知可带「查看记录」「时间线」按钮，直接打开本地会话与运行时间线；不包含审批、自动继续、发送提示词或任意命令。
@@ -85,24 +87,24 @@
 - 标志与关于：蓝底白铃、铃身与铃舌分开的圆标，16 像素下仍保持铃的轮廓；「关于 AgentBell」展示 16/24/32/48/64 尺寸与彩色/单色变体，可重响启动铃声并导出 SVG。
 - 再次打开：服务已在运行时不再走完整介绍，只显示带「正在打开通知中心」的启动卡片，然后唤醒已有窗口。
 - 锁屏保护：锁屏 / 息屏 / 屏保时暂停倒计时并暂缓新弹窗，解锁后补发；默认开启，可在偏好设置关闭。
-- 打扰控制：成功可只进通知中心；失败与高优先级弹窗；免打扰时段；全屏/会议程序前台时延后，结束后补发。
+- 打扰控制：成功可只进通知中心；失败与高优先级弹窗；免打扰时段；全屏/会议程序前台时延后，结束后补发。托盘「勿扰模式」可快速暂停 30 分钟、1 小时或到明早，并与配置中的安静时段叠加。
 - 冷却与聚合：短时间连续弹窗会自动合并成一条摘要，避免刷屏。
 - 去重更新：相同 `dedupe_key` 原地更新同一张卡片，适合长任务的进度推送。
 - 闭环处理：`require_ack` 待确认、5/15/30 分钟稍后提醒、未读升级（重新弹出 + 托盘闪烁 + 提示音）。
 - 卡片动作：回到终端、打开链接、复制文本、重试回调、打开本地文件、打开通知中心。
-- 回到终端：请求带 `origin`（`pid` / `window_title` / `working_dir`）时自动生成按钮，沿父进程链定位宿主终端或编辑器窗口并切到前台；只聚焦窗口，不选中标签页，也不执行任何命令。未带 `origin` 时按本机连接反查发送进程，尽力补出按钮与来源 Agent。Windows 与 Linux X11 可用，Wayland 自动提示降级。会话卡片、会话详情与启动记录也有「回到终端 / 回到窗口」入口。
+- 回到终端：请求带 `origin`（`pid` / `window_title` / `working_dir`）时自动生成按钮，沿父进程链定位宿主终端或编辑器窗口并切到前台；只聚焦窗口，不选中标签页，也不执行任何命令。未带 `origin` 时按本机连接反查发送进程，尽力补出按钮与来源 Agent。Windows、macOS 与 Linux X11 可用；Wayland 会说明系统不允许应用主动切换焦点。macOS 需要辅助功能权限。会话卡片、会话详情与启动记录也有「回到终端 / 回到窗口」入口。
 - Agent 启动：内置 11 个常见 Agent 的检测规则（Claude Code、Claude Desktop、Codex、Gemini CLI、Grok Build、OpenCode、OpenClaw、Hermes、Pi、MiniMax Code、Antigravity），已安装的排在前面并显示可执行文件路径；选择项目目录、填写初始提示词后，点「打开终端并开始」或直接双击卡片，即打开 PowerShell 新窗口并启动对应 Agent。提示词通过环境变量传入，不拼接进 shell 命令；桌面应用只打开窗口，不会假装能预填提示词。最近 6 个项目与上次使用的 Agent 会写入 `agent_launcher`。
 - 默认 chat 工作区：首次启动在安装目录（源码模式为仓库根目录）自动创建 `chat/`，Agent 启动页默认选中它；要回到「本目录里直接聊」的用法，不用每次浏览文件夹。也可继续选择其他项目，最近项目仍会保留。
 - 便携运行环境：内置「运行环境」页把 Node LTS 与 7 个官方 npm Agent CLI 装到安装目录 `runtime/`；下载只接受 HTTPS 白名单域名并校验 SHA-256，免管理员权限、不改系统 PATH，安装后可卸载与重新检测；cc-switch 等外部 exe 不代装，点按钮跳转官方下载页；DeepSeek 作为供应商预设注入 Claude Code 启动环境。
 - Agent 项目主页：每张 Agent 卡片都可点右上角「项目主页」打开对应的官网或 GitHub 仓库，方便查安装方式、更新与文档。
-- 自身更新：安装包预填 GitHub 仓库 `1wu-davy-2/AgentBell`，启动约 9 秒后检查 Releases；发现新版本会提示并按平台与架构下载 `AgentBell.exe` / `AgentBell-arm64.exe`（Linux 为 `AgentBell-linux-<arch>.tar.gz`），校验大小与 SHA-256 后在退出时自动替换、备份旧版并重启。Windows ARM64 只接受 arm64 资产，绝不回落到 x64。macOS 不执行原地替换，只提示并打开 Release 页面；AppImage 与 deb/rpm 同样提示下载新包或使用包管理器升级。托盘和 Agent 启动页都有「检查更新」入口；源码模式只下载安装包，不会替换正在运行的 Python 程序。仓库可在设置里改为其他 `owner/repo` 或清空。
-- 规则引擎：按来源 / 标题 / 状态 / 等待原因 / 是否等待输入 / 时长 / 项目自动设置优先级、静音、待确认、免打扰例外、弹窗外观、外部渠道；保存设置后立即生效。
+- 自身更新：安装包预填 GitHub 仓库 `1wu-davy-2/AgentBell`，启动约 9 秒后检查 Releases；发现新版本会提示并按平台与架构下载 `AgentBell.exe` / `AgentBell-arm64.exe`（macOS 为 `AgentBell-macos-<arch>.zip`，Linux 为 `AgentBell-linux-<arch>.tar.gz`），校验大小与 SHA-256 后在退出时自动替换、备份旧版并重启。Windows ARM64 只接受 arm64 资产，绝不回落到 x64。macOS 用 zip 内签名并公证过的 `.app` 做原地更新，dmg 仅用于首次安装；AppImage 与 deb/rpm 提示下载新包或使用包管理器升级。托盘和 Agent 启动页都有「检查更新」入口；源码模式只下载安装包，不会替换正在运行的 Python 程序。仓库可在设置里改为其他 `owner/repo` 或清空。
+- 规则引擎：按来源 / 标题 / 状态 / 等待原因 / 是否等待输入 / 时长 / 项目自动设置优先级、静音、待确认、免打扰例外、弹窗外观、外部渠道；保存设置后立即生效。设置页提供「试运行」，输入一条样例通知即可查看命中的规则名与最终优先级、皮肤、渠道等字段。
 - 模板与声音：四种状态的弹窗文案、五类 WAV 提示音均可配置。
 - 外部渠道：企业微信、飞书、Telegram、Bark、ntfy、通用 Webhook；可按“离开电脑”或规则触发，失败只记日志，不影响主流程。
-- Agent 会话：只读扫描本机 Claude Code / Qoder 的会话，可在软件内直接阅读完整记录（轮次、工具调用、结果与思考过程）、跳转大纲、会话内搜索、复制或导出 Markdown，支持按项目、标题与路径筛选。
-- 可选 SQLite 历史：通知中心支持搜索、状态与 Agent 来源筛选、进行中活跃会话推断、成功率 / 平均耗时 / 待确认统计和 7 天趋势图。
-- 跨平台：Windows x64 / arm64、macOS 14+（Intel / Apple Silicon）与 Linux x64 / arm64。Windows 功能完整；macOS 保留托盘、弹窗、通知中心、历史、搜索、统计、提示音与 Hook，但没有全局快捷键、回到终端、全屏 / 会议 / 空闲 / 锁屏推断、便携运行环境与原地更新；Linux X11 会话支持窗口聚焦、全屏 / 会议 / 锁屏检测、全局快捷键与包内更新，Wayland 会话保留弹窗、通知中心与托盘，但相关桌面能力自动降级并给出提示。
-- 全局快捷键（默认 `Ctrl+Alt+A`）打开通知中心；托盘显示未读数。Windows 与 Linux X11 注册系统级快捷键，macOS 与 Wayland 不支持。
+- Agent 会话：只读扫描本机 Claude Code / Qoder / Codex / Gemini / Grok 的会话文件与 OpenCode 的 SQLite 数据库，可在软件内直接阅读完整记录（轮次、工具调用、结果与思考过程）、跳转大纲、会话内搜索、复制或导出 Markdown，支持按项目、标题与路径筛选。
+- 可选 SQLite 历史：通知中心支持全文与字段过滤搜索（`status:` / `source:` / `priority:` / `session:` / `run:` / `ack:`）、状态与 Agent 来源筛选、7 / 30 / 90 天统计区间与 CSV 导出、批量归档和按日期 / 来源分组，以及成功率 / 平均耗时 / 待确认统计和趋势图。
+- 跨平台：Windows x64 / arm64、macOS 14+（Intel / Apple Silicon）与 Linux x64 / arm64 功能对齐。Windows 与 macOS 支持托盘、弹窗、通知中心、会话、Hook、全局快捷键、回到终端、空闲 / 全屏 / 会议 / 锁屏推断、终端启动、便携运行环境与包内更新；Linux X11 同样支持这些桌面能力，Wayland 通过 XDG GlobalShortcuts portal 注册全局快捷键，但系统不允许应用主动切换窗口焦点，相关入口会给出说明。
+- 全局快捷键（默认 `Ctrl+Alt+A`）打开通知中心；托盘显示未读数。Windows 使用 `RegisterHotKey`，macOS 使用 Carbon `RegisterEventHotKey`，Linux X11 使用 `XGrabKey`，Wayland 使用 `org.freedesktop.portal.GlobalShortcuts`。
 - 常驻托盘、单实例启动、可复制 Agent 接入指令、滚动日志、PyInstaller 打包（Windows 为单文件 `AgentBell-<构建号>.exe` / `AgentBell-arm64.exe`，macOS 为 `AgentBell.app` 的 dmg / zip，Linux 为 `AgentBell` tar.gz / AppImage / deb / rpm）。
 
 ## 目录结构
@@ -119,18 +121,21 @@ agentbell/
 │  ├─ config.py           config.json 读写与校验
 │  ├─ models.py           Notification 数据模型、模板、链接/路径白名单
 │  ├─ policy.py           优先级、免打扰、全屏/会议/锁屏、规则与渠道决策
-│  ├─ presence.py         Windows / Linux 空闲时间、前台全屏、会议进程、锁屏/息屏检测
+│  ├─ presence.py         Windows / macOS / Linux 空闲时间、前台全屏、会议进程、锁屏/息屏检测
 │  ├─ linux_desktop.py    Linux X11 / DBus 后端：窗口聚焦、全屏、空闲、锁屏与热键抓取
-│  ├─ agent_sessions.py   Claude Code / Qoder 会话扫描、记录解析与 Markdown 导出
+│  ├─ wayland_desktop.py  Wayland XDG GlobalShortcuts portal 客户端（dbus-next，后台线程）
+│  ├─ macos_desktop.py    macOS 原生后端：Carbon 热键、CoreGraphics 空闲/全屏、lsappinfo/osascript 窗口与聚焦
+│  ├─ search_query.py     通知中心字段过滤语法解析（status/source/priority/session/run/ack）
+│  ├─ agent_sessions.py   Claude Code / Qoder / Codex / Gemini / Grok / OpenCode 会话扫描与导出
 │  ├─ attention.py        等待输入推断：尾部增量读取、信号识别、去重与恢复
-│  ├─ agent_launch.py     Agent 检测、项目内启动终端（PowerShell / Linux 终端模拟器）与提示词传递
-│  ├─ toolchain.py        便携 Node / Agent CLI 安装（Windows zip / Linux tar.xz）、校验与清单
+│  ├─ agent_launch.py     Agent 检测、项目内启动终端（PowerShell / macOS / Linux）与提示词传递
+│  ├─ toolchain.py        便携 Node / Agent CLI 安装（Windows zip / macOS & Linux tar.xz）、校验与清单
 │  ├─ hooks.py            Agent Hook 检测、预览、备份、原子写入与撤销
 │  ├─ hook_cli.py         `--hook` 上报子命令：事件分类、轮次状态与环回发送
 │  ├─ updater.py          GitHub Release 检查、按平台/架构选包、替换脚本与重启
-│  ├─ window_focus.py     Windows / Linux X11 窗口解析与聚焦（回到终端）
+│  ├─ window_focus.py     Windows / macOS / Linux X11 窗口解析与聚焦（回到终端）
 │  ├─ channels.py         外部渠道后台投递线程
-│  ├─ hotkey.py           全局快捷键（Windows RegisterHotKey / Linux XGrabKey）
+│  ├─ hotkey.py           全局快捷键（Windows RegisterHotKey / macOS Carbon / Linux XGrabKey / Wayland portal）
 │  ├─ storage.py          SQLite 历史、run_events、搜索与统计
 │  ├─ store.py            线程安全通知历史、去重索引、运行事件推断
 │  ├─ integration.py      Agent 接入指令生成（复制到剪贴板）
@@ -157,9 +162,11 @@ agentbell/
 ├─ assets/agentbell.ico   打包用多尺寸图标（Windows 16–256）
 ├─ assets/agentbell.svg   标志 SVG 源文件
 ├─ assets/agentbell.icns  打包用 macOS 图标（由脚本生成）
+├─ assets/macos_entitlements.plist  macOS Hardened Runtime 权限（JIT、未签名可执行内存、库校验豁免、Apple Events）
 ├─ assets/hooks/agentbell-hook.ps1  Hook 上报脚本（Windows PowerShell 5.1，UTF-8 BOM；macOS / Linux 使用 `AgentBell --hook`）
 ├─ scripts/make_macos_icon.py       从 SVG 生成 iconset 与 `.icns`
-├─ scripts/build_macos_packages.py  macOS 签名、zip / dmg 与校验文件
+├─ scripts/build_macos_packages.py  macOS 签名、公证、zip / dmg 与校验文件
+├─ scripts/sign_windows.py          Windows Authenticode 签名（signtool / PFX / 指纹 / 时间戳）
 ├─ scripts/build_linux_packages.py  Linux tar.gz / AppImage / deb / rpm 与校验文件
 ├─ docs/screenshots/      README 使用的界面截图
 ├─ docs/releases/         每个版本的发布说明
@@ -173,7 +180,7 @@ agentbell/
 ├─ requirements.txt       运行依赖
 ├─ requirements-dev.txt   测试/打包依赖
 ├─ run.py                 源码启动入口
-├─ AgentBell29.spec       PyInstaller 配置（Windows，AgentBell-29.exe，含 Hook 脚本资源）
+├─ AgentBell32.spec       PyInstaller 配置（Windows，AgentBell-32.exe，含 Hook 脚本资源）
 ├─ AgentBell-macos.spec   PyInstaller 配置（macOS，AgentBell.app，含 icns 与版本信息）
 ├─ AgentBell-linux.spec   PyInstaller 配置（Linux x64/arm64，产物名 AgentBell，不含 PowerShell 脚本）
 ├─ LICENSE                MIT 许可证
@@ -184,9 +191,9 @@ agentbell/
 ## 环境要求
 
 - Python 3.10+
-- Windows 10/11 x64 / arm64：全屏 / 会议 / 锁屏检测、提示音、全局快捷键、窗口聚焦与包内更新完整可用。
-- macOS 14+（Intel / Apple Silicon）：托盘、弹窗、通知中心、历史、搜索、统计、提示音与 Hook 可用；全局快捷键、回到终端、全屏 / 会议 / 空闲 / 锁屏推断、终端启动、便携运行环境与原地更新不可用，更新时跳转 Release 页面。打包为 ad-hoc 签名，未做 Apple 公证。
-- Linux x64 / arm64：X11 会话支持窗口聚焦、全屏 / 会议 / 锁屏检测与全局快捷键；Wayland 会话可运行弹窗、通知中心与托盘，但无全局快捷键、无窗口聚焦、无全屏 / 空闲推断，日志与界面会给出提示。需要系统托盘与 Qt xcb 运行库。
+- Windows 10/11 x64 / arm64：全屏 / 会议 / 锁屏检测、提示音、全局快捷键、窗口聚焦、便携运行环境与包内更新完整可用。
+- macOS 14+（Intel / Apple Silicon）：托盘、弹窗、通知中心、历史、搜索、统计、提示音、Hook、全局快捷键、回到终端、空闲 / 全屏 / 会议 / 锁屏推断、终端启动、便携运行环境与 zip 包内更新均可用；「回到终端」需要辅助功能权限。发布构建可使用 Developer ID 签名与 Apple 公证，未配置证书时回退为 ad-hoc 签名。
+- Linux x64 / arm64：X11 会话支持窗口聚焦、全屏 / 会议 / 锁屏检测与全局快捷键；Wayland 会话可运行弹窗、通知中心与托盘，并通过 XDG GlobalShortcuts portal 注册全局快捷键，但系统不允许主动切换窗口焦点，全屏 / 空闲推断也会降级。需要系统托盘与 Qt xcb 运行库。
 - 依赖：FastAPI、uvicorn、Pydantic v2、PySide6；Linux 可选 `secret-tool`（libsecret）保存 API Key；macOS 使用 `afplay` 播放提示音。
 
 ## 快速开始（源码）
@@ -309,7 +316,7 @@ AgentBell 已就绪：http://127.0.0.1:8765（X-Token 鉴权已开启）
 | `open_center_on_start` | 布尔 | `true` | 双击启动后自动打开通知中心，并播放淡入上浮动画；再次启动已有实例时也会打开 |
 | `onboarding_seen` | 布尔 | `false` | 是否已完成首次启动介绍；走完或点「跳过介绍」后自动写为 `true`，改回 `false` 可重看 |
 | `instance_name` | 字符串 | `""` | 单实例名称后缀，便于并行运行多份做调试 |
-| `hotkey` | 字符串 | `Ctrl+Alt+A` | 打开通知中心的全局快捷键；空字符串关闭；支持 `Ctrl/Alt/Shift/Win`（Linux 可用 `Super` / `Meta`）加字母、数字、F1–F24 等；Wayland 会话不支持全局快捷键 |
+| `hotkey` | 字符串 | `Ctrl+Alt+A` | 打开通知中心的全局快捷键；空字符串关闭；支持 `Ctrl/Alt/Shift/Win`（Linux 可用 `Super` / `Meta`）加字母、数字、F1–F24 等；Wayland 会话通过 XDG GlobalShortcuts portal 注册 |
 | `away_idle_seconds` | 整数 | `300` | 无键鼠操作超过该秒数视为离开；`0` 关闭离开判定 |
 | `presence_poll_seconds` | 整数 | `5` | 空闲/全屏/会议状态轮询间隔，范围 1–60 |
 | `allow_local_paths` | 布尔 | `false` | 是否允许通知携带 `path` 动作打开本地文件 |
@@ -370,8 +377,12 @@ AgentBell 已就绪：http://127.0.0.1:8765（X-Token 鉴权已开启）
 
 - Claude Code：`~/.claude/projects/*/*.jsonl`
 - Qoder：`~/.qoder/projects/*/*.jsonl`（新格式），兼容旧版 `~/.qoder/projects/*/*/state.json`
+- Codex：`~/.codex/sessions/*/*/*/rollout-*.jsonl`
+- Gemini CLI：`~/.gemini/tmp/*/chats/session-*.json*`
+- Grok：`~/.grok/sessions/*/*/chat_history.jsonl`
+- OpenCode：`~/.local/share/opencode/opencode.db`（以只读方式查询 SQLite，不写入源数据库）
 
-扫描阶段只解析项目路径、会话 ID、创建/更新时间、文件大小、记录条数和首条用户提问作为标题，不读取完整正文；只有点「查看记录」时才会解析该会话的对话内容。阅读视图完全在本机运行，不会发送到任何外部服务。
+扫描阶段只解析项目路径、会话 ID、创建/更新时间、文件大小、记录条数和首条用户提问作为标题，不读取完整正文；只有点「查看记录」时才会解析该会话的对话内容。阅读视图完全在本机运行，不会发送到任何外部服务。OpenCode 的阅读视图按数据库内的消息结构转换，其他 Agent 使用各自的 JSON / JSONL 记录格式。
 
 阅读视图参考 cc-switch 的会话页：
 
@@ -391,11 +402,11 @@ AgentBell 已就绪：http://127.0.0.1:8765（X-Token 鉴权已开启）
 | `attention.idle_seconds` | 整数 | `20` | 会话文件闲置多少秒后才推断为等待，范围 10–120 |
 | `attention.poll_interval_seconds` | 整数 | `5` | 推断扫描间隔，范围 2–60 秒 |
 | `attention.question_popup` | 布尔 | `false` | 推断出的「提问」是否弹窗；默认只进通知中心 |
-| `attention.agents` | 字符串数组 | `["claude", "qoder"]` | 参与推断的 Agent，取值 `claude` / `qoder`；未知项会被忽略，重复项自动去重 |
+| `attention.agents` | 字符串数组 | `["claude", "qoder", "codex", "gemini", "grok"]` | 参与推断的 Agent，取值 `claude` / `qoder` / `codex` / `gemini` / `grok`；未知项会被忽略，重复项自动去重 |
 
 显式上报是主路径：`POST /notify` 带 `needs_input=true` 与 `status=running` 即生成等待卡片，随后同一 `session_id` 的任何新通知或 `needs_input=false` 都会结束等待。
 
-本地推断只读最近 10 分钟内活跃的 `~/.claude/projects/*/*.jsonl` 与 `~/.qoder/projects/*/*.jsonl` 尾部，最多保留 256 KB，并按偏移增量读取：
+本地推断只读最近 10 分钟内活跃的会话尾部，并按偏移增量读取，最多保留 256 KB：Claude Code / Qoder 读取 `projects/*/*.jsonl` 尾部，Codex 读取 `sessions/*/*/*/rollout-*.jsonl`，Grok 读取 `sessions/*/*/chat_history.jsonl`，Gemini CLI 读取 `tmp/*/chats/session-*.json*`。不同 Agent 的记录会先归一化为「用户/助手消息与工具事件」，再按同一组信号判断：
 
 - 最后一条 assistant 含 `tool_use` 且没有匹配的 `tool_result` → `permission`；
 - 最后一条 assistant 文本以问号或「是否 / 要不要 / Would you like / Shall I」等结尾 → `question`（默认不弹窗）；
@@ -479,7 +490,7 @@ runtime/
 - 列表状态来自 `tools.json` 与磁盘实际文件，两者不一致时以磁盘为准。
 - 安装、卸载与探测都在后台线程执行，不阻塞窗口；失败会在底部状态区显示原因（含 npm 退出码）。
 - 检测与启动 Agent 时，会把便携运行时临时加入子进程 `PATH`：Windows 为 `runtime/node` 与 `runtime/agents`，Linux 为 `runtime/node/bin` 与 `runtime/agents/bin`。不修改系统或用户环境变量。
-- 便携 Node 支持 Windows 与 Linux x64 / arm64；macOS 不提供便携运行环境安装（页面会提示仅支持 Windows / Linux），直接使用系统已安装的 Agent。
+- 便携 Node 支持 Windows（zip）、macOS 与 Linux x64 / arm64（tar.xz），安装与 PATH 注入方式一致。
 - DeepSeek 没有官方 CLI：在页面底部保存 API Key 后，「用 DeepSeek 启动 Claude Code」会把 `ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic`、`ANTHROPIC_AUTH_TOKEN`、`ANTHROPIC_MODEL=deepseek-chat` 注入 Claude Code 的启动环境；「复制 Codex 配置片段」给出对应的 TOML。
 
 ### 程序更新
@@ -488,25 +499,25 @@ runtime/
 | --- | --- | --- | --- |
 | `update.enabled` | 布尔 | `true` | 是否允许检查与下载 AgentBell 自身更新；关闭后完全离线 |
 | `update.repo` | 字符串 | `"1wu-davy-2/AgentBell"` | GitHub 仓库，格式 `owner/repo`；也可填完整仓库 URL，读取时会自动归一化。代码、安装包与示例配置默认填入 `1wu-davy-2/AgentBell`；清空表示不联网 |
-| `update.check_on_start` | 布尔 | `true` | 启动约 9 秒后自动检查；Windows / Linux 打包版发现新版本会自动下载并在退出时替换重启，macOS 只提示 |
+| `update.check_on_start` | 布尔 | `true` | 启动约 9 秒后自动检查；Windows / macOS / Linux 打包版发现新版本会自动下载并在退出时替换重启 |
 
 行为：
 
 - 仓库为空时不会发出任何网络请求；首次运行默认填入 `1wu-davy-2/AgentBell`，清空后手动点「检查更新」会提示去「偏好设置 → 常规 → 程序更新」填写。
 - 只更新 AgentBell 自身，不会执行 npm / pip 等 Agent 安装或升级命令。
 - 版本来自 `GET https://api.github.com/repos/{owner}/{repo}/releases/latest` 的 `tag_name`，去掉 `v` 后按数字比较；`2.8.0-beta` 低于 `2.8.0`。
-- 资产按平台与架构选择：Windows x64 优先稳定命名 `AgentBell.exe`，排除名称含 `arm64` 的资产；Windows ARM64 只接受 `AgentBell-arm64.exe` 或名称含 `arm64` 的 `.exe`，没有匹配项时提示打开 Release 页面，绝不下载 x64 包；Linux 优先 `AgentBell-linux-<arch>.tar.gz`（`x64` / `arm64`），否则选名称同时包含 `agentbell` 与 `linux-<arch>` 的 `.tar.gz`；macOS 没有自动更新资产，只打开 Release 页面。Release 中的 AppImage / deb / rpm / dmg / zip 不参与自动更新选择。
+- 资产按平台与架构选择：Windows x64 优先稳定命名 `AgentBell.exe`，排除名称含 `arm64` 的资产；Windows ARM64 只接受 `AgentBell-arm64.exe` 或名称含 `arm64` 的 `.exe`，没有匹配项时提示打开 Release 页面，绝不下载 x64 包；Linux 优先 `AgentBell-linux-<arch>.tar.gz`（`x64` / `arm64`），否则选名称同时包含 `agentbell` 与 `linux-<arch>` 的 `.tar.gz`；macOS 只接受 `AgentBell-macos-<arch>.zip`，不选 dmg。Release 中的 AppImage / deb / rpm / dmg 不参与自动更新选择。
 - 下载只接受 `github.com` 与 GitHub 发布资源域名（`objects.githubusercontent.com`、`release-assets.githubusercontent.com`、`github-releases.githubusercontent.com`），并要求 HTTPS；下载上限 300 MB，完成后校验 API 给出的 `size` 与 `digest`（`sha256:`）后才算成功。
 - 打包版（Windows）：下载到 `updates/` 后启动独立 PowerShell 更新脚本，等待当前进程退出，把旧 exe 备份为 `AgentBell.exe.bak`，再替换并按原命令行参数重启；替换失败会回滚并重新打开旧版。脚本只读取环境变量，不把路径或参数拼进脚本文本。
 - 打包版（Linux）：下载 tar.gz 后只提取其中的 `AgentBell`，暂存到 `updates/staged-<版本>/`；启动独立的 `/bin/sh` 脚本等待 PID 退出，把旧文件备份为 `AgentBell.bak`，`mv` 替换并恢复可执行权限，再用 `exec` 以原参数重启。脚本路径、参数与日志路径全从环境变量读取，不使用 `shell=True`，重启命令用 `shlex.join` 安全拼接；失败时自动回滚。替换前会检查安装方式：`APPIMAGE` 环境变量存在时提示下载新的 AppImage，目标文件或目录不可写时提示使用 apt/dnf；这两种情况都不会解压或启动替换脚本。
-- macOS：下载包可用时提示新版本并打开 Release 页面，不下载、不替换。替换方式是从 dmg / zip 覆盖「应用程序」中的 `AgentBell.app`；应用包只读，配置与数据不受影响。
+- 打包版（macOS）：下载 `AgentBell-macos-<arch>.zip` 后校验大小与 SHA-256，解压暂存到 `updates/staged-<版本>/`；退出后由独立 `/bin/sh` 脚本等待 PID 结束，把旧 `.app` 备份到 `updates/`，用 `ditto` 替换应用包并重启，失败时回滚到旧版。应用包只读，配置与数据位于 `~/Library/Application Support/AgentBell`，替换不影响。收到 dmg 时提示从 Release 页面手动安装。
 - 源码模式：只下载安装包并提示文件位置，不会替换、不会退出；避免误改开发环境。
 - 托盘菜单「检查更新…」和「Agent 启动」页右上角「检查更新」都可手动触发；自动检查在启动过渡和首次介绍结束后才进行，避免打断首次使用。
 
 发布约定：
 
 - Release 资产包含 `AgentBell.exe`、`AgentBell-arm64.exe`、每种架构的 `AgentBell-macos-<arch>.dmg` / `.zip` 与 `AgentBell-linux-<arch>.tar.gz`、`.AppImage`、`.deb`、`.rpm`，并合并各平台校验文件为一个 `SHA256SUMS.txt`。Windows 工作流自动选用编号最大的 `AgentBell<数字>.spec`（忽略 Linux / macOS spec）：x64 产物复制为 `AgentBell.exe`，arm64 产物复制为 `AgentBell-arm64.exe`；macOS 使用 `AgentBell-macos.spec`，由 `scripts/build_macos_packages.py` 生成 dmg 与 zip；Linux 使用 `AgentBell-linux.spec`，产物名固定为 `AgentBell` 后交给 `scripts/build_linux_packages.py` 生成四种格式。
-- 打 tag 前先把 `agentbell/__init__.py` 的 `__version__` 改成同一版本；工作流会校验 `v2.18.0` 与 `2.18.0` 一致，不一致时拒绝发布。
+- 打 tag 前先把 `agentbell/__init__.py` 的 `__version__` 改成同一版本；工作流会校验 `v2.19.0` 与 `2.19.0` 一致，不一致时拒绝发布。
 - 发布使用 GitHub Actions 的 `contents: write` 权限；fork 或 PR 构建只上传 artifact，不会发 Release。
 
 ### 历史
@@ -791,7 +802,7 @@ X-Token: your-token        # 仅当 config.token 非空时必需
 - 只做窗口级聚焦：还原最小化、置前并尝试获取前台焦点；前台锁拒绝时会附加输入队列并重试，再用 `SwitchToThisWindow` 和一次短暂 Alt 输入兜底。仍无法取得焦点时退化为仅置前，并提示「已置前，但系统未授予键盘焦点」。
 - 不会选中具体标签页，也不会执行命令或打开新终端。
 - 找不到窗口时提示「未找到对应的终端窗口」，并把 `working_dir` 复制到剪贴板，便于手动定位；仅“置前未获焦点”时不覆盖剪贴板。
-- Windows 与 Linux X11 可用：Windows 走 Win32 前台锁兜底，Linux 通过 X11 `_NET_ACTIVE_WINDOW` / `_NET_CLIENT_LIST` 定位窗口并请求激活；Wayland 会提示需要 X11 会话；macOS 不支持。
+- Windows、macOS 与 Linux X11 可用：Windows 走 Win32 前台锁兜底，Linux 通过 X11 `_NET_ACTIVE_WINDOW` / `_NET_CLIENT_LIST` 定位窗口并请求激活，macOS 通过 `osascript` + 辅助功能权限激活宿主应用；Wayland 会说明系统不允许应用主动切换焦点。
 
 ## 提醒行为说明
 
@@ -836,8 +847,8 @@ X-Token: your-token        # 仅当 config.token 非空时必需
 
 ### 全屏、会议与离开
 
-- 全屏检测基于前台窗口矩形是否覆盖所在显示器，桌面、任务栏、壁纸窗口不算全屏；Windows 与 Linux X11 可用，Wayland 下无法读取前台窗口，按非全屏处理。
-- 前台进程命中 `meeting_processes` 时同样延后；默认包含 Zoom、Teams、腾讯会议、Webex。Linux X11 通过 `_NET_WM_PID` 与 `/proc` 解析进程名。
+- 全屏检测基于前台窗口矩形是否覆盖所在显示器，桌面、任务栏、壁纸窗口不算全屏；Windows、macOS 与 Linux X11 可用，Wayland 下无法读取前台窗口，按非全屏处理。
+- 前台进程命中 `meeting_processes` 时同样延后；默认包含 Zoom、Teams、腾讯会议、Webex。Windows / macOS 读取前台应用名，Linux X11 通过 `_NET_WM_PID` 与 `/proc` 解析进程名。
 - 延时队列每 30 秒复查一次，退出全屏、会议结束或解锁后立即补发；免打扰时段在结束时刻补发。
 - `away_idle_seconds` 只影响外部渠道的 `when_away` 判断，不影响本地弹窗。
 
@@ -845,9 +856,10 @@ X-Token: your-token        # 仅当 config.token 非空时必需
 
 - 左侧筛选：全部 / 成功 / 失败 / 已取消 / 进行中；顶栏显示当前筛选数量与未读数。
 - Agent 来源筛选：状态标签右侧下拉列出当前历史中的来源 Agent 及条数，选择后状态计数、总条数和卡片同步收窄；可与搜索、状态筛选叠加，「全部 Agent」或清除筛选恢复。
-- 搜索：标题、摘要、错误、来源；输入后 260ms 自动搜索，搜索状态下可一键清除。
-- 卡片：标题行显示状态、优先级、来源 Agent、`更新 ×N`、`待确认/已确认`、时间，摘要下方显示进度条、耗时、错误与动作按钮、重新弹出、确认、稍后提醒。
-- 数据统计：总通知数、成功率（成功 / 已结束）、平均耗时（可解析的 `duration`）、待确认数，以及最近 7 天每日总量/失败量柱状图；「运行时间线」卡片按 `run_id` 统计运行数、运行成功率、P50/P90 运行时长与累计等待时长，等待中未结束的区段计入当前时刻。
+- 搜索：默认匹配标题、摘要、错误与来源；支持字段过滤 `status:` / `source:` / `priority:` / `session:` / `run:` / `ack:`，中文字段名（状态 / 来源 / 优先级 / 会话 / 运行 / 确认）等价，多个值用空格分隔取并集，无效值退回全文搜索；输入后 260ms 自动搜索，搜索状态下可一键清除。
+- 归档与分组：列表默认只显示未归档通知，可切换已归档或全部；进入「批量管理」后多选并批量归档 / 取消归档；分组方式支持按日期、按来源或不分组。归档只改变列表可见性，不删除历史。
+- 卡片：标题行显示状态、优先级、来源 Agent、`更新 ×N`、`待确认/已确认`、时间，摘要下方显示进度条、耗时、错误与动作按钮、重新弹出、确认、稍后提醒；已归档卡片带「已归档」标记。
+- 数据统计：总通知数、成功率（成功 / 已结束）、平均耗时（可解析的 `duration`）、待确认数，以及 7 / 30 / 90 天区间内的每日总量/失败量柱状图；「运行时间线」卡片按 `run_id` 统计运行数、运行成功率、P50/P90 运行时长与累计等待时长，等待中未结束的区段计入当前时刻。「导出 CSV」把当前统计区间的通知导出为 UTF-8 CSV，包含接收/更新时间、标题、状态、优先级、来源、摘要、耗时、错误、会话/运行 ID 与确认状态。
 - 运行时间线：有 `run_id` 的卡片右侧显示「时间线」按钮，弹窗按时间顺序列出阶段、相对耗时、绝对时间、状态、来源与关联会话；一次包含等待的运行会显示开始 → 等待输入 → 已继续 → 完成。会话详情页顶部显示最近一次运行的摘要，可直接打开同一时间线。
 - 偏好设置：端口、token、自启、启动打开通知中心、自动关闭、冷却、成功弹窗、默认确认、快捷键、免打扰、全屏抑制、锁屏保留、弹窗模式与皮肤、全屏背景图与显示区域（含全屏拖拽定位与仅主屏卡片）、Agent 会话扫描、会议进程、离开判定、聚合、升级、模板、声音、规则与渠道 JSON，以及「关于」入口。所有标签页均可滚动，小窗口下不会裁切内容。保存后立即应用可热更新的项（含规则）并写回 `config.json`；端口、token 等监听相关配置需重启。
 - 全屏拖拽定位：点「全屏拖拽定位…」进入与真实弹窗一致的全屏预览，卡片可自由拖动，顶部实时显示坐标、尺寸、最近锚点和偏移；点「保存位置」自动写回设置并保存配置，点「取消」不改动原值。
@@ -858,7 +870,7 @@ X-Token: your-token        # 仅当 config.token 非空时必需
 
 ## 托盘与弹窗行为
 
-- 左键/右键托盘图标：菜单显示监听地址、鉴权状态、未读数、「打开通知中心」、「显示最近通知」、「关于 AgentBell…」与「退出」。
+- 左键/右键托盘图标：菜单显示监听地址、鉴权状态、未读数、「打开通知中心」、「显示最近通知」、「勿扰模式」、「关于 AgentBell…」与「退出」。勿扰模式可暂停 30 分钟、1 小时或到明早，也可一键关闭；暂停期间恢复普通弹窗策略，与配置的安静时段叠加。
 - 最近通知保留本次运行的最后 20 条，菜单展示最新 10 条；点击某条会重新弹出该通知。
 - 再次启动 AgentBell 时，新进程会通知已有实例打开通知中心，然后自行退出，不会启动第二份 HTTP 服务。
 - 双击启动后先显示约 2.2 秒启动卡片；首次启动随后播放四步介绍，完成或跳过后不再出现；再次打开只显示「正在打开通知中心」。
@@ -1063,8 +1075,8 @@ PyInstaller 不能跨平台交叉编译，请在目标系统上分别打包。Wi
 ```bash
 pip install -r requirements-dev.txt
 
-# 产物：dist\AgentBell-29.exe（在原生 Arm64 Python 上构建即为 arm64 产物）
-python -m PyInstaller --noconfirm --clean AgentBell29.spec
+# 产物：dist\AgentBell-32.exe（在原生 Arm64 Python 上构建即为 arm64 产物）
+python -m PyInstaller --noconfirm --clean AgentBell32.spec
 ```
 
 Windows ARM64 构建要求原生 Arm64 Python 3.12、提供 `win_arm64` 轮子的 PySide6 与支持 win_arm64 的 PyInstaller；CI 使用 `windows-11-arm` runner 与 `actions/setup-python` 的 `architecture: arm64`。x64 与 arm64 不共用产物，工作流分别上传后命名为 `AgentBell.exe` 与 `AgentBell-arm64.exe`。
@@ -1073,10 +1085,10 @@ Windows ARM64 构建要求原生 Arm64 Python 3.12、提供 `win_arm64` 轮子�
 
 ```bash
 copy config.json dist\config.json
-dist\AgentBell-29.exe
+dist\AgentBell-32.exe
 ```
 
-> 新旧版本默认共用单实例锁：若托盘中已有 AgentBell 在运行，双击 AgentBell-29 只会唤醒旧实例。切换版本前先从托盘退出旧版，再启动新 exe。工作流会自动选用编号最大的 `AgentBell<数字>.spec`，旧 spec 不需要手工维护。
+> 新旧版本默认共用单实例锁：若托盘中已有 AgentBell 在运行，双击 AgentBell-32 只会唤醒旧实例。切换版本前先从托盘退出旧版，再启动新 exe。工作流会自动选用编号最大的 `AgentBell<数字>.spec`，旧 spec 不需要手工维护。
 
 打包后 `config.json`、`logs/`、`agentbell.db`、`chat/` 与 `updates/` 都位于 exe 所在目录。单文件模式首次启动需要解压到临时目录，通常会有 1–3 秒延迟。
 
@@ -1093,7 +1105,7 @@ python -m PyInstaller --noconfirm --clean AgentBell-linux.spec
 # 四种格式（x64 机器；不传 AppImage 工具时只生成 tar.gz + deb + rpm）
 python scripts/build_linux_packages.py \
   --binary dist/AgentBell \
-  --version 2.18.0 \
+  --version 2.19.0 \
   --arch x64 \
   --appimagetool ./appimagetool \
   --appimage-runtime ./runtime-x86_64
@@ -1113,7 +1125,7 @@ sudo apt-get install -y libegl1 libgl1 libxkbcommon-x11-0 \
   libdbus-1-3 libfontconfig1
 ```
 
-Linux 包解压后直接运行 `./AgentBell`；`config.json`、`logs/`、`agentbell.db`、`chat/` 与 `updates/` 都在可执行文件旁边。deb/rpm 安装后配置写入用户目录，程序本体位于 `/opt/agentbell/`。全局快捷键与窗口聚焦需要 X11 会话；Wayland 下程序仍可运行，但相关能力会提示不可用。
+Linux 包解压后直接运行 `./AgentBell`；`config.json`、`logs/`、`agentbell.db`、`chat/` 与 `updates/` 都在可执行文件旁边。deb/rpm 安装后配置写入用户目录，程序本体位于 `/opt/agentbell/`。全局快捷键与窗口聚焦需要 X11 会话；Wayland 下通过 XDG GlobalShortcuts portal 注册快捷键，但系统不允许应用主动切换窗口焦点，相关能力会提示不可用。
 
 ### macOS x64 / arm64
 
@@ -1131,15 +1143,29 @@ python -m PyInstaller --noconfirm --clean AgentBell-macos.spec
 # ad-hoc 签名 + dmg / zip + SHA256SUMS-macos-<arch>.txt
 python scripts/build_macos_packages.py \
   --app dist/AgentBell.app \
-  --version 2.18.0 \
+  --version 2.19.0 \
   --arch arm64
+
+# 本地有 Developer ID 与公证凭据时（推荐发布用）
+python scripts/build_macos_packages.py \
+  --app dist/AgentBell.app \
+  --version 2.19.0 \
+  --arch arm64 \
+  --identity "Developer ID Application: Example (TEAMID)" \
+  --entitlements assets/macos_entitlements.plist \
+  --notarize \
+  --notary-key /path/AuthKey_XXXX.p8 \
+  --notary-key-id XXXX \
+  --notary-issuer "00000000-0000-0000-0000-000000000000"
 ```
 
 `AgentBell-macos.spec` 用 `EXE` + `COLLECT` + `BUNDLE` 生成应用包，`Info.plist` 写入 `CFBundleIdentifier=com.agentbell.app`、`CFBundleShortVersionString` / `CFBundleVersion`、`LSMinimumSystemVersion=14.0`（当前依赖的 PySide6 要求 macOS 14）与 `LSUIElement=true`。图标由 `scripts/make_macos_icon.py` 通过 QSvgRenderer 渲染 16–512 像素（含 @2x）iconset，再调用系统 `iconutil` 生成 `.icns`。
 
-`scripts/build_macos_packages.py` 校验 `.app` 存在且 `Info.plist` 版本与 `--version` 一致，用 `codesign --force --deep --sign -` 做 ad-hoc 签名，`ditto -c -k --sequesterRsrc --keepParent` 生成 zip，`hdiutil create -volname AgentBell -srcfolder ... -format UDZO` 生成 dmg，并输出 `AgentBell-macos-<arch>.dmg`、`.zip` 与 `SHA256SUMS-macos-<arch>.txt`。发布构建未使用 Apple Developer ID，也没有公证；用户首次启动需要右键「打开」。
+`scripts/build_macos_packages.py` 校验 `.app` 存在且 `Info.plist` 版本与 `--version` 一致，然后用 `codesign --force --deep` 签应用：`--identity` 为 `-` 时做 ad-hoc 签名；传入 Developer ID 时附加 `--options runtime --timestamp` 与 `--entitlements assets/macos_entitlements.plist`。entitlements 包含 PyInstaller / Python 所需的 `allow-jit`、`allow-unsigned-executable-memory`、`disable-library-validation`，以及与 macOS 窗口聚焦（`osascript` 访问 System Events）对应的 `com.apple.security.automation.apple-events`。随后用 `ditto -c -k --sequesterRsrc --keepParent` 生成 zip，用 `hdiutil create -volname AgentBell -srcfolder ... -format UDZO` 生成 dmg，对 dmg 再做一次 Developer ID 签名，并输出 `AgentBell-macos-<arch>.dmg`、`.zip` 与 `SHA256SUMS-macos-<arch>.txt`。
 
-冻结后的 macOS 应用通过 `paths.app_dir()` 把 `config.json`、`logs/`、`agentbell.db`、`chat/` 与 Hook 状态写入 `~/Library/Application Support/AgentBell`，不写入只读的 `.app`。自启写入 `~/Library/LaunchAgents/com.agentbell.app.plist`。更新不执行原地替换，`install_update()` 直接返回提示并跳转 Release 页面。macOS 不支持全局快捷键、回到终端、空闲 / 全屏 / 会议 / 锁屏推断、终端启动与便携运行环境；这些入口按平台隐藏或降级。
+传入 `--notarize` 时，脚本先用 `ditto` 把已签名应用打成临时 zip，调用 `xcrun notarytool submit --wait --output-format json`（支持 App Store Connect API Key 的 `--notary-key` / `--notary-key-id` / `--notary-issuer`，或 Apple ID 的 `--apple-id` / `--apple-password` / `--team-id`），状态必须是 `Accepted`，再用 `xcrun stapler staple` 与 `xcrun stapler validate` 把公证票据钉到 `.app`。公证完成后的 `.app` 才用于生成最终的 dmg 与 zip，因此两个资产都带票据。凭据也可以通过 `APPLE_API_KEY` / `APPLE_API_KEY_ID` / `APPLE_API_ISSUER` / `APPLE_ID` / `APPLE_APP_PASSWORD` / `APPLE_TEAM_ID` 环境变量提供；Apple ID 密码只建议用环境变量传入，避免出现在进程列表。没有证书时脚本继续输出 ad-hoc 签名包，适合本地验证。
+
+冻结后的 macOS 应用通过 `paths.app_dir()` 把 `config.json`、`logs/`、`agentbell.db`、`chat/` 与 Hook 状态写入 `~/Library/Application Support/AgentBell`，不写入只读的 `.app`。自启写入 `~/Library/LaunchAgents/com.agentbell.app.plist`。更新使用 Release 中的 `AgentBell-macos-<arch>.zip`：下载并校验后退出程序，把旧 `.app` 备份到 `updates/`，解压并替换应用包，再重启；dmg 只用于首次安装或手动覆盖。macOS 的全局快捷键使用 Carbon `RegisterEventHotKey`，回到终端通过 `osascript` + 辅助功能权限激活窗口，空闲 / 全屏 / 锁屏分别读取 CoreGraphics、System Events 与 `CGSession` 状态，终端启动与便携 Node 安装与其他平台一致。
 
 打包时必须保留 `uvicorn` 的 loop / HTTP 协议 / lifespan 隐藏导入，否则启动 HTTP 服务会报模块找不到。
 
@@ -1150,19 +1176,41 @@ python scripts/build_macos_packages.py \
 1. **Tests (Windows)**（矩阵 `windows-latest` x64 / `windows-11-arm` arm64）：用 `actions/setup-python` 的原生架构 Python 安装依赖，以 `QT_QPA_PLATFORM=offscreen` 跑完整 pytest。
 2. **Tests (Linux)**（矩阵 `ubuntu-22.04` / `ubuntu-22.04-arm`）：安装 Qt 运行库后跑同一套 pytest。
 3. **Tests (macOS)**（矩阵 `macos-15-intel` x64 / `macos-15` arm64）：安装依赖后跑同一套 pytest；依赖操作系统的 PowerShell 测试只在 Windows 执行。
-4. **Package AgentBell.exe**（Windows 双架构）：依赖对应架构测试通过，自动选用编号最大的 `AgentBell<数字>.spec` 打包；x64 产物复制为 `AgentBell.exe`，arm64 产物复制为 `AgentBell-arm64.exe`，生成 `SHA256SUMS.txt`，上传 `AgentBell-windows-<arch>` artifact。
+4. **Package AgentBell.exe**（Windows 双架构）：依赖对应架构测试通过，自动选用编号最大的 `AgentBell<数字>.spec` 打包；如果配置了 `WINDOWS_CERT_PFX_BASE64`，先用 `scripts/sign_windows.py` 对产物做 SHA-256 + RFC 3161 时间戳的 Authenticode 签名与验证，再复制为 `AgentBell.exe` / `AgentBell-arm64.exe`，生成 `SHA256SUMS-windows-<arch>.txt`，上传 `AgentBell-windows-<arch>` artifact；未配置证书时输出警告并跳过签名。
 5. **Package AgentBell (Linux)**（双架构矩阵）：用 `AgentBell-linux.spec` 打包；下载固定版本的 appimagetool 1.9.1 与 type2-runtime 20251108（均校验 SHA-256），调用构建脚本生成 tar.gz、AppImage、deb、rpm 与 `SHA256SUMS-linux-<arch>.txt`，上传对应 artifact。
-6. **Package AgentBell.app (macOS)**（双架构矩阵）：生成 `.icns`，用 `AgentBell-macos.spec` 打包 `.app`，调用 `scripts/build_macos_packages.py` 生成 dmg、zip 与校验文件，上传 `AgentBell-macos-<arch>` artifact。
+6. **Package AgentBell.app (macOS)**（双架构矩阵）：生成 `.icns`，用 `AgentBell-macos.spec` 打包 `.app`；配置 `MACOS_CERT_P12_BASE64` 时导入临时钥匙串并解析出 Developer ID Application 身份，同时可从 `APPLE_API_KEY_BASE64` / `APPLE_API_KEY_ID` / `APPLE_API_ISSUER` 生成公证密钥；随后调用 `scripts/build_macos_packages.py` 做 Hardened Runtime 签名、公证与 staple，生成 dmg、zip 与校验文件并清理临时钥匙串。未配置证书时回退为 ad-hoc 签名，证书不完整时跳过公证并给出警告。
 7. **Release**：仅当推送 `v*` 标签时运行，先校验标签与 `__version__` 一致，再用 `pattern: AgentBell-*` 下载全部 artifact 并合并为一份 `release/SHA256SUMS.txt`，用 `softprops/action-gh-release` 发布 Windows 双架构 exe、macOS 双架构 dmg / zip、Linux 双架构四种包与合并后的校验文件。
+
+签名相关的 GitHub Secrets：
+
+| Secret | 用途 |
+| --- | --- |
+| `WINDOWS_CERT_PFX_BASE64` | Windows Authenticode PFX 的 base64；配置后启用 Windows 签名 |
+| `WINDOWS_CERT_PASSWORD` | PFX 密码；只在签名步骤作为环境变量传给 `signtool /p` |
+| `MACOS_CERT_P12_BASE64` | Developer ID Application 证书 `.p12` 的 base64；配置后启用 macOS 签名 |
+| `MACOS_CERT_PASSWORD` | `.p12` 密码 |
+| `APPLE_API_KEY_BASE64` | App Store Connect API Key `.p8` 的 base64 |
+| `APPLE_API_KEY_ID` / `APPLE_API_ISSUER` | API Key ID 与 Issuer ID |
+| `WINDOWS_TIMESTAMP_URL`（可选） | 覆盖默认 RFC 3161 时间戳地址，脚本默认 `http://timestamp.digicert.com` |
+
+本地签名 Windows 产物：
+
+```powershell
+$env:WINDOWS_CERT_PFX_BASE64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes("cert.pfx"))
+$env:WINDOWS_CERT_PASSWORD = "pfx-password"
+python scripts/sign_windows.py --target dist/AgentBell-32.exe
+```
+
+也可以直接传 `--pfx cert.pfx`，或用 `--thumbprint` 使用证书存储中的证书；密码只从 `WINDOWS_CERT_PASSWORD` 读取，签名命令输出会把密码替换为 `******`。`signtool` 默认从 PATH 或 Windows SDK 目录发现，也可用 `--signtool` 指定。
 
 发布新版本：
 
 ```bash
-# 1. 修改 agentbell/__init__.py 的 __version__，例如 2.18.0
+# 1. 修改 agentbell/__init__.py 的 __version__，例如 2.19.0
 # 2. 提交并打同版本 tag（tag 去掉 v 后必须与 __version__ 完全一致）
 git add -A
-git commit -m "feat: 升级 AgentBell 2.18.0 ..."
-git tag v2.18.0
+git commit -m "feat: 升级 AgentBell 2.19.0 ..."
+git tag v2.19.0
 git push origin develop --tags
 ```
 

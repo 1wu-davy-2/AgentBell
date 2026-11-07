@@ -12,8 +12,8 @@ from PySide6.QtCore import QTime
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QPushButton, QScrollArea
 
-from agentbell.config import AppConfig, load_config
-from agentbell.ui.settings import SettingsDialog
+from agentbell.config import AppConfig, RuleConfig, load_config
+from agentbell.ui.settings import RuleTesterDialog, SettingsDialog
 
 pytest.importorskip("PySide6")
 
@@ -155,6 +155,56 @@ def test_about_entry_is_present(qapp):
     finally:
         dialog.deleteLater()
         QTest.qWait(20)
+
+
+def test_attention_agent_checks_include_new_agents_and_save(qapp):
+    dialog = make_dialog(qapp)
+    try:
+        assert set(dialog._attention_agent_checks) == {
+            "claude",
+            "qoder",
+            "codex",
+            "gemini",
+            "grok",
+        }
+        assert all(
+            check.isChecked() for check in dialog._attention_agent_checks.values()
+        )
+        dialog._attention_agent_checks["qoder"].setChecked(False)
+        dialog._attention_agent_checks["grok"].setChecked(False)
+        config = dialog._collect_config()
+        assert config.attention.agents == ("claude", "codex", "gemini")
+    finally:
+        dialog.deleteLater()
+
+
+def test_rule_tester_reports_matches_and_empty_result(qapp):
+    config = replace(
+        AppConfig(port=18765, token="t"),
+        rules=(
+            RuleConfig(
+                name="失败升级",
+                source="claude",
+                status="failed",
+                priority="high",
+                require_ack=True,
+            ),
+        ),
+    )
+    dialog = RuleTesterDialog(config)
+    try:
+        dialog._status.setCurrentIndex(dialog._status.findData("failed"))
+        dialog._run()
+        text = dialog._result.toPlainText()
+        assert "命中规则：失败升级" in text
+        assert "优先级：普通 → 高" in text
+        assert "待确认：是" in text
+
+        dialog._status.setCurrentIndex(dialog._status.findData("succeeded"))
+        dialog._run()
+        assert "未命中任何规则" in dialog._result.toPlainText()
+    finally:
+        dialog.deleteLater()
 
 
 def test_invalid_json_does_not_save(qapp, tmp_path):

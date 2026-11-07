@@ -19,7 +19,16 @@ MAX_TITLE_CHARS = 120
 
 def _runtime_bin_dirs() -> list[str]:
     root = runtime_dir()
-    return [str(path) for path in (root / "agents", root / "node") if path.is_dir()]
+    if os.name == "nt":
+        candidates = (root / "agents", root / "node")
+    else:
+        candidates = (
+            root / "agents" / "bin",
+            root / "node" / "bin",
+            root / "agents",
+            root / "node",
+        )
+    return [str(path) for path in candidates if path.is_dir()]
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +103,8 @@ AGENT_SPECS: tuple[AgentSpec, ...] = (
         desktop_paths=(
             r"%LOCALAPPDATA%\AnthropicClaude\claude.exe",
             r"%LOCALAPPDATA%\Programs\Claude\Claude.exe",
+            "/Applications/Claude.app",
+            "~/Applications/Claude.app",
         ),
         install_hint="从 claude.ai/download 安装桌面版",
         prompt_supported=False,
@@ -179,6 +190,8 @@ AGENT_SPECS: tuple[AgentSpec, ...] = (
         desktop_paths=(
             r"%LOCALAPPDATA%\Programs\Antigravity\Antigravity.exe",
             r"%LOCALAPPDATA%\Antigravity\Antigravity.exe",
+            "/Applications/Antigravity.app",
+            "~/Applications/Antigravity.app",
         ),
         install_hint="安装 Antigravity 后重新检测",
         prompt_supported=False,
@@ -202,7 +215,9 @@ def _desktop_executable(
 ) -> str:
     for candidate in paths:
         expanded = _expand(candidate)
-        if expanded != candidate and exists(expanded):
+        if expanded == candidate and ("%" in candidate or candidate.startswith("~")):
+            continue
+        if exists(expanded):
             return expanded
     return ""
 
@@ -246,6 +261,12 @@ def _powershell_path(env: Mapping[str, str]) -> str:
     if candidate.exists():
         return str(candidate)
     return shutil.which("powershell", path=env.get("PATH", "")) or ""
+
+
+def _desktop_command(executable: str) -> list[str]:
+    if sys.platform == "darwin" and executable.lower().endswith(".app"):
+        return ["open", "-a", executable]
+    return [executable]
 
 
 def _safe_title(agent_name: str, project: Path) -> str:
@@ -356,6 +377,69 @@ def _launch_linux_terminal(
     )
 
 
+_MAC_TERMINAL_SCRIPT = r'''
+on run argv
+    set targetDir to item 1 of argv
+    set targetExe to item 2 of argv
+    set targetPrompt to item 3 of argv
+    set targetTitle to item 4 of argv
+    set commandText to "cd " & quoted form of targetDir & " && printf '\\033]0;%s\\007' " & quoted form of targetTitle & " && " & quoted form of targetExe
+    if targetPrompt is not "" then set commandText to commandText & " " & quoted form of targetPrompt
+    set commandText to commandText & "; exec ${SHELL:-/bin/zsh} -i"
+    tell application "Terminal"
+        activate
+        do script commandText
+    end tell
+    return "ok"
+end run
+'''
+
+
+def _launch_macos_terminal(
+    availability: AgentAvailability,
+    project: Path,
+    prompt: str,
+    environment: dict[str, str],
+    popen: Callable[..., object],
+) -> LaunchResult:
+    spec = availability.spec
+    title = _safe_title(spec.name, project)
+    try:
+        process = popen(
+            [
+                "osascript",
+                "-e",
+                _MAC_TERMINAL_SCRIPT,
+                str(project),
+                availability.executable,
+                prompt,
+                title,
+            ],
+            cwd=str(project),
+            env=environment,
+            close_fds=True,
+        )
+    except OSError as exc:
+        return LaunchResult(
+            False,
+            f"无法打开终端：{exc}",
+            agent_id=spec.id,
+            agent_name=spec.name,
+        )
+    return LaunchResult(
+        True,
+        f"已在终端中启动 {spec.name}" + ("，并输入了提示词" if prompt else ""),
+        agent_id=spec.id,
+        agent_name=spec.name,
+        agent_kind=spec.kind,
+        pid=0,
+        title=title,
+        working_dir=str(project),
+        executable=availability.executable,
+        prompt_sent=bool(prompt),
+    )
+
+
 def launch_agent(
     availability: AgentAvailability,
     project_dir: str,
@@ -407,9 +491,10 @@ def launch_agent(
             bins + ([inherited] if inherited else [])
         )
     if spec.kind == "desktop":
+        command = _desktop_command(availability.executable)
         try:
             process = popen(
-                [availability.executable],
+                command,
                 cwd=str(project),
                 env=environment,
                 close_fds=True,
@@ -436,10 +521,18 @@ def launch_agent(
         )
 
     if os.name != "nt":
+        if sys.platform == "darwin":
+            return _launch_macos_terminal(
+                availability,
+                project,
+                prompt,
+                environment,
+                popen,
+            )
         if not sys.platform.startswith("linux"):
             return LaunchResult(
                 False,
-                "打开终端目前仅支持 Windows 和 Linux",
+                "打开终端目前仅支持 Windows、Linux 和 macOS",
                 agent_id=spec.id,
                 agent_name=spec.name,
             )

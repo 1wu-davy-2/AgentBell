@@ -123,6 +123,9 @@ def build_scanner(tmp_path: Path, **overrides) -> AttentionScanner:
         logging.getLogger("agentbell.tests"),
         claude_root=tmp_path / "claude",
         qoder_root=tmp_path / "qoder",
+        codex_root=tmp_path / "codex",
+        gemini_root=tmp_path / "gemini",
+        grok_root=tmp_path / "grok",
     )
 
 
@@ -202,3 +205,122 @@ def test_scanner_ignores_stale_sessions(tmp_path):
     scanner = build_scanner(tmp_path)
     assert scanner.scan_once(now_monotonic=1000.0)[0] == []
     assert scanner.scan_once(now_monotonic=1005.0)[0] == []
+
+
+def write_jsonl(path: Path, entries: list[dict], age_seconds: float = 35) -> None:
+    write_session(path, entries, age_seconds=age_seconds)
+
+
+def test_scanner_infers_codex_gemini_and_grok_waits(tmp_path):
+    codex_path = (
+        tmp_path / "codex" / "2026" / "11" / "07" / "rollout-codex1.jsonl"
+    )
+    write_jsonl(
+        codex_path,
+        [
+            {
+                "type": "response_item",
+                "ordinal": 1,
+                "payload": {
+                    "type": "message",
+                    "role": "developer",
+                    "content": [{"type": "input_text", "text": "rules"}],
+                },
+            },
+            {
+                "type": "response_item",
+                "ordinal": 2,
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": "<environment_context>cwd</environment_context>",
+                        }
+                    ],
+                },
+            },
+            {
+                "type": "response_item",
+                "ordinal": 3,
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "看看报告"}],
+                },
+            },
+            {
+                "type": "response_item",
+                "ordinal": 4,
+                "payload": {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [
+                        {"type": "output_text", "text": "需要我继续执行吗？"}
+                    ],
+                },
+            },
+        ],
+    )
+
+    gemini_path = tmp_path / "gemini" / "proj-alpha" / "chats" / "session-1.json"
+    gemini_path.parent.mkdir(parents=True, exist_ok=True)
+    gemini_path.write_text(
+        json.dumps(
+            {
+                "sessionId": "gem-1",
+                "messages": [
+                    {"type": "user", "content": [{"text": "看看报告"}]},
+                    {
+                        "type": "gemini",
+                        "content": [{"text": "需要我继续执行吗？"}],
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    stamp = time.time() - 35
+    os.utime(gemini_path, (stamp, stamp))
+
+    grok_path = (
+        tmp_path
+        / "grok"
+        / "%2Fhome%2Fuser%2Fdemo"
+        / "session-grok1"
+        / "chat_history.jsonl"
+    )
+    write_jsonl(
+        grok_path,
+        [
+            {"type": "user", "content": "看看报告", "prompt_index": 1},
+            {
+                "type": "assistant",
+                "content": [{"type": "text", "text": "需要我继续执行吗？"}],
+            },
+            {
+                "type": "reasoning",
+                "summary": [{"text": "internal reasoning"}],
+            },
+        ],
+    )
+
+    scanner = build_scanner(tmp_path)
+    assert scanner.scan_once(now_monotonic=1000.0)[0] == []
+    detections, _ = scanner.scan_once(now_monotonic=1005.0)
+    by_agent = {item.agent: item for item in detections}
+    assert set(by_agent) == {"codex", "gemini", "grok"}
+
+    assert by_agent["codex"].reason == "question"
+    assert by_agent["codex"].dedupe_key.startswith("wait:codex:rollout-codex1:")
+    assert by_agent["codex"].title == "Codex 等待回答"
+
+    assert by_agent["gemini"].reason == "question"
+    assert by_agent["gemini"].project == "proj-alpha"
+    assert by_agent["gemini"].title == "Gemini 等待回答"
+
+    assert by_agent["grok"].reason == "question"
+    assert by_agent["grok"].dedupe_key.startswith("wait:grok:session-grok1:")
+    assert by_agent["grok"].project == "demo"

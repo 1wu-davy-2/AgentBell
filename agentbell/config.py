@@ -39,9 +39,18 @@ MAX_RULE_DURATION_SECONDS = 7 * 24 * 3600
 DEFAULT_UPDATE_REPO = "1wu-davy-2/AgentBell"
 DEFAULT_MEETING_PROCESSES = (
     "zoom.exe",
+    "zoom",
+    "zoom.us",
     "teams.exe",
+    "microsoft teams",
     "wemeetapp.exe",
+    "wemeet",
+    "tencent meeting",
+    "腾讯会议",
     "webexmta.exe",
+    "webex",
+    "webex meetings",
+    "facetime",
 )
 
 _TIME_PATTERN = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")

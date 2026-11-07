@@ -723,6 +723,50 @@ def modifier_masks(spec: str) -> tuple[int, str] | None:
     return modifiers, key
 
 
+_PORTAL_KEYS = {
+    "space": "space",
+    "Return": "Return",
+    "Tab": "Tab",
+    "Escape": "Escape",
+    "Insert": "Insert",
+    "Delete": "Delete",
+    "Home": "Home",
+    "End": "End",
+    "Prior": "Page_Up",
+    "Next": "Page_Down",
+    "Up": "Up",
+    "Down": "Down",
+    "Left": "Left",
+    "Right": "Right",
+}
+
+
+def portal_trigger(spec: str) -> str | None:
+    """Convert Ctrl+Alt+A into the portal trigger syntax CTRL+ALT+a."""
+    parsed = modifier_masks(spec)
+    if parsed is None:
+        return None
+    modifiers, key = parsed
+    names: list[str] = []
+    if modifiers & _CONTROL_MASK:
+        names.append("CTRL")
+    if modifiers & _MOD1_MASK:
+        names.append("ALT")
+    if modifiers & _SHIFT_MASK:
+        names.append("SHIFT")
+    if modifiers & _MOD4_MASK:
+        names.append("LOGO")
+    if key.startswith("F") and key[1:].isdigit():
+        name = key
+    elif len(key) == 1 and key.isalnum():
+        name = key.lower()
+    else:
+        name = _PORTAL_KEYS.get(key, "")
+    if not name:
+        return None
+    return "+".join([*names, name])
+
+
 class X11Hotkey:
     def __init__(self, spec: str) -> None:
         self._spec = spec

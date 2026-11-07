@@ -33,6 +33,23 @@ def test_modifier_masks_rejects_invalid_specs():
     assert ld.modifier_masks("Hyper+A") is None
 
 
+def test_portal_trigger_uses_shortcuts_spec():
+    assert ld.portal_trigger("Ctrl+Alt+A") == "CTRL+ALT+a"
+    assert ld.portal_trigger("Ctrl+Shift+space") == "CTRL+SHIFT+space"
+    assert ld.portal_trigger("Super+Return") == "LOGO+Return"
+    assert ld.portal_trigger("win+PageUp") == "LOGO+Page_Up"
+    assert ld.portal_trigger("Ctrl+F12") == "CTRL+F12"
+    assert ld.portal_trigger("Alt+1") == "ALT+1"
+
+
+def test_portal_trigger_rejects_invalid_specs():
+    assert ld.portal_trigger("") is None
+    assert ld.portal_trigger("A") is None
+    assert ld.portal_trigger("Ctrl+") is None
+    assert ld.portal_trigger("Hyper+A") is None
+    assert ld.portal_trigger("Ctrl+Alt+A+B") is None
+
+
 def test_session_detection_is_safe_without_display(monkeypatch):
     monkeypatch.delenv("DISPLAY", raising=False)
     monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)

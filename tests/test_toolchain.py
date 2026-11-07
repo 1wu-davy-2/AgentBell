@@ -133,6 +133,24 @@ def test_resolve_node_release_linux_archives(tmp_path: Path):
     assert archive_url.endswith("node-v26.13.0-linux-arm64.tar.xz")
 
 
+def test_node_arch_supports_darwin(monkeypatch):
+    monkeypatch.setattr(tc.platform, "machine", lambda: "arm64")
+    assert tc._node_arch("darwin") == "darwin-arm64"
+    monkeypatch.setattr(tc.platform, "machine", lambda: "x86_64")
+    assert tc._node_arch("darwin") == "darwin-x64"
+
+
+def test_resolve_node_release_darwin_archives(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(tc.platform, "machine", lambda: "arm64")
+    routes, _ = _node_tar_routes(platform_name="darwin")
+    service = tc.ToolchainService(
+        tmp_path / "runtime", opener=FakeOpener(routes), registry=tc.NPM_REGISTRY_OFFICIAL
+    )
+    version, archive_url, _ = service.resolve_node_release(platform_name="darwin")
+    assert version == "v26.13.0"
+    assert archive_url.endswith("node-v26.13.0-darwin-arm64.tar.xz")
+
+
 @pytest.mark.skipif(os.name != "nt", reason="portable Node install is Windows-only")
 def test_install_node_verifies_and_extracts(tmp_path: Path):
     routes, archive = _node_routes()
@@ -167,8 +185,10 @@ def test_install_node_rejects_bad_checksum(tmp_path: Path):
         service.install_node()
 
 
-def _node_tar_routes(version: str = "v26.13.0") -> tuple[dict, bytes]:
-    arch = tc._node_arch("linux")
+def _node_tar_routes(
+    version: str = "v26.13.0", platform_name: str = "linux"
+) -> tuple[dict, bytes]:
+    arch = tc._node_arch(platform_name)
     folder = f"node-{version}-{arch}"
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w:xz") as bundle:

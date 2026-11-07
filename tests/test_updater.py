@@ -458,17 +458,26 @@ def test_select_asset_windows_arm64_prefers_native_build():
     )
     assert asset_label("windows", "x86_64") == "AgentBell.exe"
     assert (
-        asset_label("darwin", "arm64") == "AgentBell-macos-arm64.dmg"
+        asset_label("darwin", "arm64") == "AgentBell-macos-arm64.zip"
+    )
+    assert (
+        asset_label("darwin", "x86_64") == "AgentBell-macos-x64.zip"
     )
 
 
-def test_darwin_has_no_auto_update_asset():
+def test_darwin_selects_zip_asset():
     dmg = ReleaseAsset(
         "AgentBell-macos-arm64.dmg", "https://github.com/a/b/x.dmg"
     )
-    assert (
-        select_asset([dmg], platform_name="darwin", machine="arm64") is None
+    zip_asset = ReleaseAsset(
+        "AgentBell-macos-arm64.zip",
+        "https://github.com/acme/AgentBell/releases/download/v9/AgentBell-macos-arm64.zip",
     )
+    assert (
+        select_asset([dmg, zip_asset], platform_name="darwin", machine="arm64")
+        is zip_asset
+    )
+    assert select_asset([dmg], platform_name="darwin", machine="arm64") is None
     result = check_for_update(
         "acme/AgentBell",
         "2.17.1",
@@ -479,7 +488,24 @@ def test_darwin_has_no_auto_update_asset():
     assert result.status == "available"
     assert result.can_install is False
     assert "Release 页面" in result.message
-    assert "AgentBell-macos-arm64.dmg" not in result.message
+    assert "AgentBell-macos-arm64.zip" in result.message
+
+
+def test_download_macos_asset_keeps_arch_in_name(tmp_path):
+    content = b"zip payload"
+    asset = ReleaseAsset(
+        "AgentBell-macos-arm64.zip",
+        "https://github.com/acme/AgentBell/releases/download/v9/AgentBell-macos-arm64.zip",
+        size=len(content),
+        digest="sha256:" + hashlib.sha256(content).hexdigest(),
+    )
+    target = download_release_asset(
+        ReleaseInfo(version="9.9.9", asset=asset),
+        dest_dir=tmp_path,
+        opener=FakeOpener([FakeResponse(content)]),
+    )
+    assert target == tmp_path / "AgentBell-9.9.9-macos-arm64.zip"
+    assert target.read_bytes() == content
 
 
 def test_download_linux_asset_keeps_arch_in_name(tmp_path):
@@ -629,16 +655,96 @@ def test_download_windows_arm64_asset_keeps_arch_in_name(tmp_path):
     assert target.read_bytes() == content
 
 
-def test_install_update_blocks_macos_auto_install(tmp_path):
+def test_mac_app_bundle_resolves_from_executable(tmp_path):
+    app = tmp_path / "Applications" / "AgentBell.app"
+    binary = app / "Contents" / "MacOS" / "AgentBell"
+    assert updater.mac_app_bundle(binary) == app.resolve()
+    assert updater.mac_app_bundle(app) == app.resolve()
+    assert updater.mac_app_bundle(tmp_path / "AgentBell") is None
+
+
+def test_install_update_macos_rejects_non_zip(tmp_path):
     source = tmp_path / "AgentBell-macos-arm64.dmg"
     source.write_bytes(b"dmg payload")
+    app = tmp_path / "Applications" / "AgentBell.app"
+    (app / "Contents" / "MacOS").mkdir(parents=True)
     result = install_update(
         source,
         frozen=True,
-        executable=str(tmp_path / "AgentBell"),
+        executable=str(app / "Contents" / "MacOS" / "AgentBell"),
         script_dir=tmp_path / "updates",
         platform_name="darwin",
     )
     assert result.ok is False
     assert ".dmg" in result.message
-    assert not (tmp_path / "updates").exists()
+    assert not (tmp_path / "updates" / "apply_update.sh").exists()
+
+
+def test_install_update_macos_stages_and_schedules(tmp_path, monkeypatch):
+    source = tmp_path / "AgentBell-macos-arm64.zip"
+    source.write_bytes(b"zip payload")
+    app = tmp_path / "Applications" / "AgentBell.app"
+    binary = app / "Contents" / "MacOS" / "AgentBell"
+    binary.parent.mkdir(parents=True)
+    binary.write_bytes(b"old")
+    calls = []
+
+    def fake_stage(source_path, destination):
+        staged = destination / "AgentBell.app"
+        staged_binary = staged / "Contents" / "MacOS" / "AgentBell"
+        staged_binary.parent.mkdir(parents=True)
+        staged_binary.write_bytes(b"new")
+        assert source_path == source
+        return staged
+
+    monkeypatch.setattr(updater, "_stage_macos_app", fake_stage)
+
+    def fake_popen(args, **kwargs):
+        calls.append((args, kwargs))
+        return object()
+
+    result = install_update(
+        source,
+        pid=999,
+        args=["--config", str(tmp_path / "my config.json")],
+        frozen=True,
+        executable=str(binary),
+        script_dir=tmp_path / "updates",
+        popen=fake_popen,
+        platform_name="darwin",
+        version="9.9.9",
+    )
+
+    assert result.ok is True
+    updates = tmp_path / "updates"
+    staged = updates / "staged-9.9.9" / "AgentBell.app"
+    assert (staged / "Contents" / "MacOS" / "AgentBell").read_bytes() == b"new"
+    script_path = updates / "apply_update.sh"
+    script = script_path.read_text(encoding="utf-8")
+    assert "ditto" in script
+    assert str(app) in script
+    assert "my config.json" in script
+    assert "@@RESTART@@" not in script
+    args, kwargs = calls[0]
+    assert args == ["/bin/sh", str(script_path)]
+    environment = kwargs["env"]
+    assert environment["AGENTBELL_UPDATE_PID"] == "999"
+    assert environment["AGENTBELL_UPDATE_SOURCE"] == str(staged)
+    assert environment["AGENTBELL_UPDATE_TARGET"] == str(app)
+    assert environment["AGENTBELL_UPDATE_VERSION"] == "9.9.9"
+    assert kwargs["start_new_session"] is True
+
+
+def test_install_update_macos_requires_app_bundle(tmp_path):
+    source = tmp_path / "AgentBell-macos-arm64.zip"
+    source.write_bytes(b"zip payload")
+    result = install_update(
+        source,
+        frozen=True,
+        executable=str(tmp_path / "AgentBell"),
+        script_dir=tmp_path / "updates",
+        popen=lambda *args, **kwargs: object(),
+        platform_name="darwin",
+    )
+    assert result.ok is False
+    assert "AgentBell.app" in result.message

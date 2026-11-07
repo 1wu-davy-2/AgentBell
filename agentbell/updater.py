@@ -73,6 +73,55 @@ fi
 @@RESTART@@
 """
 
+MACOS_REPLACE_SCRIPT = """#!/bin/sh
+set -u
+target="$AGENTBELL_UPDATE_TARGET"
+source="$AGENTBELL_UPDATE_SOURCE"
+backup="$AGENTBELL_UPDATE_BACKUP"
+log="$AGENTBELL_UPDATE_LOG"
+pid="$AGENTBELL_UPDATE_PID"
+log_line() {
+    [ -n "$log" ] || return 0
+    { date '+%Y-%m-%dT%H:%M:%S%z'; printf ' %s\\n' "$1"; } >>"$log" 2>/dev/null || true
+}
+if [ -n "$pid" ]; then
+    waited=0
+    while kill -0 "$pid" 2>/dev/null; do
+        waited=$((waited + 1))
+        [ "$waited" -ge 120 ] && break
+        sleep 0.5
+    done
+fi
+sleep 0.5
+rm -rf "$backup" 2>/dev/null || true
+ready=1
+if [ -d "$target" ]; then
+    if mv "$target" "$backup" 2>/dev/null; then
+        ready=0
+    else
+        log_line "replace failed; could not move current bundle"
+    fi
+else
+    ready=0
+fi
+if [ "$ready" -eq 0 ]; then
+    if ditto "$source" "$target" 2>/dev/null; then
+        log_line "updated ${AGENTBELL_UPDATE_VERSION:-unknown}"
+        rm -rf "$backup" 2>/dev/null || true
+    else
+        rm -rf "$target" 2>/dev/null || true
+        if [ -d "$backup" ]; then
+            mv "$backup" "$target" 2>/dev/null || true
+        fi
+        log_line "replace failed; restored previous bundle"
+    fi
+fi
+if [ -n "${AGENTBELL_UPDATE_CWD:-}" ] && [ -d "$AGENTBELL_UPDATE_CWD" ]; then
+    cd "$AGENTBELL_UPDATE_CWD" || cd /
+fi
+@@RESTART@@
+"""
+
 REPLACE_SCRIPT = """$ErrorActionPreference = 'Stop'
 $target = $env:AGENTBELL_UPDATE_TARGET
 $source = $env:AGENTBELL_UPDATE_SOURCE
@@ -260,7 +309,7 @@ def asset_label(
     if platform == "windows":
         return "AgentBell-arm64.exe" if arch == "arm64" else "AgentBell.exe"
     if platform == "darwin":
-        return f"AgentBell-macos-{arch}.dmg"
+        return f"AgentBell-macos-{arch}.zip"
     return f"AgentBell-{platform}"
 
 
@@ -289,8 +338,21 @@ def select_asset(
             return exact[0]
         return candidates[0] if candidates else None
     if platform == "darwin":
-        # macOS updates are manual: unsigned apps cannot swap their own bundle.
-        return None
+        candidates = [
+            asset
+            for asset in assets
+            if asset.name.lower().endswith(".zip")
+            and "agentbell" in asset.name.lower()
+            and f"macos-{arch}" in asset.name.lower()
+        ]
+        exact = [
+            asset
+            for asset in candidates
+            if asset.name.lower() == f"agentbell-macos-{arch}.zip"
+        ]
+        if exact:
+            return exact[0]
+        return candidates[0] if candidates else None
     if platform != "windows":
         return None
     candidates = [
@@ -420,8 +482,11 @@ def check_for_update(
         return UpdateCheck(
             "up_to_date", f"已是最新版本 {current}", current, normalized, release
         )
-    if host_platform(platform_name) == "darwin":
-        suffix = "；macOS 版请在 Release 页面下载新的 .dmg 或 .zip 替换应用"
+    if host_platform(platform_name) == "darwin" and not release.asset:
+        suffix = (
+            f"；该 Release 没有 {asset_label(platform_name, machine)}，"
+            "请从 Release 页面手动下载"
+        )
     elif release.asset:
         suffix = ""
     else:
@@ -458,6 +523,8 @@ def download_release_asset(
         extension = ".tar.gz"
     elif lower_name.endswith(".tar.xz"):
         extension = ".tar.xz"
+    elif lower_name.endswith(".zip"):
+        extension = ".zip"
     elif lower_name.endswith(".exe"):
         extension = ".exe"
     else:
@@ -706,6 +773,117 @@ def _install_linux_update(
     return InstallResult(True, "更新脚本已启动，程序将退出并重启")
 
 
+def mac_app_bundle(executable: str | Path) -> Path | None:
+    path = Path(executable).resolve()
+    if path.suffix.lower() == ".app":
+        return path
+    for parent in path.parents:
+        if parent.suffix.lower() == ".app":
+            return parent
+    return None
+
+
+def _stage_macos_app(source: Path, destination: Path) -> Path:
+    if source.suffix.lower() != ".zip":
+        raise UpdateError(
+            "macOS 原位更新需要 .zip 安装包；.dmg 请在 Release 页面手动安装"
+        )
+    if destination.exists():
+        shutil.rmtree(destination, ignore_errors=True)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        result = subprocess.run(
+            ["ditto", "-x", "-k", str(source), str(destination)],
+            capture_output=True,
+            timeout=180,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise UpdateError(f"无法解压安装包：{exc}") from exc
+    if result.returncode != 0:
+        raise UpdateError("无法解压安装包，文件可能已损坏")
+    candidates = sorted(destination.glob("*.app"))
+    app = destination / "AgentBell.app"
+    if not app.is_dir():
+        app = candidates[0] if len(candidates) == 1 else None
+    if app is None:
+        raise UpdateError("安装包结构异常：未找到 AgentBell.app")
+    binary = app / "Contents" / "MacOS" / "AgentBell"
+    if not binary.is_file():
+        raise UpdateError("安装包结构异常：未找到 AgentBell 可执行文件")
+    return app
+
+
+def _install_macos_update(
+    source: Path,
+    *,
+    pid: int | None,
+    args: Sequence[str],
+    executable: str | None,
+    script_dir: Path | None,
+    working_dir: str | None,
+    env: Mapping[str, str] | None,
+    popen: Callable[..., object],
+    version: str,
+) -> InstallResult:
+    target = mac_app_bundle(executable or sys.executable)
+    if target is None:
+        return InstallResult(
+            False,
+            "未找到 AgentBell.app，无法自动更新，请从 Release 页面手动安装",
+        )
+    if not os.access(target.parent, os.W_OK) or not os.access(target, os.W_OK):
+        return InstallResult(
+            False,
+            "当前安装目录不可写，请把 AgentBell.app 移到「应用程序」后重试",
+        )
+    directory = Path(script_dir) if script_dir is not None else updates_dir()
+    staged = directory / f"staged-{version}"
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        staged_app = _stage_macos_app(source, staged)
+    except (OSError, UpdateError) as exc:
+        return InstallResult(False, f"无法解压安装包：{exc}")
+
+    environment = dict(os.environ if env is None else env)
+    environment.update(
+        {
+            "AGENTBELL_UPDATE_PID": str(pid if pid is not None else os.getpid()),
+            "AGENTBELL_UPDATE_SOURCE": str(staged_app),
+            "AGENTBELL_UPDATE_TARGET": str(target),
+            "AGENTBELL_UPDATE_BACKUP": str(
+                target.with_name(target.name + ".bak")
+            ),
+            "AGENTBELL_UPDATE_CWD": str(
+                working_dir if working_dir is not None else os.getcwd()
+            ),
+            "AGENTBELL_UPDATE_LOG": str(directory / "update.log"),
+            "AGENTBELL_UPDATE_VERSION": version,
+        }
+    )
+    restart = "exec " + shlex.join(
+        ["/usr/bin/open", str(target), "--args", *(str(item) for item in args)]
+    )
+    script = MACOS_REPLACE_SCRIPT.replace("@@RESTART@@", restart)
+    try:
+        script_path = directory / "apply_update.sh"
+        script_path.write_text(script, encoding="utf-8")
+        script_path.chmod(0o755)
+    except OSError as exc:
+        return InstallResult(False, f"无法写入更新脚本：{exc}")
+    try:
+        popen(
+            ["/bin/sh", str(script_path)],
+            cwd=str(directory),
+            env=environment,
+            close_fds=True,
+            start_new_session=True,
+        )
+    except OSError as exc:
+        return InstallResult(False, f"无法启动更新脚本：{exc}")
+    return InstallResult(True, "更新脚本已启动，程序将退出并重启")
+
+
 def install_update(
     downloaded: Path,
     *,
@@ -745,10 +923,19 @@ def install_update(
             version=safe_version,
         )
     if target_platform == "darwin":
-        return InstallResult(
-            False,
-            "macOS 版本不支持原地更新，请从 Release 页面下载新的 .dmg 或 .zip，"
-            "替换「应用程序」中的 AgentBell.app",
+        safe_version = (
+            re.sub(r"[^A-Za-z0-9_.-]", "_", version)[:40] or "new"
+        )
+        return _install_macos_update(
+            source,
+            pid=pid,
+            args=args,
+            executable=executable,
+            script_dir=script_dir,
+            working_dir=working_dir,
+            env=env,
+            popen=popen,
+            version=safe_version,
         )
     return _install_windows_update(
         source,

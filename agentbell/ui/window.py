@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+import io
 import logging
 import re
 from dataclasses import replace
@@ -36,6 +38,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
+    QCheckBox,
     QComboBox,
     QDialog,
     QFileDialog,
@@ -152,6 +155,21 @@ def _clip(text: str, limit: int) -> str:
     return text[: limit - 1].rstrip() + "…"
 
 
+def format_group_day(when: datetime, now: datetime | None = None) -> str:
+    current = (now or datetime.now().astimezone()).astimezone()
+    day = when.astimezone().date()
+    delta = (current.date() - day).days
+    if delta <= 0:
+        return "今天"
+    if delta == 1:
+        return "昨天"
+    if delta < 7:
+        return f"{delta} 天前"
+    if day.year == current.year:
+        return f"{day.month} 月 {day.day} 日"
+    return f"{day.year} 年 {day.month} 月 {day.day} 日"
+
+
 def format_received_at(when: datetime, now: datetime | None = None) -> str:
     current = (now or datetime.now().astimezone()).astimezone()
     local = when.astimezone()
@@ -185,6 +203,49 @@ def format_bytes(value: int) -> str:
     if size < 1024 * 1024:
         return f"{size / 1024:.1f} KB"
     return f"{size / (1024 * 1024):.1f} MB"
+
+
+def build_stats_csv(items: list[Notification]) -> str:
+    buffer = io.StringIO(newline="")
+    writer = csv.writer(buffer)
+    writer.writerow(
+        (
+            "接收时间",
+            "更新时间",
+            "标题",
+            "状态",
+            "优先级",
+            "来源",
+            "摘要",
+            "耗时",
+            "错误",
+            "会话 ID",
+            "运行 ID",
+            "待确认",
+            "已确认",
+        )
+    )
+    for item in items:
+        writer.writerow(
+            (
+                item.received_at.astimezone().isoformat(sep=" ", timespec="seconds"),
+                item.effective_updated_at.astimezone().isoformat(
+                    sep=" ", timespec="seconds"
+                ),
+                item.title,
+                item.status_label,
+                item.priority_label,
+                item.source,
+                item.summary,
+                item.duration,
+                item.error or "",
+                item.session_id or "",
+                item.run_id or "",
+                "是" if item.needs_ack else "否",
+                "是" if item.acknowledged else "否",
+            )
+        )
+    return buffer.getvalue()
 
 
 def _run_summary_text(events: list[RunEvent]) -> str:
@@ -588,6 +649,7 @@ class NotificationCard(QFrame):
     snooze_requested = Signal(str, int)
     action_requested = Signal(object, object)
     timeline_requested = Signal(object)
+    selection_changed = Signal(str, bool)
 
     def __init__(
         self,
@@ -596,6 +658,8 @@ class NotificationCard(QFrame):
         latest: bool = False,
         allow_local_paths: bool = False,
         allow_timeline: bool = False,
+        selectable: bool = False,
+        selected: bool = False,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -611,6 +675,23 @@ class NotificationCard(QFrame):
         root = QHBoxLayout(self)
         root.setContentsMargins(18, 15, 14, 15)
         root.setSpacing(14)
+
+        self.select_box: QCheckBox | None = None
+        if selectable:
+            self.select_box = QCheckBox(self)
+            self.select_box.setObjectName("cardSelect")
+            self.select_box.setChecked(selected)
+            self.select_box.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.select_box.setAccessibleName("选择此通知")
+            self.select_box.setToolTip("选中后可批量归档")
+            self.select_box.toggled.connect(
+                lambda checked: self.selection_changed.emit(
+                    self.notification.id, checked
+                )
+            )
+            root.addWidget(
+                self.select_box, 0, Qt.AlignmentFlag.AlignVCenter
+            )
 
         tile = QLabel(self)
         tile.setPixmap(_status_tile(notification.status, 44))
@@ -675,6 +756,14 @@ class NotificationCard(QFrame):
         chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
         chip.setFixedHeight(20)
         title_row.addWidget(chip, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        if notification.archived:
+            archived = QLabel("已归档", self)
+            archived.setObjectName("archiveChip")
+            archived.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            archived.setFixedHeight(20)
+            archived.setToolTip("这条通知已归档，不再出现在未归档列表中")
+            title_row.addWidget(archived, 0, Qt.AlignmentFlag.AlignVCenter)
 
         time_label = QLabel(format_received_at(notification.effective_updated_at), self)
         time_label.setObjectName("cardTime")
@@ -1661,6 +1750,10 @@ class NotificationWindow(QMainWindow):
         self._filter = "all"
         self._waiting_only = False
         self._source_filter = ""
+        self._archive_scope = "active"
+        self._group_mode = "date"
+        self._select_mode = False
+        self._selected_ids: set[str] = set()
         self._query = ""
         self._search_items: list[Notification] = []
         self._page = "list"
@@ -1894,7 +1987,9 @@ class NotificationWindow(QMainWindow):
         self._sessions_button.setIconSize(QSize(16, 16))
         self._sessions_button.setFixedHeight(38)
         self._sessions_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._sessions_button.setToolTip("扫描本机 Claude Code 与 Qoder 的会话")
+        self._sessions_button.setToolTip(
+            "扫描本机 Claude Code、Qoder、Codex、Gemini、Grok 与 OpenCode 的会话"
+        )
         self._sessions_button.clicked.connect(self._on_sessions_clicked)
         layout.addWidget(self._sessions_button)
 
@@ -2157,6 +2252,10 @@ class NotificationWindow(QMainWindow):
         self._search_input = QLineEdit(search_host)
         self._search_input.setObjectName("searchInput")
         self._search_input.setPlaceholderText("搜索标题、摘要或来源")
+        self._search_input.setToolTip(
+            "支持字段过滤：status:failed source:claude priority:high "
+            "session:<id> run:<id> ack:no"
+        )
         self._search_input.setClearButtonEnabled(True)
         self._search_input.setFrame(False)
         self._search_input.setFixedHeight(26)
@@ -2165,6 +2264,101 @@ class NotificationWindow(QMainWindow):
         search_layout.addWidget(self._search_input, 1)
         toolbar_row.addWidget(search_host, 0, Qt.AlignmentFlag.AlignVCenter)
         layout.addWidget(toolbar)
+
+        view_row = QWidget(page)
+        view_row.setObjectName("segmentHost")
+        view_layout = QHBoxLayout(view_row)
+        view_layout.setContentsMargins(0, 0, 0, 0)
+        view_layout.setSpacing(8)
+
+        self._archive_scope_combo = QComboBox(view_row)
+        self._archive_scope_combo.setObjectName("sourceFilter")
+        self._archive_scope_combo.setAccessibleName("按归档状态筛选")
+        self._archive_scope_combo.setToolTip("选择未归档、已归档或全部通知")
+        self._archive_scope_combo.setCursor(
+            Qt.CursorShape.PointingHandCursor
+        )
+        self._archive_scope_combo.setFixedSize(104, 30)
+        for label, value in (
+            ("未归档", "active"),
+            ("已归档", "archived"),
+            ("全部通知", "all"),
+        ):
+            self._archive_scope_combo.addItem(label, value)
+        self._archive_scope_combo.currentIndexChanged.connect(
+            self._on_archive_scope_changed
+        )
+        view_layout.addWidget(
+            self._archive_scope_combo, 0, Qt.AlignmentFlag.AlignVCenter
+        )
+
+        self._group_combo = QComboBox(view_row)
+        self._group_combo.setObjectName("sourceFilter")
+        self._group_combo.setAccessibleName("通知分组方式")
+        self._group_combo.setToolTip("按日期或 Agent 来源分组显示")
+        self._group_combo.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._group_combo.setFixedSize(124, 30)
+        for label, value in (
+            ("按日期分组", "date"),
+            ("按来源分组", "source"),
+            ("不分组", "none"),
+        ):
+            self._group_combo.addItem(label, value)
+        self._group_combo.currentIndexChanged.connect(
+            self._on_group_mode_changed
+        )
+        view_layout.addWidget(
+            self._group_combo, 0, Qt.AlignmentFlag.AlignVCenter
+        )
+        view_layout.addStretch(1)
+
+        self._batch_bar = QFrame(view_row)
+        self._batch_bar.setObjectName("batchBar")
+        batch_row = QHBoxLayout(self._batch_bar)
+        batch_row.setContentsMargins(0, 0, 0, 0)
+        batch_row.setSpacing(6)
+        self._batch_label = QLabel("已选 0 条", self._batch_bar)
+        self._batch_label.setObjectName("batchCount")
+        batch_row.addWidget(self._batch_label)
+
+        self._batch_select_all = QPushButton("全选当前", self._batch_bar)
+        self._batch_select_all.setObjectName("batchAction")
+        self._batch_select_all.setFixedHeight(28)
+        self._batch_select_all.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._batch_select_all.clicked.connect(self._select_visible_cards)
+        batch_row.addWidget(self._batch_select_all)
+
+        self._batch_archive = QPushButton("归档选中", self._batch_bar)
+        self._batch_archive.setObjectName("batchPrimary")
+        self._batch_archive.setFixedHeight(28)
+        self._batch_archive.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._batch_archive.setEnabled(False)
+        self._batch_archive.clicked.connect(self._archive_selected_cards)
+        batch_row.addWidget(self._batch_archive)
+
+        self._batch_exit = QPushButton("退出", self._batch_bar)
+        self._batch_exit.setObjectName("batchAction")
+        self._batch_exit.setFixedHeight(28)
+        self._batch_exit.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._batch_exit.clicked.connect(self._exit_select_mode)
+        batch_row.addWidget(self._batch_exit)
+        self._batch_bar.setVisible(False)
+        view_layout.addWidget(
+            self._batch_bar, 0, Qt.AlignmentFlag.AlignVCenter
+        )
+
+        self._select_button = QPushButton("批量管理", view_row)
+        self._select_button.setObjectName("waitingToggle")
+        self._select_button.setCheckable(True)
+        self._select_button.setFixedHeight(30)
+        self._select_button.setMinimumWidth(76)
+        self._select_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._select_button.setToolTip("进入批量管理后可多选并归档通知")
+        self._select_button.toggled.connect(self._set_select_mode)
+        view_layout.addWidget(
+            self._select_button, 0, Qt.AlignmentFlag.AlignVCenter
+        )
+        layout.addWidget(view_row)
 
         layout.addSpacing(14)
 
@@ -2204,12 +2398,27 @@ class NotificationWindow(QMainWindow):
         heading_text.setSpacing(4)
         title = QLabel("数据统计", page)
         title.setObjectName("pageTitle")
-        subtitle = QLabel("成功率、耗时与近 7 天的通知量。", page)
-        subtitle.setObjectName("pageSubtitle")
+        self._stats_subtitle = QLabel("成功率、耗时与近 7 天的通知量。", page)
+        self._stats_subtitle.setObjectName("pageSubtitle")
         heading_text.addWidget(title)
-        heading_text.addWidget(subtitle)
+        heading_text.addWidget(self._stats_subtitle)
         heading.addLayout(heading_text)
         heading.addStretch(1)
+
+        self._stats_range = QComboBox(page)
+        self._stats_range.setObjectName("toolButton")
+        for days in (7, 30, 90):
+            self._stats_range.addItem(f"近 {days} 天", days)
+        self._stats_range.setFixedSize(104, 32)
+        self._stats_range.setCursor(Qt.CursorShape.PointingHandCursor)
+        heading.addWidget(self._stats_range, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        export = QPushButton("导出 CSV", page)
+        export.setObjectName("toolButton")
+        export.setFixedSize(88, 32)
+        export.setCursor(Qt.CursorShape.PointingHandCursor)
+        export.clicked.connect(self._export_stats)
+        heading.addWidget(export, 0, Qt.AlignmentFlag.AlignVCenter)
 
         refresh = QPushButton("刷新", page)
         refresh.setObjectName("toolButton")
@@ -2243,6 +2452,7 @@ class NotificationWindow(QMainWindow):
         chart_layout.setSpacing(8)
         chart_title = QLabel("近 7 天通知量", chart_card)
         chart_title.setObjectName("statsTitle")
+        self._stats_chart_title = chart_title
         chart_layout.addWidget(chart_title)
         self._daily_chart = DailyChart(chart_card)
         chart_layout.addWidget(self._daily_chart)
@@ -2328,6 +2538,9 @@ class NotificationWindow(QMainWindow):
         layout.addWidget(status_card)
 
         layout.addStretch(1)
+        self._stats_range.currentIndexChanged.connect(
+            lambda _index: self.refresh_stats()
+        )
         return page
 
     def _build_sessions_page(self) -> QWidget:
@@ -2860,7 +3073,8 @@ class NotificationWindow(QMainWindow):
         title = QLabel("Agent 会话", page)
         title.setObjectName("pageTitle")
         subtitle = QLabel(
-            "扫描本机 Claude Code 与 Qoder 的会话，可直接在软件内查看完整记录。",
+            "扫描本机 Claude Code、Qoder、Codex、Gemini、Grok 与 OpenCode 的会话，"
+            "可直接在软件内查看完整记录。",
             page,
         )
         subtitle.setObjectName("pageSubtitle")
@@ -3118,6 +3332,8 @@ class NotificationWindow(QMainWindow):
                 item.wait_reason,
                 item.wait_source,
                 item.session_id,
+                item.archived,
+                item.archived_at,
             )
             for item in self._items
         )
@@ -3223,9 +3439,21 @@ class NotificationWindow(QMainWindow):
         self._waiting_only_button.setChecked(self._waiting_only)
 
     def _source_items(self) -> list[Notification]:
-        if self._query:
-            return list(self._search_items)
-        return list(self._items)
+        items = (
+            list(self._search_items)
+            if self._query
+            else list(self._items)
+        )
+        return [
+            item for item in items if self._matches_archive_scope(item)
+        ]
+
+    def _matches_archive_scope(self, item: Notification) -> bool:
+        if self._archive_scope == "archived":
+            return item.archived
+        if self._archive_scope == "all":
+            return True
+        return not item.archived
 
     def _matches_source(self, item: Notification) -> bool:
         return not self._source_filter or item.source.strip() == self._source_filter
@@ -3233,6 +3461,8 @@ class NotificationWindow(QMainWindow):
     def _refresh_source_options(self) -> None:
         counts: dict[str, int] = {}
         for item in self._items:
+            if not self._matches_archive_scope(item):
+                continue
             source = item.source.strip()
             if source:
                 counts[source] = counts.get(source, 0) + 1
@@ -3273,6 +3503,32 @@ class NotificationWindow(QMainWindow):
             self.set_page("list")
         else:
             self._rebuild_cards()
+
+    def _on_archive_scope_changed(self, _index: int) -> None:
+        scope = str(self._archive_scope_combo.currentData() or "active")
+        if scope == self._archive_scope:
+            return
+        self._archive_scope = scope
+        self._selected_ids.clear()
+        self._cards_dirty = True
+        self._refresh_source_options()
+        self._update_counts()
+        self._update_batch_bar()
+        if self._page != "list":
+            self.set_page("list")
+        else:
+            self._rebuild_cards()
+
+    def _on_group_mode_changed(self, _index: int) -> None:
+        mode = str(self._group_combo.currentData() or "date")
+        if mode == self._group_mode:
+            return
+        self._group_mode = mode
+        self._cards_dirty = True
+        if self._page == "list":
+            self._rebuild_cards()
+        else:
+            self._cards_dirty = True
 
     def _live_session_window_seconds(self) -> int:
         interval = int(self.config.agent_sessions.scan_interval_seconds)
@@ -3384,10 +3640,22 @@ class NotificationWindow(QMainWindow):
             else:
                 text += f" · {len(live)} 个活跃会话"
         self._total_label.setText(text)
+        self._update_archive_scope_labels()
+
+    def _update_archive_scope_labels(self) -> None:
+        if not hasattr(self, "_archive_scope_combo"):
+            return
+        archived = sum(1 for item in self._items if item.archived)
+        active = len(self._items) - archived
+        self._archive_scope_combo.setItemText(0, f"未归档 {active}")
+        self._archive_scope_combo.setItemText(1, f"已归档 {archived}")
+        self._archive_scope_combo.setItemText(2, f"全部 {len(self._items)}")
 
     def _waiting_notifications_by_session(self) -> dict[str, Notification]:
         waits: dict[str, Notification] = {}
         for item in self._items:
+            if item.archived:
+                continue
             if item.is_waiting_input and item.session_id:
                 waits[item.session_id] = item
         return waits
@@ -3467,6 +3735,96 @@ class NotificationWindow(QMainWindow):
                 more, 0, Qt.AlignmentFlag.AlignLeft
             )
 
+    def _group_notifications(
+        self, items: list[Notification]
+    ) -> list[tuple[str, list[Notification]]]:
+        if self._group_mode == "none":
+            return [("", items)]
+        groups: list[tuple[str, list[Notification]]] = []
+        positions: dict[str, int] = {}
+        now = datetime.now().astimezone()
+        for item in items:
+            if self._group_mode == "source":
+                label = item.source.strip() or "未标注来源"
+            else:
+                label = format_group_day(item.effective_updated_at, now)
+            if label not in positions:
+                positions[label] = len(groups)
+                groups.append((label, []))
+            groups[positions[label]][1].append(item)
+        return groups
+
+    def _add_group_header(self, label: str, count: int) -> None:
+        header = QWidget(self._list_host)
+        header.setObjectName("groupHeader")
+        row = QHBoxLayout(header)
+        row.setContentsMargins(2, 8, 2, 0)
+        row.setSpacing(8)
+        title = QLabel(label, header)
+        title.setObjectName("groupTitle")
+        row.addWidget(title)
+        badge = QLabel(str(count), header)
+        badge.setObjectName("groupCount")
+        badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        row.addWidget(badge)
+        row.addStretch(1)
+        self._list_layout.addWidget(header)
+
+    def _set_select_mode(self, enabled: bool) -> None:
+        if enabled == self._select_mode:
+            self._update_batch_bar()
+            return
+        self._select_mode = enabled
+        self._selected_ids.clear()
+        self._batch_bar.setVisible(enabled)
+        self._update_batch_bar()
+        if self._page == "list":
+            self._rebuild_cards()
+        else:
+            self._cards_dirty = True
+
+    def _exit_select_mode(self) -> None:
+        if self._select_button.isChecked():
+            self._select_button.setChecked(False)
+        else:
+            self._set_select_mode(False)
+
+    def _on_card_selected(self, notification_id: str, checked: bool) -> None:
+        if checked:
+            self._selected_ids.add(notification_id)
+        else:
+            self._selected_ids.discard(notification_id)
+        self._update_batch_bar()
+
+    def _update_batch_bar(self) -> None:
+        if not hasattr(self, "_batch_label"):
+            return
+        count = len(self._selected_ids)
+        self._batch_label.setText(f"已选 {count} 条")
+        self._batch_archive.setEnabled(count > 0)
+        self._batch_archive.setText(
+            "取消归档" if self._archive_scope == "archived" else "归档选中"
+        )
+
+    def _select_visible_cards(self) -> None:
+        self._selected_ids = {item.id for item in self._filtered_items()}
+        self._update_batch_bar()
+        if self._page == "list":
+            self._rebuild_cards()
+
+    def _archive_selected_cards(self) -> None:
+        if not self._selected_ids:
+            return
+        ids = list(self._selected_ids)
+        archived = self._archive_scope != "archived"
+        changed = self._store.archive(ids, archived=archived)
+        self.logger.info(
+            "%s %d 条通知", "已归档" if archived else "已取消归档", changed
+        )
+        self._selected_ids.clear()
+        self.refresh_items(self._store.snapshot())
+        self._update_batch_bar()
+
     def _rebuild_cards(self) -> None:
         scrollbar = self._scroll.verticalScrollBar()
         previous = scrollbar.value()
@@ -3481,7 +3839,7 @@ class NotificationWindow(QMainWindow):
             self._add_live_section(live, waits)
         if not filtered and not live:
             empty = EmptyState(
-                bool(self._source_items()),
+                bool(self._items),
                 parent=self._list_host,
                 query=self._query,
             )
@@ -3489,22 +3847,32 @@ class NotificationWindow(QMainWindow):
             empty.reset_filter_requested.connect(self._reset_filters)
             self._list_layout.addWidget(empty, 1)
         else:
-            for index, notification in enumerate(filtered[:MAX_VISIBLE_CARDS]):
-                card = NotificationCard(
-                    notification,
-                    self.logger,
-                    latest=index == 0,
-                    allow_local_paths=self.config.allow_local_paths,
-                    allow_timeline=self._store.persistent,
-                    parent=self._list_host,
-                )
-                card.replay_requested.connect(self.replay_requested.emit)
-                card.ack_requested.connect(self.ack_requested.emit)
-                card.snooze_requested.connect(self.snooze_requested.emit)
-                card.action_requested.connect(self.action_requested.emit)
-                card.timeline_requested.connect(self._open_timeline)
-                self._list_layout.addWidget(card)
-                self._cards.append(card)
+            visible = filtered[:MAX_VISIBLE_CARDS]
+            index = 0
+            show_group_headers = self._group_mode != "none" and bool(visible)
+            for label, group in self._group_notifications(visible):
+                if show_group_headers:
+                    self._add_group_header(label, len(group))
+                for notification in group:
+                    card = NotificationCard(
+                        notification,
+                        self.logger,
+                        latest=index == 0,
+                        allow_local_paths=self.config.allow_local_paths,
+                        allow_timeline=self._store.persistent,
+                        selectable=self._select_mode,
+                        selected=notification.id in self._selected_ids,
+                        parent=self._list_host,
+                    )
+                    card.replay_requested.connect(self.replay_requested.emit)
+                    card.ack_requested.connect(self.ack_requested.emit)
+                    card.snooze_requested.connect(self.snooze_requested.emit)
+                    card.action_requested.connect(self.action_requested.emit)
+                    card.timeline_requested.connect(self._open_timeline)
+                    card.selection_changed.connect(self._on_card_selected)
+                    self._list_layout.addWidget(card)
+                    self._cards.append(card)
+                    index += 1
             self._list_layout.addStretch(1)
             if len(filtered) > MAX_VISIBLE_CARDS:
                 hint = QLabel(
@@ -3555,6 +3923,21 @@ class NotificationWindow(QMainWindow):
         self._source_combo.blockSignals(True)
         self._source_combo.setCurrentIndex(0)
         self._source_combo.blockSignals(False)
+        self._archive_scope = "active"
+        self._archive_scope_combo.blockSignals(True)
+        self._archive_scope_combo.setCurrentIndex(0)
+        self._archive_scope_combo.blockSignals(False)
+        self._group_mode = "date"
+        self._group_combo.blockSignals(True)
+        self._group_combo.setCurrentIndex(0)
+        self._group_combo.blockSignals(False)
+        self._select_mode = False
+        self._selected_ids.clear()
+        self._select_button.blockSignals(True)
+        self._select_button.setChecked(False)
+        self._select_button.blockSignals(False)
+        self._batch_bar.setVisible(False)
+        self._update_batch_bar()
         self._cards_dirty = True
         self._update_counts()
         if self._page != "list":
@@ -3566,7 +3949,12 @@ class NotificationWindow(QMainWindow):
     def refresh_stats(self) -> None:
         if not hasattr(self, "_stat_values"):
             return
-        stats = self._store.stats(days=7)
+        days = 7
+        if hasattr(self, "_stats_range"):
+            days = int(self._stats_range.currentData() or 7)
+        self._stats_subtitle.setText(f"成功率、耗时与近 {days} 天的通知量。")
+        self._stats_chart_title.setText(f"近 {days} 天通知量")
+        stats = self._store.stats(days=days)
         self._stats = stats
         self._stat_values["total"].setText(str(int(stats.get("total") or 0)))
         rate = stats.get("success_rate")
@@ -3607,6 +3995,33 @@ class NotificationWindow(QMainWindow):
             self._stats_hint.setText("历史数据库未启用，仅统计本次运行")
         else:
             self._stats_hint.setText("历史记录已关闭，仅统计本次运行")
+
+    def _export_stats(self) -> None:
+        days = int(self._stats_range.currentData() or 7)
+        items = self._store.export(days=days)
+        if not items:
+            QMessageBox.information(
+                self, "导出统计数据", f"近 {days} 天没有可导出的通知。"
+            )
+            return
+        default_name = f"agentbell-{datetime.now():%Y%m%d}-{days}d.csv"
+        target, _selected = QFileDialog.getSaveFileName(
+            self, "导出通知数据", default_name, "CSV 文件 (*.csv)"
+        )
+        if not target:
+            return
+        path = Path(target)
+        if path.suffix.lower() != ".csv":
+            path = path.with_suffix(".csv")
+        try:
+            path.write_text(build_stats_csv(items), encoding="utf-8-sig")
+        except OSError as exc:
+            QMessageBox.warning(self, "导出失败", f"无法写入文件：{exc}")
+            return
+        self.logger.info("已导出 %d 条通知到 %s", len(items), path)
+        QMessageBox.information(
+            self, "导出完成", f"已导出 {len(items)} 条通知：\n{path}"
+        )
 
     def _build_timeline_dialog(self, notification: Notification) -> RunTimelineDialog:
         events = self._store.run_events(notification.run_id)
@@ -3752,7 +4167,7 @@ class NotificationWindow(QMainWindow):
                 title.setText("还没有扫描到会话")
                 text.setText(
                     "点击右上角「立即扫描」，这里会按项目列出本机 "
-                    "Claude Code 与 Qoder 的会话。"
+                    "Claude Code、Qoder、Codex、Gemini、Grok 与 OpenCode 的会话。"
                 )
             empty.addWidget(title)
             empty.addWidget(text)
@@ -4574,6 +4989,31 @@ QFrame#notificationCard[latest="true"] {
 QFrame#notificationCard[priority="critical"] {
     border-color: #F0B4B4;
 }
+QCheckBox#cardSelect {
+    spacing: 0px;
+}
+QCheckBox#cardSelect::indicator {
+    width: 16px;
+    height: 16px;
+    border: 1px solid #C9D0DB;
+    border-radius: 5px;
+    background-color: #FFFFFF;
+}
+QCheckBox#cardSelect::indicator:hover {
+    border-color: #2F6FF0;
+}
+QCheckBox#cardSelect::indicator:checked {
+    background-color: #2F6FF0;
+    border-color: #2F6FF0;
+}
+QLabel#archiveChip {
+    background-color: #F1F3F7;
+    border-radius: 8px;
+    padding: 1px 8px;
+    color: #7A8290;
+    font-size: 10px;
+    font-weight: 600;
+}
 QLabel#cardTitle {
     font-size: 13px;
     font-weight: 600;
@@ -4775,6 +5215,56 @@ QLabel#listHint {
     color: #9AA1AC;
     padding: 10px;
 }
+QWidget#groupHeader {
+    background: transparent;
+}
+QLabel#groupTitle {
+    font-size: 11px;
+    font-weight: 650;
+    color: #6B7280;
+}
+QLabel#groupCount {
+    background-color: #EEF1F6;
+    border-radius: 7px;
+    padding: 1px 7px;
+    color: #8A919D;
+    font-size: 10px;
+    font-weight: 650;
+}
+QFrame#batchBar {
+    background: transparent;
+}
+QLabel#batchCount {
+    font-size: 11px;
+    color: #4B5563;
+}
+QPushButton#batchAction {
+    background-color: #FFFFFF;
+    border: 1px solid #DDE1E8;
+    border-radius: 8px;
+    color: #4B5563;
+    font-size: 11px;
+    padding: 0px 10px;
+}
+QPushButton#batchAction:hover {
+    background-color: #F5F6FA;
+}
+QPushButton#batchPrimary {
+    background-color: #2F6FF0;
+    border: none;
+    border-radius: 8px;
+    color: #FFFFFF;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 0px 12px;
+}
+QPushButton#batchPrimary:hover {
+    background-color: #1F5FDF;
+}
+QPushButton#batchPrimary:disabled {
+    background-color: #C9D6EE;
+    color: #FFFFFF;
+}
 QFrame#statCard {
     background-color: #FFFFFF;
     border: 1px solid #E6E8EC;
@@ -4969,6 +5459,22 @@ QLabel#sessionAgent[agent="claude"] {
 QLabel#sessionAgent[agent="qoder"] {
     background-color: #EAF2FF;
     color: #2F6FF0;
+}
+QLabel#sessionAgent[agent="codex"] {
+    background-color: #EEF0F3;
+    color: #344054;
+}
+QLabel#sessionAgent[agent="gemini"] {
+    background-color: #EEF0FF;
+    color: #4F5BD5;
+}
+QLabel#sessionAgent[agent="grok"] {
+    background-color: #F2F2F2;
+    color: #111827;
+}
+QLabel#sessionAgent[agent="opencode"] {
+    background-color: #E6F7F4;
+    color: #0F766E;
 }
 QLabel#sessionTitle {
     font-size: 12px;

@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 import agentbell.window_focus as window_focus
+from agentbell.macos_desktop import MacWindow
 from agentbell.window_focus import (
     FocusRequest,
     FocusTarget,
@@ -378,3 +379,165 @@ def test_activate_window_reports_raised_when_focus_is_denied(monkeypatch):
     raised_fake = _fake_activation(monkeypatch, raised=True)
     assert window_focus._activate_window(222) == (False, True)
     assert raised_fake.calls[-1] == "SetWindowPos"
+
+
+def _exercise_macos(monkeypatch):
+    monkeypatch.setattr(window_focus, "_IS_WINDOWS", False)
+    monkeypatch.setattr(window_focus, "_IS_LINUX", False)
+    monkeypatch.setattr(window_focus, "_IS_MACOS", True)
+
+
+def test_find_focus_choices_macos_filters_terminal_apps(monkeypatch):
+    _exercise_macos(monkeypatch)
+    monkeypatch.setattr(window_focus.macos_desktop, "process_table", lambda: {})
+    monkeypatch.setattr(
+        window_focus.macos_desktop,
+        "window_list",
+        lambda: [
+            MacWindow(10, "Terminal", "demo — zsh"),
+            MacWindow(11, "Google Chrome", "demo docs"),
+            MacWindow(12, "iTerm2", "other"),
+        ],
+    )
+
+    choices = find_focus_choices("demo")
+
+    assert [choice.title for choice in choices] == ["demo — zsh"]
+    assert choices[0].pid == 10
+    assert choices[0].executable == "terminal"
+
+
+def test_snapshot_focus_macos_resolves_terminal_ancestor(monkeypatch):
+    _exercise_macos(monkeypatch)
+    table = {
+        13012: (12304, "/bin/zsh"),
+        12304: (
+            100,
+            "/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+        ),
+        100: (1, "/sbin/launchd"),
+    }
+    monkeypatch.setattr(window_focus.macos_desktop, "process_table", lambda: table)
+    monkeypatch.setattr(
+        window_focus.macos_desktop, "window_list", lambda: []
+    )
+
+    choice = window_focus.snapshot_focus(13012)
+
+    assert choice is not None
+    assert choice.pid == 12304
+    assert choice.title == ""
+    target = parse_focus_value(choice.value)
+    assert target == FocusTarget(pid=12304, window_title="", working_dir="")
+    assert window_focus.snapshot_focus(0) is None
+
+
+def test_focus_terminal_macos_activates_resolved_window(monkeypatch):
+    _exercise_macos(monkeypatch)
+    table = {
+        13012: (12304, "/bin/zsh"),
+        12304: (
+            100,
+            "/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+        ),
+    }
+    monkeypatch.setattr(window_focus.macos_desktop, "process_table", lambda: table)
+    monkeypatch.setattr(
+        window_focus.macos_desktop,
+        "window_list",
+        lambda: [MacWindow(12304, "Terminal", "demo — zsh")],
+    )
+    calls = []
+    monkeypatch.setattr(
+        window_focus.macos_desktop,
+        "activate",
+        lambda pid, title="", app_name="": calls.append((pid, title, app_name))
+        or True,
+    )
+
+    value = FocusRequest(
+        pid=13012, window_title="demo — zsh", working_dir="/tmp/demo"
+    ).to_value()
+    result = window_focus.focus_terminal(value)
+
+    assert result.ok is True
+    assert result.message == "demo — zsh"
+    assert calls == [(12304, "demo — zsh", "Terminal")]
+
+
+def test_focus_terminal_macos_reports_accessibility_permission(monkeypatch):
+    _exercise_macos(monkeypatch)
+    table = {
+        13012: (12304, "/bin/zsh"),
+        12304: (
+            100,
+            "/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+        ),
+    }
+    monkeypatch.setattr(window_focus.macos_desktop, "process_table", lambda: table)
+    monkeypatch.setattr(
+        window_focus.macos_desktop,
+        "window_list",
+        lambda: [MacWindow(12304, "Terminal", "demo — zsh")],
+    )
+    monkeypatch.setattr(
+        window_focus.macos_desktop, "activate", lambda *args: False
+    )
+    monkeypatch.setattr(
+        window_focus.macos_desktop, "accessibility_trusted", lambda: False
+    )
+
+    result = window_focus.focus_terminal('{"pid": 13012, "window_title": "demo — zsh"}')
+
+    assert result.ok is False
+    assert "辅助功能" in result.message
+
+
+def test_sender_label_macos_prefers_agent_binary(monkeypatch):
+    _exercise_macos(monkeypatch)
+    table = {
+        13012: (12304, "/usr/local/bin/claude"),
+        12304: (
+            100,
+            "/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+        ),
+        100: (1, "/sbin/launchd"),
+    }
+    monkeypatch.setattr(window_focus.macos_desktop, "process_table", lambda: table)
+
+    assert window_focus.sender_label(13012) == "Claude Code"
+
+
+def test_client_pid_macos_skips_self(monkeypatch):
+    _exercise_macos(monkeypatch)
+    monkeypatch.setattr(
+        window_focus.macos_desktop, "client_pid", lambda local, remote: 13012
+    )
+    assert window_focus.client_pid(8765, 54321) == 13012
+    assert window_focus.client_pid(0, 54321) is None
+
+    monkeypatch.setattr(
+        window_focus.macos_desktop, "client_pid", lambda local, remote: None
+    )
+    assert window_focus.client_pid(8765) is None
+
+
+def test_focus_terminal_wayland_explains_limitation(monkeypatch):
+    from agentbell import linux_desktop
+
+    monkeypatch.setattr(window_focus, "_IS_MACOS", False)
+    monkeypatch.setattr(window_focus, "_IS_LINUX", True)
+    monkeypatch.setattr(linux_desktop, "x11_available", lambda: False)
+    monkeypatch.setattr(linux_desktop, "is_wayland", lambda: True)
+    result = window_focus.focus_terminal(
+        json.dumps(
+            {
+                "pid": 1234,
+                "window_title": "Terminal",
+                "working_dir": "/tmp/demo",
+            }
+        )
+    )
+    assert result.ok is False
+    assert "Wayland" in result.message
+    assert "任务栏" in result.message

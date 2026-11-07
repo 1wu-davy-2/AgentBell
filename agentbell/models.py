@@ -32,10 +32,19 @@ OverlayAnchor = Literal[
 
 STATUSES: tuple[Status, ...] = ("succeeded", "failed", "canceled", "running")
 PRIORITIES: tuple[Priority, ...] = ("low", "normal", "high", "critical")
-ATTENTION_AGENTS: tuple[str, ...] = ("claude", "qoder")
+ATTENTION_AGENTS: tuple[str, ...] = (
+    "claude",
+    "qoder",
+    "codex",
+    "gemini",
+    "grok",
+)
 ATTENTION_AGENT_LABELS: dict[str, str] = {
     "claude": "Claude Code",
     "qoder": "Qoder",
+    "codex": "Codex",
+    "gemini": "Gemini",
+    "grok": "Grok",
 }
 POPUP_MODES: tuple[PopupMode, ...] = ("corner", "center", "overlay")
 POPUP_SKINS: tuple[PopupSkin, ...] = ("midnight", "light", "ocean", "amber")
@@ -329,6 +338,8 @@ class Notification:
     channel_types: tuple[str, ...] = ()
     popup_mode: PopupMode | None = None
     popup_skin: PopupSkin | None = None
+    archived: bool = False
+    archived_at: datetime | None = None
 
     @property
     def effective_updated_at(self) -> datetime:

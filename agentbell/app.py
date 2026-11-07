@@ -14,7 +14,7 @@ import urllib.request
 import uuid
 from collections import deque
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -71,6 +71,15 @@ MAX_INBOX_BATCH = 50
 DIGEST_MIN_DELAY_MS = 1500
 
 
+def pause_deadline(minutes: int, now: datetime) -> datetime | None:
+    if minutes == -1:
+        morning = now.replace(hour=8, minute=0, second=0, microsecond=0)
+        return morning if morning > now else morning + timedelta(days=1)
+    if minutes <= 0:
+        return None
+    return now + timedelta(minutes=int(minutes))
+
+
 class AgentBellApp(QObject):
     server_failed = Signal(str)
     update_checked = Signal(object)
@@ -105,6 +114,7 @@ class AgentBellApp(QObject):
         self._unread = 0
         self._presence = Presence()
         self._deferred: list[tuple[Notification, str]] = []
+        self._pause_until: datetime | None = None
         self._digest_buffer: list[Notification] = []
         self._popup_times: deque[float] = deque()
         self._last_popup_at = 0.0
@@ -156,6 +166,7 @@ class AgentBellApp(QObject):
         )
         self.tray.about_requested.connect(self.open_about)
         self.tray.quit_requested.connect(self.quit)
+        self.tray.pause_requested.connect(self._pause_popups)
         self.center.replay_requested.connect(self._show_recent)
         self.center.quit_requested.connect(self.quit)
         self.center.ack_requested.connect(self._acknowledge)
@@ -196,6 +207,10 @@ class AgentBellApp(QObject):
         self._deferred_timer = QTimer(self)
         self._deferred_timer.setSingleShot(True)
         self._deferred_timer.timeout.connect(self._flush_deferred)
+
+        self._pause_timer = QTimer(self)
+        self._pause_timer.setSingleShot(True)
+        self._pause_timer.timeout.connect(self._end_pause)
 
     def start(self, schedule_center: bool = True) -> None:
         self.tray.show()
@@ -365,6 +380,12 @@ class AgentBellApp(QObject):
             self._show(resolved)
             return
 
+        if self._pause_active():
+            self._deferred.append((resolved, "dnd"))
+            self.logger.info("勿扰模式暂缓提醒 id=%s", resolved.id)
+            self._schedule_deferred_flush()
+            return
+
         now = time.monotonic()
         if self._should_digest(now):
             self._digest_buffer.append(resolved)
@@ -450,6 +471,8 @@ class AgentBellApp(QObject):
         self.logger.info("聚合摘要弹窗：%d 条通知", len(items))
 
     def _suppression_reason(self) -> str:
+        if self._pause_active():
+            return "dnd"
         probe = Notification(
             id="probe",
             title="probe",
@@ -462,10 +485,49 @@ class AgentBellApp(QObject):
     def _hold_locked(self) -> bool:
         return self.config.hold_when_locked and self._presence.locked
 
+    def _pause_active(self, now: datetime | None = None) -> bool:
+        if self._pause_until is None:
+            return False
+        current = now or datetime.now().astimezone()
+        if current >= self._pause_until:
+            self._end_pause()
+            return False
+        return True
+
+    def _pause_popups(self, minutes: int) -> None:
+        now = datetime.now().astimezone()
+        deadline = pause_deadline(minutes, now)
+        if deadline is None:
+            self._end_pause()
+            return
+        self._pause_until = deadline
+        remaining_ms = max(1000, int((deadline - now).total_seconds() * 1000) + 250)
+        self._pause_timer.start(remaining_ms)
+        self.tray.set_pause_until(deadline)
+        self.logger.info(
+            "勿扰模式已开启，恢复时间 %s", deadline.strftime("%m-%d %H:%M")
+        )
+        self._schedule_deferred_flush()
+
+    def _end_pause(self) -> None:
+        if self._pause_until is not None:
+            self.logger.info("勿扰模式已结束，恢复弹窗")
+        self._pause_until = None
+        self._pause_timer.stop()
+        self.tray.set_pause_until(None)
+        if self._deferred and not self._shutting_down:
+            self._schedule_deferred_flush()
+
     def _schedule_deferred_flush(self) -> None:
         if not self._deferred:
             return
         now = datetime.now().astimezone()
+        if self._pause_active(now):
+            remaining = (self._pause_until - now).total_seconds()
+            self._deferred_timer.start(
+                max(1000, int(remaining * 1000) + 1000)
+            )
+            return
         delay_ms = 30000
         reason = self._suppression_reason()
         if reason == "quiet_hours":
@@ -481,6 +543,9 @@ class AgentBellApp(QObject):
         if self._shutting_down or not self._deferred:
             return
         now = datetime.now().astimezone()
+        if self._pause_active(now):
+            self._schedule_deferred_flush()
+            return
         still: list[tuple[Notification, str]] = []
         ready: list[Notification] = []
         for notification, _reason in self._deferred:
@@ -1202,6 +1267,7 @@ class AgentBellApp(QObject):
         self._drain_timer.stop()
         self._digest_timer.stop()
         self._deferred_timer.stop()
+        self._pause_timer.stop()
         for timer in self._escalation_timers.values():
             timer.stop()
             timer.deleteLater()

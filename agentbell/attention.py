@@ -10,10 +10,22 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Sequence
+from urllib.parse import unquote
 
 from PySide6.QtCore import QObject, Signal
 
-from .agent_sessions import default_claude_root, default_qoder_root
+from .agent_sessions import (
+    _any_text,
+    _gemini_entries,
+    _parse_tool_input,
+    _prompt_text,
+    _text_blocks,
+    default_claude_root,
+    default_codex_root,
+    default_gemini_root,
+    default_grok_root,
+    default_qoder_root,
+)
 from .config import AttentionConfig
 from .models import ATTENTION_AGENT_LABELS, WAIT_REASON_LABELS, WaitReason
 
@@ -175,6 +187,136 @@ def _fingerprint(entry: dict) -> str:
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
 
 
+def _wait_codex_entry(entry: dict) -> dict | None:
+    if entry.get("type") != "response_item":
+        return None
+    payload = entry.get("payload")
+    if not isinstance(payload, dict):
+        return None
+    kind = payload.get("type")
+    identifier = payload.get("id") or entry.get("ordinal")
+    if kind == "message":
+        role = payload.get("role")
+        if role not in {"user", "assistant"}:
+            return None
+        blocks = _text_blocks(payload.get("content"))
+        if role == "user":
+            normalized: list[dict] = []
+            for block in blocks:
+                if block.get("type") == "text":
+                    text = _prompt_text(block.get("text") or "")
+                    if text:
+                        normalized.append({"type": "text", "text": text})
+                else:
+                    normalized.append(block)
+            blocks = normalized
+        if not blocks:
+            return None
+        return {
+            "type": role,
+            "uuid": identifier,
+            "message": {"content": blocks},
+        }
+    if kind in {"function_call", "custom_tool_call"}:
+        name = payload.get("name")
+        name = name if isinstance(name, str) and name else "工具"
+        call_id = payload.get("call_id") or payload.get("id")
+        raw = payload.get("arguments")
+        if kind == "custom_tool_call":
+            raw = payload.get("input")
+        return {
+            "type": "assistant",
+            "uuid": call_id or identifier,
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": call_id,
+                        "name": name,
+                        "input": _parse_tool_input(raw),
+                    }
+                ]
+            },
+        }
+    if kind in {"function_call_output", "custom_tool_call_output"}:
+        return {
+            "type": "user",
+            "uuid": payload.get("call_id") or identifier,
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": payload.get("call_id"),
+                        "content": _any_text(payload.get("output")),
+                        "is_error": str(payload.get("status") or "").lower()
+                        in {"error", "failed"},
+                    }
+                ]
+            },
+        }
+    return None
+
+
+def _wait_grok_entries(entry: dict) -> dict | None:
+    kind = entry.get("type")
+    identifier = entry.get("id") or entry.get("ordinal")
+    if kind == "user":
+        blocks: list[dict] = []
+        for block in _text_blocks(entry.get("content")):
+            if block.get("type") == "text":
+                text = _prompt_text(block.get("text") or "")
+                if text:
+                    blocks.append({"type": "text", "text": text})
+            else:
+                blocks.append(block)
+        if not blocks:
+            return None
+        return {
+            "type": "user",
+            "uuid": identifier,
+            "message": {"content": blocks},
+        }
+    if kind == "assistant":
+        blocks = _text_blocks(entry.get("content"))
+        calls = entry.get("tool_calls")
+        if isinstance(calls, list):
+            for call in calls:
+                if not isinstance(call, dict):
+                    continue
+                name = call.get("name")
+                name = name if isinstance(name, str) and name else "工具"
+                blocks.append(
+                    {
+                        "type": "tool_use",
+                        "id": call.get("id"),
+                        "name": name,
+                        "input": _parse_tool_input(call.get("arguments")),
+                    }
+                )
+        if not blocks:
+            return None
+        return {
+            "type": "assistant",
+            "uuid": identifier,
+            "message": {"content": blocks},
+        }
+    if kind == "tool_result":
+        return {
+            "type": "user",
+            "uuid": identifier,
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": entry.get("tool_call_id"),
+                        "content": _any_text(entry.get("content")),
+                    }
+                ]
+            },
+        }
+    return None
+
+
 def detect_wait(entries: Sequence[dict]) -> WaitSignal | None:
     """Infer a waiting-input episode from the tail of a session transcript."""
     conversation = [
@@ -286,21 +428,79 @@ def _read_tail(path: Path, cache: _TailCache) -> tuple[list[dict], bool]:
     return cache.entries, bool(chunk)
 
 
-def _candidate_paths(root: Path) -> list[Path]:
+def _read_full(
+    path: Path, cache: _TailCache, loader
+) -> tuple[list[dict], bool]:
     try:
-        return list(root.glob("*/*.jsonl"))
+        stat = path.stat()
+    except OSError:
+        return cache.entries, False
+    if stat.st_mtime_ns == cache.mtime_ns and stat.st_size == cache.offset:
+        return cache.entries, False
+    try:
+        entries = list(loader(path))
+    except (OSError, ValueError):
+        return cache.entries, False
+    cache.entries = entries[-_MAX_ENTRIES:]
+    cache.offset = stat.st_size
+    cache.mtime_ns = stat.st_mtime_ns
+    return cache.entries, True
+
+
+def _read_agent_entries(
+    agent: str, path: Path, cache: _TailCache
+) -> tuple[list[dict], bool]:
+    if agent == "gemini":
+        return _read_full(path, cache, _gemini_entries)
+    entries, changed = _read_tail(path, cache)
+    if agent not in {"codex", "grok"}:
+        return entries, changed
+    normalizer = _wait_codex_entry if agent == "codex" else _wait_grok_entries
+    normalized = [
+        item for item in (normalizer(entry) for entry in entries) if item is not None
+    ]
+    return normalized, changed
+
+
+_AGENT_GLOBS = {
+    "codex": "*/*/*/rollout-*.jsonl",
+    "gemini": "*/chats/session-*.json*",
+    "grok": "*/*/chat_history.jsonl",
+}
+
+
+def _candidate_paths(agent: str, root: Path) -> list[Path]:
+    pattern = _AGENT_GLOBS.get(agent, "*/*.jsonl")
+    try:
+        iterator = root.rglob(pattern) if agent == "codex" else root.glob(pattern)
+        return [path for path in iterator if path.is_file()]
     except OSError:
         return []
 
 
-def _project_label(session_path: Path) -> str:
-    folder = session_path.parent.name.strip()
-    if len(folder) >= 3 and folder[1:3] == "--" and folder[0].isalpha():
-        rest = folder[3:].replace("-", "\\")
-        parts = [part for part in re.split(r"[\\/]+", rest) if part]
-        if parts:
-            return parts[-1]
-    return folder
+def _session_id(agent: str, path: Path) -> str:
+    if agent == "grok":
+        return path.parent.name
+    return path.stem
+
+
+def _project_label(agent: str, path: Path) -> str:
+    if agent in {"claude", "qoder"}:
+        folder = path.parent.name.strip()
+        if len(folder) >= 3 and folder[1:3] == "--" and folder[0].isalpha():
+            rest = folder[3:].replace("-", "\\")
+            parts = [part for part in re.split(r"[\\/]+", rest) if part]
+            if parts:
+                return parts[-1]
+        return folder
+    if agent == "grok":
+        encoded = path.parents[1].name if len(path.parents) > 1 else ""
+        decoded = unquote(encoded)
+        parts = [part for part in re.split(r"[\\/]+", decoded) if part]
+        return parts[-1] if parts else decoded
+    if agent == "gemini":
+        return path.parents[1].name if len(path.parents) > 1 else ""
+    return ""
 
 
 class AttentionScanner(QObject):
@@ -317,12 +517,18 @@ class AttentionScanner(QObject):
         parent: QObject | None = None,
         claude_root: Path | None = None,
         qoder_root: Path | None = None,
+        codex_root: Path | None = None,
+        gemini_root: Path | None = None,
+        grok_root: Path | None = None,
     ) -> None:
         super().__init__(parent)
         self._config = config
         self._logger = logger
         self._claude_root = claude_root or default_claude_root()
         self._qoder_root = qoder_root or default_qoder_root()
+        self._codex_root = codex_root or default_codex_root()
+        self._gemini_root = gemini_root or default_gemini_root()
+        self._grok_root = grok_root or default_grok_root()
         self._states: dict[str, _SessionState] = {}
         self._stop_event = threading.Event()
         self._wake_event = threading.Event()
@@ -388,18 +594,24 @@ class AttentionScanner(QObject):
         detections: list[WaitDetection] = []
         resolutions: list[WaitResolution] = []
         seen: set[str] = set()
-        roots = (("claude", self._claude_root), ("qoder", self._qoder_root))
+        roots = (
+            ("claude", self._claude_root),
+            ("qoder", self._qoder_root),
+            ("codex", self._codex_root),
+            ("gemini", self._gemini_root),
+            ("grok", self._grok_root),
+        )
         for agent, root in roots:
             if agent not in config.agents:
                 continue
-            for path in _candidate_paths(root):
+            for path in _candidate_paths(agent, root):
                 key = str(path)
                 seen.add(key)
                 state = self._states.get(key)
                 if state is None:
                     state = _SessionState()
                     self._states[key] = state
-                session_id = path.stem
+                session_id = _session_id(agent, path)
                 try:
                     age = wall - path.stat().st_mtime
                 except OSError:
@@ -415,7 +627,7 @@ class AttentionScanner(QObject):
                     state.candidate_count = 0
                     continue
 
-                entries, changed = _read_tail(path, state.cache)
+                entries, changed = _read_agent_entries(agent, path, state.cache)
                 if changed:
                     state.candidate_reason = ""
                     state.candidate_fingerprint = ""
@@ -465,7 +677,7 @@ class AttentionScanner(QObject):
                         agent=agent,
                         session_id=session_id,
                         session_path=key,
-                        project=_project_label(path),
+                        project=_project_label(agent, path),
                         reason=signal.reason,
                         fingerprint=signal.fingerprint,
                         idle_seconds=idle_seconds,

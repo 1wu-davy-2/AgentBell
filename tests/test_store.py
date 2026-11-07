@@ -151,6 +151,45 @@ def test_search_matches_title_summary_source_and_error():
     assert store.search("不存在") == []
 
 
+def test_search_supports_field_filters():
+    store = NotificationStore()
+    first, _ = store.add(
+        make_notification(
+            1,
+            status="failed",
+            source="claude",
+            priority="high",
+            session_id="sess-abc",
+            run_id="run-1",
+        )
+    )
+    store.add(
+        make_notification(
+            2,
+            status="succeeded",
+            source="qoder",
+            priority="normal",
+            session_id="sess-xyz",
+            run_id="run-2",
+        )
+    )
+    store.acknowledge(first.id)
+
+    assert [item.id for item in store.search("status:failed")] == ["id1"]
+    assert [item.id for item in store.search("status:失败")] == ["id1"]
+    assert [item.id for item in store.search("source:CLAUDE")] == ["id1"]
+    assert [item.id for item in store.search("priority:high")] == ["id1"]
+    assert [item.id for item in store.search("session:abc")] == ["id1"]
+    assert [item.id for item in store.search("run:run-2")] == ["id2"]
+    assert [item.id for item in store.search("ack:yes")] == ["id1"]
+    assert [item.id for item in store.search("ack:no")] == ["id2"]
+    assert [item.id for item in store.search("status:failed status:succeeded")] == [
+        "id2",
+        "id1",
+    ]
+    assert [item.id for item in store.search("source:qoder 任务")] == ["id2"]
+
+
 def test_memory_stats():
     store = NotificationStore()
     store.add(
@@ -321,3 +360,31 @@ def test_same_phase_within_five_seconds_appends_once(tmp_path):
         assert [event.kind for event in store.run_events("run-x")] == ["progress"]
     finally:
         store.close()
+
+
+def test_archive_updates_memory_and_persists(tmp_path):
+    store = open_persistent_store(tmp_path)
+    try:
+        first, _ = store.add(make_notification(1))
+        second, _ = store.add(make_notification(2))
+
+        assert store.archive([first.id]) == 1
+        archived = store.find(first.id)
+        assert archived is not None and archived.archived is True
+        assert archived.archived_at is not None
+        assert store.find(second.id).archived is False
+        assert store.archive([first.id]) == 0
+
+        assert store.archive([first.id], archived=False) == 1
+        restored = store.find(first.id)
+        assert restored is not None and restored.archived is False
+        assert restored.archived_at is None
+    finally:
+        store.close()
+
+    reopened = open_persistent_store(tmp_path)
+    try:
+        persisted = reopened.find(first.id)
+        assert persisted is not None and persisted.archived is False
+    finally:
+        reopened.close()

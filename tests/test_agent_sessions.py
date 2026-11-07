@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import time
+import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -160,6 +161,10 @@ def test_scanner_emits_results_on_background_thread(tmp_path):
         logging.getLogger("agentbell.tests"),
         claude_root=claude_root,
         qoder_root=qoder_root,
+        codex_root=tmp_path / "missing-codex",
+        gemini_root=tmp_path / "missing-gemini",
+        grok_root=tmp_path / "missing-grok",
+        opencode_db=tmp_path / "missing-opencode.db",
     )
     received: list[list] = []
     scanner.scanned.connect(received.append, Qt.ConnectionType.DirectConnection)
@@ -395,6 +400,384 @@ def test_parse_transcript_handles_missing_file(tmp_path):
     transcript = parse_session_transcript(session)
     assert transcript.turns == ()
     assert "未找到" in transcript.note
+
+
+def write_codex_session(
+    root: Path, session_id: str, cwd: str, timestamp: str
+) -> Path:
+    folder = root / "2026" / "10" / "30"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"rollout-2026-10-30T08-00-00-{session_id}.jsonl"
+    entries = [
+        {
+            "timestamp": timestamp,
+            "type": "session_meta",
+            "payload": {"session_id": session_id, "cwd": cwd, "timestamp": timestamp},
+        },
+        {
+            "timestamp": timestamp,
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": "<environment_context>\n<cwd>E:\\opt\\demo</cwd>\n"
+                        "</environment_context>",
+                    }
+                ],
+            },
+        },
+        {
+            "timestamp": timestamp,
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "帮我检查 Codex 会话"}],
+            },
+        },
+        {
+            "timestamp": timestamp,
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "我先看一下。"}],
+            },
+        },
+        {
+            "timestamp": timestamp,
+            "type": "response_item",
+            "payload": {
+                "type": "custom_tool_call",
+                "call_id": "c1",
+                "name": "exec",
+                "input": "ls",
+            },
+        },
+        {
+            "timestamp": timestamp,
+            "type": "response_item",
+            "payload": {
+                "type": "custom_tool_call_output",
+                "call_id": "c1",
+                "output": [{"type": "input_text", "text": "a.txt"}],
+            },
+        },
+        {
+            "timestamp": timestamp,
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "继续"}],
+            },
+        },
+    ]
+    return write_transcript(path, entries)
+
+
+def write_gemini_session(
+    root: Path,
+    slug: str,
+    session_id: str,
+    project_path: str,
+    timestamp: str,
+) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    (root.parent / "projects.json").write_text(
+        json.dumps({"projects": {project_path: slug}}),
+        encoding="utf-8",
+    )
+    folder = root / slug / "chats"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"session-2026-10-30T08-00-00-{session_id[:8]}.json"
+    path.write_text(
+        json.dumps(
+            {
+                "sessionId": session_id,
+                "startTime": timestamp,
+                "lastUpdated": timestamp,
+                "messages": [
+                    {
+                        "type": "user",
+                        "timestamp": timestamp,
+                        "content": [
+                            {
+                                "text": "<session_context>\nThis is the Gemini CLI."
+                                "\n</session_context>"
+                            }
+                        ],
+                    },
+                    {
+                        "type": "user",
+                        "timestamp": timestamp,
+                        "content": [{"text": "梳理 Gemini 会话"}],
+                    },
+                    {
+                        "type": "gemini",
+                        "timestamp": timestamp,
+                        "content": "我来梳理。",
+                        "toolCalls": [
+                            {
+                                "id": "g1",
+                                "name": "read_file",
+                                "args": {"path": "a.py"},
+                                "status": "success",
+                                "result": [{"text": "print(1)"}],
+                            }
+                        ],
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def write_grok_session(
+    root: Path,
+    session_id: str,
+    project_path: str,
+    timestamp: str,
+) -> Path:
+    folder_path = root / urllib.parse.quote(project_path, safe="") / session_id
+    folder_path.mkdir(parents=True, exist_ok=True)
+    (folder_path / "summary.json").write_text(
+        json.dumps(
+            {
+                "generated_title": "Grok 会话标题",
+                "num_chat_messages": 4,
+                "git_root_dir": project_path,
+                "created_at": timestamp,
+                "updated_at": timestamp,
+                "last_active_at": timestamp,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return write_transcript(
+        folder_path / "chat_history.jsonl",
+        [
+            {"type": "system", "content": "You are Grok."},
+            {
+                "type": "user",
+                "content": [{"type": "text", "text": "<user_info>OS: windows</user_info>"}],
+            },
+            {
+                "type": "user",
+                "content": [
+                    {"type": "text", "text": "<user_query>\n排查闲置\n</user_query>"}
+                ],
+                "prompt_index": 0,
+            },
+            {
+                "type": "reasoning",
+                "summary": [{"type": "summary_text", "text": "先查引用"}],
+            },
+            {
+                "type": "assistant",
+                "content": "我先查一下。",
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "name": "grep",
+                        "arguments": '{"pattern":"duckdb"}',
+                    }
+                ],
+            },
+            {
+                "type": "tool_result",
+                "tool_call_id": "call-1",
+                "content": "found",
+            },
+        ],
+    )
+
+
+def write_opencode_db(
+    path: Path, session_id: str, project_path: str, title: str, updated_ms: int
+) -> Path:
+    import sqlite3
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(path)
+    connection.execute(
+        "CREATE TABLE session (id text primary key, directory text, title text, "
+        "time_created integer, time_updated integer, time_archived integer)"
+    )
+    connection.execute(
+        "INSERT INTO session VALUES (?, ?, ?, ?, ?, 0)",
+        (session_id, project_path, title, updated_ms, updated_ms),
+    )
+    connection.commit()
+    connection.close()
+    return path
+
+
+def test_scan_sessions_covers_codex_gemini_grok_and_opencode(tmp_path):
+    claude_root = tmp_path / "claude-root"
+    qoder_root = tmp_path / "qoder-root"
+    codex_root = tmp_path / "codex-root"
+    gemini_root = tmp_path / "gemini-root" / "tmp"
+    grok_root = tmp_path / "grok-root"
+    opencode_db = tmp_path / "opencode" / "opencode.db"
+
+    claude_file = write_claude_session(
+        claude_root, "E--opt-demo", "claude-1", "E:\\opt\\demo", "2026-10-01T00:00:00Z"
+    )
+    touch(claude_file, datetime(2026, 10, 1, tzinfo=timezone.utc))
+    write_qoder_session(
+        qoder_root,
+        "E--opt-demo",
+        "qoder-1",
+        "2026-10-01T00:00:00Z",
+        "2026-10-02T00:00:00Z",
+    )
+    codex_file = write_codex_session(
+        codex_root, "codex-1", "E:\\opt\\demo", "2026-10-03T00:00:00Z"
+    )
+    touch(codex_file, datetime(2026, 10, 3, tzinfo=timezone.utc))
+    write_gemini_session(
+        gemini_root,
+        "demo-gemini",
+        "gemini-1",
+        "E:\\opt\\gemini-app",
+        "2026-10-04T00:00:00Z",
+    )
+    write_grok_session(
+        grok_root,
+        "grok-1",
+        "E:\\opt\\argus",
+        "2026-10-05T00:00:00Z",
+    )
+    write_opencode_db(
+        opencode_db,
+        "opencode-1",
+        "E:\\opt\\opencode-app",
+        "OpenCode 会话标题",
+        1_792_000_000_000,
+    )
+
+    sessions = scan_sessions(
+        claude_root,
+        qoder_root,
+        max_sessions=10,
+        codex_root=codex_root,
+        gemini_root=gemini_root,
+        grok_root=grok_root,
+        opencode_db=opencode_db,
+    )
+
+    assert [item.agent for item in sessions] == [
+        "opencode",
+        "grok",
+        "gemini",
+        "codex",
+        "qoder",
+        "claude",
+    ]
+    by_agent = {item.agent: item for item in sessions}
+    assert by_agent["codex"].agent_label == "Codex"
+    assert by_agent["codex"].session_id == "codex-1"
+    assert by_agent["codex"].project == "demo"
+    assert by_agent["codex"].title == "帮我检查 Codex 会话"
+    assert by_agent["gemini"].agent_label == "Gemini CLI"
+    assert by_agent["gemini"].project == "gemini-app"
+    assert by_agent["gemini"].title == "梳理 Gemini 会话"
+    assert by_agent["gemini"].message_count == 3
+    assert by_agent["grok"].agent_label == "Grok"
+    assert by_agent["grok"].project == "argus"
+    assert by_agent["grok"].title == "Grok 会话标题"
+    assert by_agent["grok"].message_count == 4
+    assert by_agent["opencode"].agent_label == "OpenCode"
+    assert by_agent["opencode"].project == "opencode-app"
+    assert by_agent["opencode"].title == "OpenCode 会话标题"
+    assert by_agent["opencode"].folder == "E:\\opt\\opencode-app"
+
+
+def test_parse_transcript_normalizes_codex_gemini_and_grok(tmp_path):
+    codex = AgentSession(
+        agent="codex",
+        session_id="codex-1",
+        project="demo",
+        project_path="E:\\opt\\demo",
+        path=str(
+            write_codex_session(
+                tmp_path / "codex", "codex-1", "E:\\opt\\demo", "2026-10-03T00:00:00Z"
+            )
+        ),
+        updated_at=datetime(2026, 10, 3, tzinfo=timezone.utc),
+    )
+    codex_transcript = parse_session_transcript(codex)
+    assert [turn.prompt for turn in codex_transcript.turns] == [
+        "帮我检查 Codex 会话",
+        "继续",
+    ]
+    assert codex_transcript.turns[0].tool_calls == 1
+    assert codex_transcript.turns[0].items[-1].name == "exec"
+    assert codex_transcript.turns[0].items[-1].text == "a.txt"
+
+    gemini_path = write_gemini_session(
+        tmp_path / "gemini" / "tmp",
+        "demo-gemini",
+        "gemini-1",
+        "E:\\opt\\gemini-app",
+        "2026-10-04T00:00:00Z",
+    )
+    gemini = AgentSession(
+        agent="gemini",
+        session_id="gemini-1",
+        project="gemini-app",
+        project_path="E:\\opt\\gemini-app",
+        path=str(gemini_path),
+        updated_at=datetime(2026, 10, 4, tzinfo=timezone.utc),
+    )
+    gemini_transcript = parse_session_transcript(gemini)
+    assert [turn.prompt for turn in gemini_transcript.turns] == ["梳理 Gemini 会话"]
+    turn = gemini_transcript.turns[0]
+    assert [item.kind for item in turn.items] == ["text", "tool", "result"]
+    assert turn.items[1].name == "read_file"
+    assert turn.items[1].text == "a.py"
+    assert turn.items[2].text == "print(1)"
+
+    grok_path = write_grok_session(
+        tmp_path / "grok", "grok-1", "E:\\opt\\argus", "2026-10-05T00:00:00Z"
+    )
+    grok = AgentSession(
+        agent="grok",
+        session_id="grok-1",
+        project="argus",
+        project_path="E:\\opt\\argus",
+        path=str(grok_path.parent),
+        updated_at=datetime(2026, 10, 5, tzinfo=timezone.utc),
+    )
+    grok_transcript = parse_session_transcript(grok)
+    assert [turn.prompt for turn in grok_transcript.turns] == ["排查闲置"]
+    items = grok_transcript.turns[0].items
+    assert [item.kind for item in items] == ["thinking", "text", "tool", "result"]
+    assert items[2].name == "grep"
+    assert items[2].text == "duckdb"
+    assert items[3].text == "found"
+
+
+def test_opencode_transcript_is_metadata_only(tmp_path):
+    session = AgentSession(
+        agent="opencode",
+        session_id="opencode-1",
+        project="opencode-app",
+        project_path="E:\\opt\\opencode-app",
+        path="",
+        updated_at=datetime(2026, 10, 6, tzinfo=timezone.utc),
+        title="OpenCode 会话标题",
+    )
+    transcript = parse_session_transcript(session)
+    assert transcript.turns == ()
+    assert "数据库" in transcript.note
 
 
 def test_qoder_scan_prefers_jsonl_and_reads_titles(tmp_path):

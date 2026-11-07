@@ -611,7 +611,11 @@ class ToolchainService:
                 break
         if not latest:
             raise ToolchainError("无法从 nodejs.org 解析最新 LTS 版本")
-        target = platform_name or ("windows" if os.name == "nt" else "linux")
+        target = platform_name or (
+            "windows"
+            if os.name == "nt"
+            else ("darwin" if sys.platform == "darwin" else "linux")
+        )
         extension = ".zip" if target == "windows" else ".tar.xz"
         platform_arch = arch or _node_arch(target)
         filename = f"node-{latest}-{platform_arch}{extension}"
@@ -629,8 +633,12 @@ class ToolchainService:
 
     def install_node(self, progress: ProgressCallback | None = None) -> str:
         report = progress or _noop
-        if os.name != "nt" and not sys.platform.startswith("linux"):
-            raise ToolchainError("便携 Node 目前仅支持 Windows 和 Linux")
+        if (
+            os.name != "nt"
+            and not sys.platform.startswith("linux")
+            and sys.platform != "darwin"
+        ):
+            raise ToolchainError("便携 Node 目前仅支持 Windows、Linux 和 macOS")
         version, archive_url, shasums_url = self.resolve_node_release()
         report(Progress(f"准备下载 Node {version}", 0))
         with tempfile.TemporaryDirectory(dir=str(self._temp_root())) as temp:
@@ -997,12 +1005,13 @@ def _windows_arch() -> str:
 
 
 def _node_arch(platform_name: str) -> str:
-    if platform_name == "windows":
-        return _windows_arch()
     machine = platform.machine().lower()
-    if machine in {"arm64", "aarch64"}:
-        return "linux-arm64"
-    return "linux-x64"
+    arm = machine in {"arm64", "aarch64"}
+    if platform_name == "windows":
+        return "win-arm64" if arm else "win-x64"
+    if platform_name == "darwin":
+        return "darwin-arm64" if arm else "darwin-x64"
+    return "linux-arm64" if arm else "linux-x64"
 
 
 def _human_size(size: int) -> str:

@@ -14,6 +14,7 @@ from .models import (
     RunEvent,
     duration_to_seconds,
 )
+from .search_query import SearchQuery, parse_search
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS notifications (
@@ -46,7 +47,9 @@ CREATE TABLE IF NOT EXISTS notifications (
     auto_close_seconds INTEGER,
     expires_at TEXT,
     rule_name TEXT NOT NULL DEFAULT '',
-    channel_types TEXT NOT NULL DEFAULT '[]'
+    channel_types TEXT NOT NULL DEFAULT '[]',
+    archived INTEGER NOT NULL DEFAULT 0,
+    archived_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_notifications_received
     ON notifications(received_at DESC);
@@ -79,6 +82,8 @@ _EXTRA_COLUMNS = (
     ("wait_source", "TEXT NOT NULL DEFAULT ''"),
     ("session_id", "TEXT"),
     ("run_id", "TEXT"),
+    ("archived", "INTEGER NOT NULL DEFAULT 0"),
+    ("archived_at", "TEXT"),
 )
 
 _EXTRA_INDEXES = """
@@ -86,6 +91,8 @@ CREATE INDEX IF NOT EXISTS idx_notifications_needs_input
     ON notifications(needs_input);
 CREATE INDEX IF NOT EXISTS idx_notifications_run
     ON notifications(run_id);
+CREATE INDEX IF NOT EXISTS idx_notifications_archived
+    ON notifications(archived);
 """
 
 _COLUMNS = (
@@ -94,12 +101,12 @@ _COLUMNS = (
     "wait_reason, wait_source, session_id, run_id, require_ack, "
     "silent, acknowledged, acknowledged_at, occurrence_count, progress, "
     "actions, bypass_quiet_hours, auto_close_seconds, expires_at, rule_name, "
-    "channel_types"
+    "channel_types, archived, archived_at"
 )
 
 _UPSERT = f"""
 INSERT INTO notifications ({_COLUMNS})
-VALUES ({", ".join("?" for _ in range(30))})
+VALUES ({", ".join("?" for _ in range(32))})
 ON CONFLICT(id) DO UPDATE SET
     title = excluded.title,
     status = excluded.status,
@@ -129,7 +136,9 @@ ON CONFLICT(id) DO UPDATE SET
     auto_close_seconds = excluded.auto_close_seconds,
     expires_at = excluded.expires_at,
     rule_name = excluded.rule_name,
-    channel_types = excluded.channel_types
+    channel_types = excluded.channel_types,
+    archived = excluded.archived,
+    archived_at = excluded.archived_at
 """
 
 
@@ -248,6 +257,8 @@ def _row_values(notification: Notification) -> tuple[object, ...]:
         _iso(notification.expires_at),
         notification.rule_name,
         json.dumps(list(notification.channel_types), ensure_ascii=False),
+        int(notification.archived),
+        _iso(notification.archived_at),
     )
 
 
@@ -299,6 +310,8 @@ def _row_to_notification(row: sqlite3.Row) -> Notification:
         expires_at=_parse_dt(row["expires_at"]),
         rule_name=row["rule_name"] or "",
         channel_types=_channels_from_json(row["channel_types"]),
+        archived=bool(row["archived"]),
+        archived_at=_parse_dt(row["archived_at"]),
     )
 
 
@@ -347,6 +360,25 @@ class NotificationStorage:
                 ).fetchall()
             except sqlite3.Error as exc:
                 self._logger.warning("读取通知历史失败：%s", exc)
+                return []
+        return [_row_to_notification(row) for row in rows]
+
+    def export_notifications(
+        self, days: int = 7, limit: int = 10000
+    ) -> list[Notification]:
+        since = (
+            datetime.now().astimezone() - timedelta(days=max(1, days))
+        ).date().isoformat()
+        with self._lock:
+            try:
+                rows = self._connection.execute(
+                    "SELECT * FROM notifications "
+                    "WHERE substr(received_at, 1, 10) >= ? "
+                    "ORDER BY received_at DESC, rowid DESC LIMIT ?",
+                    (since, int(limit)),
+                ).fetchall()
+            except sqlite3.Error as exc:
+                self._logger.warning("导出通知历史失败：%s", exc)
                 return []
         return [_row_to_notification(row) for row in rows]
 
@@ -439,20 +471,71 @@ class NotificationStorage:
         events.reverse()
         return events
 
-    def search(self, query: str, limit: int = 200) -> list[Notification]:
-        text = (query or "").strip()
-        if not text:
+    def search(
+        self, query: str | SearchQuery, limit: int = 200
+    ) -> list[Notification]:
+        spec = query if isinstance(query, SearchQuery) else parse_search(query)
+        if not spec.has_filters:
             return self.load_recent(limit)
-        pattern = text.lower()
+        clauses: list[str] = []
+        params: list[object] = []
+        if spec.status:
+            clauses.append(
+                f"status IN ({', '.join('?' for _ in spec.status)})"
+            )
+            params.extend(spec.status)
+        if spec.priority:
+            clauses.append(
+                f"priority IN ({', '.join('?' for _ in spec.priority)})"
+            )
+            params.extend(spec.priority)
+        if spec.source:
+            clauses.append(
+                "("
+                + " OR ".join(
+                    "instr(lower(source), ?) > 0" for _ in spec.source
+                )
+                + ")"
+            )
+            params.extend(spec.source)
+        if spec.session:
+            clauses.append(
+                "("
+                + " OR ".join(
+                    "instr(lower(IFNULL(session_id, '')), ?) > 0"
+                    for _ in spec.session
+                )
+                + ")"
+            )
+            params.extend(spec.session)
+        if spec.run:
+            clauses.append(
+                "("
+                + " OR ".join(
+                    "instr(lower(IFNULL(run_id, '')), ?) > 0" for _ in spec.run
+                )
+                + ")"
+            )
+            params.extend(spec.run)
+        if spec.acknowledged is not None:
+            clauses.append("acknowledged = ?")
+            params.append(1 if spec.acknowledged else 0)
+        if spec.text:
+            pattern = spec.text.casefold()
+            clauses.append(
+                "(instr(lower(title), ?) > 0 OR instr(lower(summary), ?) > 0 "
+                "OR instr(lower(IFNULL(error, '')), ?) > 0 "
+                "OR instr(lower(source), ?) > 0)"
+            )
+            params.extend((pattern, pattern, pattern, pattern))
+        params.append(int(limit))
         with self._lock:
             try:
                 rows = self._connection.execute(
                     "SELECT * FROM notifications WHERE "
-                    "instr(lower(title), ?) > 0 OR instr(lower(summary), ?) > 0 "
-                    "OR instr(lower(IFNULL(error, '')), ?) > 0 "
-                    "OR instr(lower(source), ?) > 0 "
-                    "ORDER BY received_at DESC, rowid DESC LIMIT ?",
-                    (pattern, pattern, pattern, pattern, int(limit)),
+                    + " AND ".join(clauses)
+                    + " ORDER BY received_at DESC, rowid DESC LIMIT ?",
+                    params,
                 ).fetchall()
             except sqlite3.Error as exc:
                 self._logger.warning("搜索通知历史失败：%s", exc)
@@ -556,6 +639,25 @@ class NotificationStorage:
                 self._connection.commit()
             except sqlite3.Error as exc:
                 self._logger.warning("删除通知历史失败 id=%s：%s", notification_id, exc)
+
+    def set_archived(self, notification_ids: list[str], archived: bool = True) -> int:
+        ids = [item for item in notification_ids if item]
+        if not ids:
+            return 0
+        placeholders = ", ".join("?" for _ in ids)
+        stamp = _iso(datetime.now().astimezone()) if archived else None
+        with self._lock:
+            try:
+                cursor = self._connection.execute(
+                    f"UPDATE notifications SET archived = ?, archived_at = ? "
+                    f"WHERE id IN ({placeholders}) AND archived != ?",
+                    (int(archived), stamp, *ids, int(archived)),
+                )
+                self._connection.commit()
+                return max(0, cursor.rowcount)
+            except sqlite3.Error as exc:
+                self._logger.warning("更新归档状态失败：%s", exc)
+                return 0
 
     def prune(self, limit: int) -> None:
         with self._lock:

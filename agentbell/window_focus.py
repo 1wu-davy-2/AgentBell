@@ -7,8 +7,11 @@ import sys
 from dataclasses import dataclass
 from ctypes import wintypes
 
+from . import macos_desktop
+
 _IS_WINDOWS = os.name == "nt"
 _IS_LINUX = sys.platform.startswith("linux")
+_IS_MACOS = sys.platform == "darwin"
 
 _SW_SHOW = 5
 _SW_RESTORE = 9
@@ -171,6 +174,58 @@ _LINUX_GENERIC_LABELS = {
     "Xterm",
     "Bash",
     "Zsh",
+}
+
+_MAC_TERMINAL_EXES = {
+    "terminal",
+    "iterm",
+    "iterm2",
+    "warp",
+    "kitty",
+    "alacritty",
+    "wezterm",
+    "ghostty",
+    "hyper",
+    "tabby",
+    "visual studio code",
+    "code",
+    "code - insiders",
+    "vscode",
+    "qoder",
+    "cursor",
+    "windsurf",
+    "trae",
+}
+_MAC_APP_LABELS = {
+    "terminal": "Terminal",
+    "iterm": "iTerm2",
+    "iterm2": "iTerm2",
+    "warp": "Warp",
+    "kitty": "kitty",
+    "alacritty": "Alacritty",
+    "wezterm": "WezTerm",
+    "ghostty": "Ghostty",
+    "hyper": "Hyper",
+    "tabby": "Tabby",
+    "visual studio code": "VS Code",
+    "code": "VS Code",
+    "code - insiders": "VS Code",
+    "vscode": "VS Code",
+    "qoder": "Qoder",
+    "cursor": "Cursor",
+    "windsurf": "Windsurf",
+    "trae": "Trae",
+}
+_MAC_GENERIC_LABELS = {
+    "Terminal",
+    "iTerm2",
+    "Warp",
+    "kitty",
+    "Alacritty",
+    "WezTerm",
+    "Ghostty",
+    "Hyper",
+    "Tabby",
 }
 
 if _IS_WINDOWS:  # pragma: no branch - platform dependent
@@ -465,6 +520,7 @@ def _terminal_like(window: _WindowInfo) -> bool:
     return (
         window.exe in _TERMINAL_EXES
         or window.exe in _LINUX_TERMINAL_EXES
+        or window.exe in _MAC_TERMINAL_EXES
         or window.class_name in _TERMINAL_CLASSES
         or window.class_name in _LINUX_TERMINAL_CLASSES
         or "console" in window.class_name.lower()
@@ -491,6 +547,39 @@ def _linux_windows(table: dict[int, tuple[int, str]]) -> list[_WindowInfo]:
         for window in raw_windows
         if window.pid > 0
     ]
+
+
+def _mac_windows(table: dict[int, tuple[int, str]]) -> list[_WindowInfo]:
+    try:
+        raw_windows = macos_desktop.window_list()
+    except Exception:
+        return []
+    own_pid = os.getpid()
+    return [
+        _WindowInfo(
+            handle=window.pid,
+            pid=window.pid,
+            title=window.title,
+            class_name=window.app,
+            exe=window.app.lower(),
+        )
+        for window in raw_windows
+        if window.pid > 0 and window.pid != own_pid
+    ]
+
+
+def _mac_window_label(window: _WindowInfo) -> str:
+    return _MAC_APP_LABELS.get(window.exe, "")
+
+
+def _mac_terminal_ancestor(
+    pid: int, table: dict[int, tuple[int, str]]
+) -> tuple[int, str] | None:
+    for candidate in macos_desktop.process_ancestors(pid, table):
+        label = macos_desktop.app_label(table.get(candidate, (0, ""))[1])
+        if label and macos_desktop.is_terminal_app(label):
+            return candidate, label
+    return None
 
 
 def _focus_choices(
@@ -530,6 +619,12 @@ def find_focus_choices(query: str, limit: int = 8) -> list[FocusChoice]:
     query = " ".join((query or "").split())
     if not query:
         return []
+    if _IS_MACOS:
+        try:
+            table = macos_desktop.process_table()
+            return _focus_choices(_mac_windows(table), query, limit)
+        except Exception:
+            return []
     if _IS_LINUX:
         try:
             from . import linux_desktop
@@ -546,7 +641,24 @@ def find_focus_choices(query: str, limit: int = 8) -> list[FocusChoice]:
 
 
 def _resolve_window(target: FocusTarget) -> _WindowInfo | None:
-    if _IS_LINUX:
+    anchor: tuple[int, str] | None = None
+    if _IS_MACOS:
+        try:
+            table = macos_desktop.process_table()
+        except Exception:
+            table = {}
+        if target.pid is not None:
+            anchor = _mac_terminal_ancestor(target.pid, table)
+            if anchor is not None and not target.window_title:
+                return _WindowInfo(
+                    handle=anchor[0],
+                    pid=anchor[0],
+                    title="",
+                    class_name=anchor[1],
+                    exe=anchor[1].lower(),
+                )
+        windows = _mac_windows(table)
+    elif _IS_LINUX:
         try:
             from . import linux_desktop
 
@@ -592,12 +704,41 @@ def _resolve_window(target: FocusTarget) -> _WindowInfo | None:
             return exact[0]
         if len(matches) == 1:
             return matches[0]
+
+    if _IS_MACOS and anchor is not None:
+        anchor_pid, anchor_label = anchor
+        label_windows = [
+            window for window in windows if _mac_window_label(window) == anchor_label
+        ]
+        if target.window_title:
+            needle = target.window_title.casefold()
+            titled = [
+                window
+                for window in label_windows
+                if needle in window.title.casefold()
+            ]
+            if titled:
+                return titled[0]
+        if label_windows:
+            return label_windows[0]
+        if not windows:
+            return _WindowInfo(
+                handle=anchor_pid,
+                pid=anchor_pid,
+                title="",
+                class_name=anchor_label,
+                exe=anchor_label.lower(),
+            )
     return None
 
 
 def snapshot_focus(pid: int) -> FocusChoice | None:
     """Resolve the host window now so it survives the agent process exiting."""
-    if not (_IS_WINDOWS or _IS_LINUX) or not isinstance(pid, int) or pid <= 0:
+    if (
+        not (_IS_WINDOWS or _IS_LINUX or _IS_MACOS)
+        or not isinstance(pid, int)
+        or pid <= 0
+    ):
         return None
     window = _resolve_window(
         FocusTarget(pid=pid, window_title="", working_dir="")
@@ -634,11 +775,19 @@ def _select_owner_pid(
 
 
 def client_pid(local_port: int, remote_port: int | None = None) -> int | None:
-    """Resolve the process that owns a local TCP client socket (Windows/Linux).
+    """Resolve the process that owns a local TCP client socket.
 
     Notifications that omit ``origin`` still arrive on a socket owned by the
     sender, so this is used as a best-effort fallback for the focus action.
     """
+    if _IS_MACOS:
+        if not isinstance(local_port, int) or local_port <= 0:
+            return None
+        try:
+            pid = macos_desktop.client_pid(local_port, remote_port)
+        except Exception:
+            return None
+        return pid if pid and pid != os.getpid() else None
     if _IS_LINUX:
         if not isinstance(local_port, int) or local_port <= 0:
             return None
@@ -714,8 +863,27 @@ def _linux_sender_label(pid: int) -> str:
     return fallback[:32]
 
 
+def _mac_sender_label(pid: int) -> str:
+    try:
+        table = macos_desktop.process_table()
+    except Exception:
+        return ""
+    fallback = ""
+    for candidate in macos_desktop.process_ancestors(pid, table):
+        comm = table.get(candidate, (0, ""))[1]
+        label = macos_desktop.app_label(comm)
+        if label and label not in _MAC_GENERIC_LABELS:
+            return label
+        fallback = fallback or label
+    return fallback[:32]
+
+
 def sender_label(pid: int) -> str:
     """Best-effort agent/app name for the process that sent a notification."""
+    if _IS_MACOS:
+        if not isinstance(pid, int) or pid <= 0:
+            return ""
+        return _mac_sender_label(pid)
     if _IS_LINUX:
         if not isinstance(pid, int) or pid <= 0:
             return ""
@@ -825,10 +993,14 @@ def _focus_terminal_linux(target: FocusTarget) -> FocusResult:
     except Exception:
         return FocusResult(False, "Linux 桌面组件不可用", target.working_dir)
     if not linux_desktop.x11_available():
+        if linux_desktop.is_wayland():
+            return FocusResult(
+                False,
+                "Wayland 不允许应用主动切换窗口焦点；请从任务栏切换到终端",
+                target.working_dir,
+            )
         return FocusResult(
-            False,
-            "回到终端需要 X11 会话；Wayland 暂不支持",
-            target.working_dir,
+            False, "回到终端需要 X11 会话", target.working_dir
         )
     window = _resolve_window(target)
     if window is None:
@@ -838,14 +1010,32 @@ def _focus_terminal_linux(target: FocusTarget) -> FocusResult:
     return FocusResult(False, "终端窗口无法切到前台", target.working_dir)
 
 
+def _focus_terminal_macos(target: FocusTarget) -> FocusResult:
+    window = _resolve_window(target)
+    if window is None:
+        return FocusResult(False, "未找到对应的终端窗口，可能已经关闭", target.working_dir)
+    label = _mac_window_label(window) or window.class_name or window.exe
+    if macos_desktop.activate(window.pid, window.title, label):
+        return FocusResult(True, window.title or label, target.working_dir)
+    message = "终端窗口无法切到前台"
+    if macos_desktop.accessibility_trusted() is False:
+        message = (
+            "回到终端需要辅助功能权限，请在「系统设置 → 隐私与安全性 → "
+            "辅助功能」中允许 AgentBell"
+        )
+    return FocusResult(False, message, target.working_dir)
+
+
 def focus_terminal(raw: str) -> FocusResult:
     target = parse_focus_value(raw)
     if target is None:
         return FocusResult(False, "回到终端的参数无效")
+    if _IS_MACOS:
+        return _focus_terminal_macos(target)
     if _IS_LINUX:
         return _focus_terminal_linux(target)
     if not _IS_WINDOWS:
-        return FocusResult(False, "回到终端仅支持 Windows 或 Linux X11", target.working_dir)
+        return FocusResult(False, "当前系统不支持回到终端", target.working_dir)
 
     window = _resolve_window(target)
     if window is None:

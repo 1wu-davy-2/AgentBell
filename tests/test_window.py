@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+import io
 import logging
 import os
 import time
@@ -28,6 +30,7 @@ from agentbell.ui.window import (
     LaunchRecordCard,
     NotificationCard,
     NotificationWindow,
+    build_stats_csv,
     format_received_at,
     format_seconds,
 )
@@ -740,6 +743,71 @@ def test_stats_page_reflects_store_totals(window_factory):
     window.set_filter("failed")
     assert window._page == "list"
     assert not window._stats_button.isChecked()
+
+
+def test_stats_range_switches_window_and_labels(window_factory):
+    store = NotificationStore()
+    store.add(make_notification(1))
+    window = window_factory(store)
+    window.set_page("stats")
+    assert window._stats_range.currentData() == 7
+    assert window._stats_chart_title.text() == "近 7 天通知量"
+
+    window._stats_range.setCurrentIndex(1)
+    assert window._stats_subtitle.text() == "成功率、耗时与近 30 天的通知量。"
+    assert window._stats_chart_title.text() == "近 30 天通知量"
+
+    window._stats_range.setCurrentIndex(2)
+    assert window._stats_chart_title.text() == "近 90 天通知量"
+
+
+def test_build_stats_csv_escapes_and_labels():
+    item = make_notification(
+        1,
+        title='含,逗号与"引号',
+        summary="第一行\n第二行",
+        status="failed",
+        error="boom",
+        source="claude",
+        session_id="session-1",
+        run_id="run-2",
+        require_ack=True,
+    )
+    rows = list(csv.reader(io.StringIO(build_stats_csv([item]))))
+    assert rows[0][:5] == ["接收时间", "更新时间", "标题", "状态", "优先级"]
+    assert rows[1][2] == '含,逗号与"引号'
+    assert rows[1][3] == "失败"
+    assert rows[1][4] == "普通"
+    assert rows[1][6] == "第一行\n第二行"
+    assert rows[1][8] == "boom"
+    assert rows[1][9] == "session-1"
+    assert rows[1][10] == "run-2"
+    assert rows[1][11] == "是"
+
+
+def test_export_stats_writes_utf8_csv(window_factory, tmp_path, monkeypatch):
+    store = NotificationStore()
+    store.add(make_notification(1))
+    window = window_factory(store)
+    target = tmp_path / "stats.csv"
+    monkeypatch.setattr(
+        "agentbell.ui.window.QFileDialog.getSaveFileName",
+        staticmethod(lambda *args, **kwargs: (str(target), "CSV 文件 (*.csv)")),
+    )
+    messages: list[str] = []
+    monkeypatch.setattr(
+        "agentbell.ui.window.QMessageBox.information",
+        staticmethod(
+            lambda parent, title, text, *args, **kwargs: messages.append(text)
+        ),
+    )
+
+    window._export_stats()
+
+    assert target.exists()
+    text = target.read_text(encoding="utf-8-sig")
+    assert "任务 1" in text
+    assert messages and "已导出 1 条通知" in messages[0]
 
 
 def make_session(
@@ -1616,3 +1684,65 @@ def test_stats_page_shows_run_metrics(tmp_path, window_factory):
     assert window._run_stat_values["p90"].text() != "—"
     assert window._run_stat_values["waiting"].text() == "30 秒"
     store.close()
+
+
+def test_archive_scope_and_bulk_unarchive(window_factory):
+    store = NotificationStore()
+    first, _ = store.add(make_notification(1))
+    store.add(make_notification(2))
+    store.archive([first.id])
+
+    window = window_factory(store)
+    window.refresh_items(store.snapshot())
+
+    assert [card.notification.id for card in window._cards] == ["id0002"]
+    assert window._archive_scope_combo.itemText(0) == "未归档 1"
+    assert window._archive_scope_combo.itemText(1) == "已归档 1"
+    assert window._archive_scope_combo.itemText(2) == "全部 2"
+
+    window._archive_scope_combo.setCurrentIndex(1)
+    assert [card.notification.id for card in window._cards] == ["id0001"]
+    assert window._cards[0].notification.archived is True
+
+    window._select_button.setChecked(True)
+    assert window._cards[0].select_box is not None
+    window._batch_select_all.click()
+    assert window._batch_label.text() == "已选 1 条"
+    assert window._batch_archive.text() == "取消归档"
+
+    window._batch_archive.click()
+    assert store.find(first.id).archived is False
+    assert window._cards == []
+
+
+def test_notification_grouping_modes(window_factory):
+    now = datetime.now().astimezone()
+    store = NotificationStore()
+    store.add(
+        make_notification(
+            2,
+            source="qoder",
+            received_at=now - timedelta(days=2),
+            updated_at=now - timedelta(days=2),
+        )
+    )
+    store.add(
+        make_notification(
+            1, source="claude", received_at=now, updated_at=now
+        )
+    )
+    window = window_factory(store)
+    window.refresh_items(store.snapshot())
+
+    groups = window._group_notifications(store.snapshot())
+    assert [label for label, _ in groups] == ["今天", "2 天前"]
+
+    window._group_combo.setCurrentIndex(1)
+    groups = window._group_notifications(store.snapshot())
+    assert [label for label, _ in groups] == ["claude", "qoder"]
+
+    window._group_combo.setCurrentIndex(2)
+    groups = window._group_notifications(store.snapshot())
+    assert len(groups) == 1
+    assert groups[0][0] == ""
+    assert len(groups[0][1]) == 2

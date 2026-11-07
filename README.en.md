@@ -31,12 +31,16 @@ AgentBell does one thing well: **tell you the moment a round ends, and let you g
 - **Walk away**: do something else while the agent works. One ring and one card when it finishes.
 - **Close the loop**: a notification can focus the terminal (`origin.pid`), open the local session record or run timeline, retry a failed task, or remind you later. Read-only actions never approve permissions or continue an agent.
 - **Stay quiet**: quiet hours, fullscreen/meeting suppression, lock-screen holding, digest, and success-only-in-center are all configurable.
-- **Route by rules**: match on wait reason, `needs_input`, run duration, and project glob, then override priority, silence, acknowledgement, auto-close, popup, and extra channels. Later matching rules win on scalar fields, and changes apply as soon as settings are saved.
+- **Route by rules**: match on wait reason, `needs_input`, run duration, and project glob, then override priority, silence, acknowledgement, auto-close, popup, and extra channels. Later matching rules win on scalar fields, and changes apply as soon as settings are saved; **Test run** shows which rule matches a sample notification and the resulting fields.
+- **Find anything**: search supports `status:` / `source:` / `priority:` / `session:` / `run:` / `ack:` field filters; statistics offer 7/30/90-day ranges with CSV export, and notifications can be batch-archived and grouped by date or source.
+- **Read session records**: read-only scanning covers Claude Code, Qoder, Codex, Gemini, Grok session files and OpenCode's database, with a full reader, in-session search, copy, and Markdown export.
+- **Stay quiet**: quiet hours, fullscreen/meeting suppression, lock-screen holding, digest, success-only-in-center, and tray **Do Not Disturb** for 30 minutes, 1 hour, or until tomorrow are all configurable.
 - **Local first**: loopback-only HTTP, on-device SQLite history, read-only session parsing, no cloud.
 - **Stay small**: no agent orchestration, no workflow changes, no web UI. It waits in the tray and rings when it should.
 
 ## Recent updates
 
+- **v2.19.0**: Four new session sources (Codex, Gemini, Grok, and OpenCode's read-only database); waiting inference now also covers Codex, Gemini, and Grok. Search gains `status:` / `source:` field filters, statistics gain 7/30/90-day ranges and CSV export, and notifications can be batch-archived and grouped by date or source. The tray adds quick Do Not Disturb, and rules gain a test run. Platform parity brings macOS global hotkeys, back-to-terminal, presence inference, portable Node, and in-place zip updates; Wayland registers hotkeys through the XDG GlobalShortcuts portal. CI now supports Windows Authenticode and macOS Developer ID signing plus Apple notarization.
 - **v2.18.2**: Fixes the release checksums. The Windows x64 and arm64 packaging jobs both wrote `SHA256SUMS.txt`, so the merged file dropped the arm64 executables; each architecture now writes `SHA256SUMS-windows-<arch>.txt` and all 16 assets are covered. Behavior matches 2.18.1.
 - **v2.18.1**: Fixes arm64 CI tests. The updater and asset-selection tests assumed the x64 host architecture and failed on Windows, Linux, and macOS arm64 runners; they now pass `machine` explicitly and no longer depend on the build host. The time-formatting test also checks the local-time conversion across DST. Behavior matches 2.18.0, which was never published because its arm64 tests failed.
 - **v2.18.0**: Windows arm64 and macOS builds. Windows now ships `AgentBell.exe` (x64) plus `AgentBell-arm64.exe` for Arm64 devices; the updater picks the asset that matches the running architecture and never swaps x64 and arm64 binaries. macOS 14+ gets native `.dmg` and `.zip` builds for Apple Silicon and Intel, signed ad-hoc for local use. The packaged macOS app keeps config, logs, and the database in `~/Library/Application Support/AgentBell` and registers a LaunchAgent. macOS supports cards, the notification center, history, audio, and hooks, but not global hotkeys, focus-terminal, fullscreen/meeting/idle detection, the portable runtime, or in-place updates; install a new `.dmg`/`.zip` manually. Linux gained audio playback and a native port-conflict hint.
@@ -70,7 +74,7 @@ AgentBell does one thing well: **tell you the moment a round ends, and let you g
 
 ## Install
 
-**Requirements**: Windows 10/11 (x64 / arm64), macOS 14 or later (Apple Silicon / Intel), or a Linux desktop with X11 (x64 / arm64). Windows has the full feature set. macOS supports cards, the notification center, history, search, statistics, audio, and reminder hooks, but not global hotkeys, back-to-terminal, fullscreen/meeting/idle/lock detection, the portable runtime manager, or in-place updates. Linux X11 supports the tray, global hotkeys, fullscreen/meeting detection, focus-terminal, and terminal launch. On Wayland, global hotkeys, window focus, and foreground detection are disabled; popups, the notification center, hooks, the runtime manager, and the tray remain available.
+**Requirements**: Windows 10/11 (x64 / arm64), macOS 14 or later (Apple Silicon / Intel), or a Linux desktop with X11 / Wayland (x64 / arm64). Windows and macOS provide the full feature set: global hotkeys, back-to-terminal, idle/fullscreen/meeting/lock inference, terminal launch, the portable runtime, and in-place updates. Linux X11 matches those desktop capabilities; on Wayland, global hotkeys are registered through the XDG GlobalShortcuts portal, but the system does not allow apps to raise other windows, so focus-related entries explain the limitation. Popups, the notification center, hooks, the runtime manager, and the tray remain available.
 
 ### Download (recommended)
 
@@ -83,10 +87,11 @@ AgentBell does one thing well: **tell you the moment a round ends, and let you g
 
 1. Open [Releases](https://github.com/1wu-davy-2/AgentBell/releases/latest): Intel downloads `AgentBell-macos-x64.dmg`, Apple Silicon downloads `AgentBell-macos-arm64.dmg`; matching `.zip` archives are also available.
 2. Open the dmg and drag `AgentBell.app` into **Applications**, then launch it.
-3. The build uses ad-hoc signing without an Apple Developer ID notarization. If Gatekeeper blocks the first launch, right-click the app in Finder and choose **Open**, or allow it under **System Settings → Privacy & Security**.
-4. The first run creates `config.json`, `logs/`, `agentbell.db`, and `chat/` in `~/Library/Application Support/AgentBell/`; the app bundle stays read-only and nothing is written into `Applications`.
-5. **Launch at login** writes `~/Library/LaunchAgents/com.agentbell.app.plist`.
-6. macOS builds do not update in place: when a new version is found, AgentBell points you to the Release page; download the new dmg/zip and replace the app.
+3. Release builds use Developer ID signing, Hardened Runtime, and Apple notarization when the credentials are configured; otherwise they fall back to ad-hoc signing. If Gatekeeper still blocks the first launch, right-click the app in Finder and choose **Open**, or allow it under **System Settings → Privacy & Security**.
+4. **Back to terminal** uses Apple Events and requires granting AgentBell accessibility/automation permission on first use.
+5. The first run creates `config.json`, `logs/`, `agentbell.db`, and `chat/` in `~/Library/Application Support/AgentBell/`; the app bundle stays read-only and nothing is written into `Applications`.
+6. **Launch at login** writes `~/Library/LaunchAgents/com.agentbell.app.plist`.
+7. Packaged macOS builds update in place from the release `.zip`: AgentBell downloads and verifies it, backs up the old `.app`, swaps the bundle, and restarts. The `.dmg` is for first install or manual replacement.
 
 **Linux (x64 / arm64)**
 
@@ -116,12 +121,12 @@ Use the arm64 assets on arm64. The portable updater selects the tarball for the 
 1. Open [Releases](https://github.com/1wu-davy-2/AgentBell/releases/latest) and download `AgentBell.exe` (x64) or `AgentBell-arm64.exe` (Arm64).
 2. Put it in a **writable directory**, such as `D:\Tools\AgentBell`, and double-click it.
 3. On first launch, `config.json`, `logs/`, `agentbell.db`, and `chat/` are created in the same directory; installing components from the **Runtime** page creates `runtime/`.
-4. If SmartScreen warns about an unknown publisher, choose **More info → Run anyway**. The build is not code-signed.
+4. If SmartScreen warns about an unknown publisher, the build has no Authenticode certificate configured; choose **More info → Run anyway**. Builds with a certificate configured are signed with SHA-256 and an RFC 3161 timestamp.
 5. Closing the window hides it to the tray. Use the tray menu or **退出 AgentBell** in the sidebar to quit.
 
 The release ships the stable names `AgentBell.exe` / `AgentBell-arm64.exe` and `SHA256SUMS.txt`. The updater picks the file that matches the running architecture, so do not rename them. A build-numbered `AgentBell-<build>[-arm64].exe` is a byte-identical copy; downloading the stable name is enough.
 
-**Enable self-update**: the first-run `config.json` defaults to `1wu-davy-2/AgentBell` with the startup check enabled. AgentBell checks Releases about 9 seconds after launch; the tray menu and the Agent launcher page can also trigger a manual check. Packaged Windows and Linux builds download, verify, back up, replace, and restart automatically after exit; macOS shows a prompt and opens the Release page; source mode only downloads the installer and never replaces the running Python process. If you upgraded from an older version with an empty repo, fill it in under **Preferences → General → Program update**.
+**Enable self-update**: the first-run `config.json` defaults to `1wu-davy-2/AgentBell` with the startup check enabled. AgentBell checks Releases about 9 seconds after launch; the tray menu and the Agent launcher page can also trigger a manual check. Packaged Windows, macOS, and Linux builds download, verify, back up, replace, and restart automatically after exit; macOS uses the release zip, while the dmg is for manual installs. Source mode only downloads the installer and never replaces the running Python process. If you upgraded from an older version with an empty repo, fill it in under **Preferences → General → Program update**.
 
 ### From source
 
@@ -155,7 +160,7 @@ A successful call returns HTTP 202 and a card appears in the top-right corner. C
 
 ### 2. Use the notification center
 
-Filter by status and agent source in the toolbar, search by title, summary, or source; the running tab also surfaces recently active agent sessions detected by the local session scanner. Double-click the title bar to maximize or restore. Closing the window keeps the service in the tray; press `Ctrl+Alt+A` or use the tray menu to reopen it. History keeps 1,000 entries by default and powers the statistics page.
+Filter by status and agent source in the toolbar, and search titles, summaries, errors, and sources. Search accepts field filters such as `status:failed`, `source:claude`, `priority:critical`, `session:abc`, `run:run-001`, and `ack:false`, combined with free text. The running tab also surfaces recently active agent sessions detected by the local session scanner. Double-click the title bar to maximize or restore. Closing the window keeps the service in the tray; press `Ctrl+Alt+A` or use the tray menu to reopen it; the tray **Do Not Disturb** submenu pauses alerts for 30 minutes, 1 hour, or until tomorrow. History keeps 1,000 entries by default and powers the statistics page, which offers 7/30/90-day ranges, run P50/P90 metrics, and CSV export. Notifications can be batch-archived and grouped by date or source.
 
 ### 3. Let agents notify you automatically
 
@@ -195,7 +200,7 @@ When an agent stops and waits for you, send a `status="running"` notification wi
 
 `wait_reason` accepts `permission` / `question` / `rate_limit` / `context_limit` / `other` (defaults to `other`), and `needs_input=true` is only valid with `running`. Cards show the wait reason, and Running gains a **Waiting** sub-filter. A later event for the same session, or an explicit `needs_input=false`, ends the wait.
 
-If you prefer not to report explicitly, enable local inference under **Preferences → Agent**. It only reads the tail of recent Claude Code / Qoder transcripts, requires two consecutive scans plus an idle threshold, and labels inferred cards with **Inferred**. It never writes to session files and never logs transcript content; disable it to keep explicit reporting only.
+If you prefer not to report explicitly, enable local inference under **Preferences → Agent**. It only reads the tails of recent Claude Code, Qoder, Codex, Gemini, and Grok sessions, requires two consecutive scans plus an idle threshold, and labels inferred cards with **Inferred**. It never writes to session files and never logs transcript content; disable it to keep explicit reporting only.
 
 ### 6. Replay a run (optional)
 
@@ -234,7 +239,7 @@ To put **View record** and **Timeline** buttons on the popup and in the notifica
 
 Open the **Runtime** page and click **Install all**, or install only what you need:
 
-- **Node**: the official LTS portable zip is verified against the official `SHASUMS256.txt` and extracted to `runtime/node`.
+- **Node**: the official LTS portable archive (zip on Windows, tar.xz on macOS / Linux) is verified against the official `SHASUMS256.txt` and extracted to `runtime/node`.
 - **Agent CLIs**: Claude Code, Codex, Gemini CLI, OpenCode, OpenClaw, Hermes, and Pi from their official npm packages, installed under `runtime/agents`, never into the system global directory.
 - **External tools** such as cc-switch are not installed by AgentBell; their row opens the GitHub Releases download page instead.
 
@@ -271,9 +276,19 @@ Preferences cover skins, popup modes, fullscreen background and card placement, 
 
 ```powershell
 pip install -r requirements-dev.txt
-python -m PyInstaller --noconfirm --clean AgentBell29.spec
-# Output: dist\AgentBell-29.exe
+python -m PyInstaller --noconfirm --clean AgentBell32.spec
+# Output: dist\AgentBell-32.exe
 ```
+
+To Authenticode-sign the frozen executable locally, provide the PFX as base64 and its password through environment variables (never on the command line):
+
+```powershell
+$env:WINDOWS_CERT_PFX_BASE64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes("cert.pfx"))
+$env:WINDOWS_CERT_PASSWORD = "pfx-password"
+python scripts/sign_windows.py --target dist\AgentBell-32.exe
+```
+
+Signing uses SHA-256 digests and an RFC 3161 timestamp (`http://timestamp.digicert.com` by default) and verifies with `signtool verify /pa /all`. `--pfx` and `--thumbprint` are also supported, and the password is only read from `WINDOWS_CERT_PASSWORD`; command output masks it.
 
 Linux builds must run natively per architecture:
 
@@ -281,9 +296,9 @@ Linux builds must run natively per architecture:
 pip install -r requirements-dev.txt
 python -m PyInstaller --noconfirm AgentBell-linux.spec
 # tar.gz + deb + rpm only
-python scripts/build_linux_packages.py --binary dist/AgentBell --version 2.18.0 --arch x64
+python scripts/build_linux_packages.py --binary dist/AgentBell --version 2.19.0 --arch x64
 # all four formats
-python scripts/build_linux_packages.py --binary dist/AgentBell --version 2.18.0 --arch x64 \
+python scripts/build_linux_packages.py --binary dist/AgentBell --version 2.19.0 --arch x64 \
   --appimagetool ./appimagetool --appimage-runtime ./runtime-x86_64
 ```
 
@@ -293,14 +308,21 @@ macOS builds also run natively on a Mac or CI runner of the target architecture:
 pip install -r requirements-dev.txt
 python scripts/make_macos_icon.py
 python -m PyInstaller --noconfirm AgentBell-macos.spec
+# ad-hoc signing
 python scripts/build_macos_packages.py \
-  --app dist/AgentBell.app --version 2.18.0 --arch arm64
+  --app dist/AgentBell.app --version 2.19.0 --arch arm64
+# Developer ID + Hardened Runtime + notarization
+python scripts/build_macos_packages.py \
+  --app dist/AgentBell.app --version 2.19.0 --arch arm64 \
+  --identity "Developer ID Application: Example (TEAMID)" \
+  --entitlements assets/macos_entitlements.plist --notarize \
+  --notary-key AuthKey.p8 --notary-key-id KEYID --notary-issuer ISSUER-UUID
 ```
 
-Pushing to `develop` runs tests and packaging on Windows (x64 / arm64), Linux (x64 / arm64), and macOS (x64 / arm64). Pushing a `v*` tag verifies that the tag matches `__version__` in `agentbell/__init__.py`, then publishes a GitHub Release automatically. The Windows workflow picks the highest-numbered `AgentBell<N>.spec`, copies the x64 output to `AgentBell.exe`, and names the arm64 build `AgentBell-arm64.exe`; Linux produces `AgentBell-linux-<arch>.tar.gz`, `.AppImage`, `.deb`, and `.rpm`; macOS produces `AgentBell-macos-<arch>.dmg` and `.zip`. Each platform and architecture writes its own checksum file, and the release job merges a single `SHA256SUMS.txt`.
+Pushing to `develop` runs tests and packaging on Windows (x64 / arm64), Linux (x64 / arm64), and macOS (x64 / arm64). Pushing a `v*` tag verifies that the tag matches `__version__` in `agentbell/__init__.py`, then publishes a GitHub Release automatically. The Windows workflow picks the highest-numbered `AgentBell<N>.spec`, copies the x64 output to `AgentBell.exe`, and names the arm64 build `AgentBell-arm64.exe`; if `WINDOWS_CERT_PFX_BASE64` is configured, the exe is Authenticode-signed before copying. Linux produces `AgentBell-linux-<arch>.tar.gz`, `.AppImage`, `.deb`, and `.rpm`; macOS produces `AgentBell-macos-<arch>.dmg` and `.zip`, signed with Developer ID and notarized when `MACOS_CERT_P12_BASE64` and the App Store Connect API key secrets are configured, otherwise signed ad-hoc. Each platform and architecture writes its own checksum file, and the release job merges a single `SHA256SUMS.txt`.
 
 ```bash
-git tag v2.18.0
+git tag v2.19.0
 git push origin develop --tags
 ```
 

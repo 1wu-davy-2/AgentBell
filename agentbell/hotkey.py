@@ -11,8 +11,16 @@ from PySide6.QtWidgets import QApplication
 
 _IS_WINDOWS = os.name == "nt"
 _IS_LINUX = sys.platform.startswith("linux")
+_IS_MACOS = sys.platform == "darwin"
 _WM_HOTKEY = 0x0312
 _MOD_NOREPEAT = 0x4000
+_MAC_EVENT_CLASS_KEYBOARD = 0x6B657962  # 'keyb'
+_MAC_EVENT_HOTKEY_PRESSED = 5
+_MAC_HOTKEY_SIGNATURE = 0x4142454C  # 'ABEL'
+_CARBON_PATHS = (
+    "/System/Library/Frameworks/Carbon.framework/Carbon",
+    "/System/Library/Frameworks/Carbon.framework/Versions/A/Carbon",
+)
 _MODIFIERS = {
     "ctrl": 0x0002,
     "control": 0x0002,
@@ -54,6 +62,69 @@ if _user32 is not None:  # pragma: no branch - platform dependent
     _user32.RegisterHotKey.restype = wintypes.BOOL
     _user32.UnregisterHotKey.argtypes = [wintypes.HWND, ctypes.c_int]
     _user32.UnregisterHotKey.restype = wintypes.BOOL
+
+
+class _EventTypeSpec(ctypes.Structure):
+    _fields_ = [
+        ("eventClass", ctypes.c_uint32),
+        ("eventKind", ctypes.c_uint32),
+    ]
+
+
+class _EventHotKeyID(ctypes.Structure):
+    _fields_ = [
+        ("signature", ctypes.c_uint32),
+        ("id", ctypes.c_uint32),
+    ]
+
+
+_EventHandlerProc = ctypes.CFUNCTYPE(
+    ctypes.c_int32, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p
+)
+
+_carbon = None
+_carbon_failed = False
+
+
+def _carbon_lib():
+    global _carbon, _carbon_failed
+    if not _IS_MACOS:
+        return None
+    if _carbon is not None or _carbon_failed:
+        return _carbon
+    for path in _CARBON_PATHS:
+        try:
+            lib = ctypes.CDLL(path)
+            lib.GetApplicationEventTarget.argtypes = []
+            lib.GetApplicationEventTarget.restype = ctypes.c_void_p
+            lib.InstallEventHandler.argtypes = [
+                ctypes.c_void_p,
+                _EventHandlerProc,
+                ctypes.c_ulong,
+                ctypes.POINTER(_EventTypeSpec),
+                ctypes.c_void_p,
+                ctypes.POINTER(ctypes.c_void_p),
+            ]
+            lib.InstallEventHandler.restype = ctypes.c_int32
+            lib.RemoveEventHandler.argtypes = [ctypes.c_void_p]
+            lib.RemoveEventHandler.restype = ctypes.c_int32
+            lib.RegisterEventHotKey.argtypes = [
+                ctypes.c_uint32,
+                ctypes.c_uint32,
+                _EventHotKeyID,
+                ctypes.c_void_p,
+                ctypes.c_uint32,
+                ctypes.POINTER(ctypes.c_void_p),
+            ]
+            lib.RegisterEventHotKey.restype = ctypes.c_int32
+            lib.UnregisterEventHotKey.argtypes = [ctypes.c_void_p]
+            lib.UnregisterEventHotKey.restype = ctypes.c_int32
+        except (OSError, AttributeError):
+            continue
+        _carbon = lib
+        return _carbon
+    _carbon_failed = True
+    return None
 
 
 def parse_hotkey(spec: str) -> tuple[int, int] | None:
@@ -113,6 +184,11 @@ class GlobalHotkey(QObject):
         self._filter: _HotkeyFilter | None = None
         self._linux = None
         self._linux_timer: QTimer | None = None
+        self._mac_hotkey = None
+        self._mac_handler = None
+        self._mac_proc = None
+        self._mac_timer: QTimer | None = None
+        self._mac_pending = False
 
     @property
     def spec(self) -> str:
@@ -120,11 +196,17 @@ class GlobalHotkey(QObject):
 
     @property
     def registered(self) -> bool:
-        return self._id is not None or self._linux is not None
+        return (
+            self._id is not None
+            or self._linux is not None
+            or self._mac_hotkey is not None
+        )
 
     def register(self) -> bool:
         self.unregister()
         global _hotkey_counter
+        if _IS_MACOS:
+            return self._register_macos()
         if _IS_LINUX:
             return self._register_linux()
         parsed = parse_hotkey(self._spec)
@@ -158,8 +240,7 @@ class GlobalHotkey(QObject):
         from .linux_desktop import X11Hotkey, is_wayland
 
         if is_wayland():
-            self._logger.warning("Wayland 会话暂不支持全局快捷键：%s", self._spec)
-            return False
+            return self._register_wayland()
         grabber = X11Hotkey(self._spec)
         if not grabber.start():
             self._logger.warning(
@@ -175,8 +256,94 @@ class GlobalHotkey(QObject):
         self._logger.info("全局快捷键已注册：%s", self._spec)
         return True
 
+    def _register_wayland(self) -> bool:
+        from .linux_desktop import portal_trigger
+        from .wayland_desktop import WaylandHotkey
+
+        if portal_trigger(self._spec) is None:
+            self._logger.warning(
+                "全局快捷键格式无效，已忽略：%s", self._spec or "(空)"
+            )
+            return False
+        hotkey = WaylandHotkey(self._spec, self._logger)
+        if not hotkey.start():
+            return False
+        hotkey.activated.connect(self.activated)
+        self._linux = hotkey
+        return True
+
     def _poll_linux(self) -> None:
         if self._linux is not None and self._linux.poll():
+            self.activated.emit()
+
+    def _on_mac_hotkey(self, _call_ref, _event, _user_data):
+        self._mac_pending = True
+        return 0
+
+    def _register_macos(self) -> bool:
+        from .macos_desktop import parse_macos_hotkey
+
+        parsed = parse_macos_hotkey(self._spec)
+        if parsed is None:
+            self._logger.warning("全局快捷键格式无效，已忽略：%s", self._spec or "(空)")
+            return False
+        carbon = _carbon_lib()
+        if carbon is None:
+            self._logger.warning("macOS 全局快捷键组件不可用：%s", self._spec)
+            return False
+        target = carbon.GetApplicationEventTarget()
+        if not target:
+            self._logger.warning("无法获取 macOS 应用事件目标，全局快捷键未注册")
+            return False
+        modifiers, keycode = parsed
+        self._mac_proc = _EventHandlerProc(self._on_mac_hotkey)
+        event_type = _EventTypeSpec(
+            _MAC_EVENT_CLASS_KEYBOARD, _MAC_EVENT_HOTKEY_PRESSED
+        )
+        handler = ctypes.c_void_p()
+        status = carbon.InstallEventHandler(
+            target,
+            self._mac_proc,
+            1,
+            ctypes.byref(event_type),
+            None,
+            ctypes.byref(handler),
+        )
+        if status != 0:
+            self._mac_proc = None
+            self._logger.warning("macOS 快捷键事件处理器安装失败：%s", status)
+            return False
+        global _hotkey_counter
+        _hotkey_counter += 1
+        hotkey_ref = ctypes.c_void_p()
+        status = carbon.RegisterEventHotKey(
+            keycode,
+            modifiers,
+            _EventHotKeyID(_MAC_HOTKEY_SIGNATURE, _hotkey_counter),
+            target,
+            0,
+            ctypes.byref(hotkey_ref),
+        )
+        if status != 0:
+            carbon.RemoveEventHandler(handler)
+            self._mac_proc = None
+            self._logger.warning(
+                "注册全局快捷键失败（可能已被其他程序占用）：%s", self._spec
+            )
+            return False
+        self._mac_handler = handler
+        self._mac_hotkey = hotkey_ref
+        timer = QTimer(self)
+        timer.setInterval(120)
+        timer.timeout.connect(self._poll_mac)
+        timer.start()
+        self._mac_timer = timer
+        self._logger.info("全局快捷键已注册：%s", self._spec)
+        return True
+
+    def _poll_mac(self) -> None:
+        if self._mac_pending:
+            self._mac_pending = False
             self.activated.emit()
 
     def apply(self, spec: str) -> bool:
@@ -191,6 +358,19 @@ class GlobalHotkey(QObject):
         if self._linux is not None:
             self._linux.stop()
             self._linux = None
+        if self._mac_timer is not None:
+            self._mac_timer.stop()
+            self._mac_timer.deleteLater()
+            self._mac_timer = None
+        if _carbon is not None:
+            if self._mac_hotkey is not None:
+                _carbon.UnregisterEventHotKey(self._mac_hotkey)
+            if self._mac_handler is not None:
+                _carbon.RemoveEventHandler(self._mac_handler)
+        self._mac_hotkey = None
+        self._mac_handler = None
+        self._mac_proc = None
+        self._mac_pending = False
         if self._id is None:
             return
         application = QApplication.instance()

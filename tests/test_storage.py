@@ -200,6 +200,27 @@ def test_stats_count_waiting_input(tmp_path):
         storage.close()
 
 
+def test_export_notifications_respects_day_range(tmp_path):
+    storage = open_storage(tmp_path)
+    now = datetime.now().astimezone()
+    try:
+        storage.save(
+            make_notification(1, received_at=now - timedelta(days=2))
+        )
+        storage.save(
+            make_notification(
+                2,
+                title="旧任务",
+                received_at=now - timedelta(days=20),
+            )
+        )
+        recent = storage.export_notifications(days=7)
+        assert [item.id for item in recent] == ["id0001"]
+        assert len(storage.export_notifications(days=30)) == 2
+    finally:
+        storage.close()
+
+
 def test_migrates_legacy_database_without_wait_columns(tmp_path):
     path = tmp_path / "history.db"
     connection = sqlite3.connect(str(path))
@@ -299,6 +320,8 @@ def test_search_and_stats(tmp_path):
                 source="crawler",
                 error="HTTP 403",
                 duration="30s",
+                session_id="sess-abc",
+                run_id="run-1",
                 received_at=now,
             )
         )
@@ -324,6 +347,23 @@ def test_search_and_stats(tmp_path):
         assert [item.id for item in storage.search("竞品")] == ["id0001"]
         assert [item.id for item in storage.search("crawler")] == ["id0002"]
         assert [item.id for item in storage.search("403")] == ["id0002"]
+        assert [item.id for item in storage.search("status:failed")] == ["id0002"]
+        assert [item.id for item in storage.search("status:失败")] == ["id0002"]
+        assert [item.id for item in storage.search("source:crawler")] == ["id0002"]
+        assert [item.id for item in storage.search("session:abc")] == ["id0002"]
+        assert [item.id for item in storage.search("run:run-1")] == ["id0002"]
+        assert [item.id for item in storage.search("priority:normal")] == [
+            "id0002",
+            "id0001",
+            "id0003",
+            "id0004",
+        ]
+        assert [item.id for item in storage.search("ack:no")] == [
+            "id0002",
+            "id0001",
+            "id0003",
+            "id0004",
+        ]
 
         stats = storage.stats(days=7)
         assert stats["total"] == 4
@@ -644,5 +684,26 @@ def test_load_session_run_events_returns_latest_run(tmp_path):
         assert [event.run_id for event in events] == ["run-b", "run-b"]
         assert [event.kind for event in events] == ["started", "waiting_input"]
         assert storage.load_session_run_events("missing") == []
+    finally:
+        storage.close()
+
+
+def test_archive_bulk_round_trip(tmp_path):
+    storage = open_storage(tmp_path)
+    try:
+        for index in (1, 2, 3):
+            storage.save(make_notification(index))
+
+        assert storage.set_archived(["id0001", "id0002"]) == 2
+        loaded = {item.id: item for item in storage.load_recent(10)}
+        assert loaded["id0001"].archived is True
+        assert loaded["id0001"].archived_at is not None
+        assert loaded["id0002"].archived is True
+        assert loaded["id0003"].archived is False
+
+        assert storage.set_archived(["id0001", "id0002"], archived=False) == 2
+        loaded = {item.id: item for item in storage.load_recent(10)}
+        assert all(item.archived is False for item in loaded.values())
+        assert all(item.archived_at is None for item in loaded.values())
     finally:
         storage.close()
