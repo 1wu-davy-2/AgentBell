@@ -41,8 +41,9 @@ def test_tray_about_action_emits_signal(qapp):
 
 def _submenu(menu, title):
     for action in menu.actions():
-        if action.text() == title and action.menu() is not None:
-            return action.menu()
+        submenu = action.menu()
+        if action.text() == title and submenu is not None:
+            return submenu
     raise AssertionError(f"未找到子菜单：{title}")
 
 

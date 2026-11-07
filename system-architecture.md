@@ -48,7 +48,7 @@
 
 2.12.0 新增只读动作：`/notify` 的 `actions` 接受 `session` 与 `timeline`，分别打开内置会话记录与本次运行时间线。两类动作只读取通知自身的 `session_id` / `run_id`，忽略 `value`，不执行任何外部命令；未知标识或缺少标识时给出非阻塞提示。动作顺序固定为 `focus` → `session` → `timeline` → 其他，弹窗与通知中心的首个按钮因此总是「回到终端」或「查看记录」。不提供批准权限、自动继续或发送提示词的动作，审批必须回到终端完成。
 
-2.19.1 修复 Linux 托盘菜单生命周期：`QSystemTrayIcon` 不持有上下文菜单的所有权，菜单此前只作为局部变量传给 `setContextMenu`，Python 回收后打开「勿扰模式」等子菜单会触发 `QMenu already deleted`；现在 `TrayIcon` 保存菜单的强引用。同步修正 macOS 测试夹具，在非 Windows 环境同时关闭 `_IS_LINUX` 与 `_IS_MACOS`，让 mock 的 Windows 路径按预期执行。功能与 2.19.0 相同，2.19.0 标签因 Linux arm64 与 macOS 测试未通过而没有发布。
+2.19.1 修复 Linux 托盘菜单生命周期：`QSystemTrayIcon` 不持有上下文菜单的所有权，菜单此前只作为局部变量传给 `setContextMenu`；同时 PySide6 6.8 在回收子菜单的 `menuAction` 包装器时会连带删除子菜单。现在 `TrayIcon` 同时保存上下文菜单与「显示最近通知」「勿扰模式」两个子菜单 action 的强引用，打开子菜单不再触发 `QMenu already deleted`。同步修正 macOS 测试夹具，在非 Windows 环境同时关闭 `_IS_LINUX` 与 `_IS_MACOS`，让 mock 的 Windows 路径按预期执行。功能与 2.19.0 相同，2.19.0 标签因 Linux arm64 与 macOS 测试未通过而没有发布。
 
 2.19.0 扩充日常观测、规则调试与平台能力：会话页新增 Codex / Gemini / Grok / OpenCode 只读扫描，等待输入推断扩展到 Codex / Gemini / Grok；通知中心搜索支持 `status:` / `source:` / `priority:` / `session:` / `run:` / `ack:` 字段过滤，统计支持 7 / 30 / 90 天区间与 CSV 导出，并可批量归档、按日期或来源分组；托盘新增 30 分钟 / 1 小时 / 到明早的快捷免打扰；设置页规则区新增「试运行」，用一条样例通知展示命中的规则与最终字段。平台侧补齐 macOS 的全局快捷键、回到终端、空闲 / 全屏 / 会议 / 锁屏推断、便携 Node 与原地更新；Linux Wayland 通过 XDG GlobalShortcuts portal 注册全局快捷键，窗口聚焦明确提示系统限制；Windows Authenticode 与 macOS Developer ID 签名 / 公证接入 CI。签名证书、密码与 App Store Connect 密钥只从环境变量或 GitHub Secrets 读取，不写入仓库、命令行日志或构建产物。
 

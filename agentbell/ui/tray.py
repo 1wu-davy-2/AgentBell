@@ -74,9 +74,12 @@ class TrayIcon(QSystemTrayIcon):
         open_center = menu.addAction("打开通知中心")
         open_center.triggered.connect(self.open_center_requested.emit)
         self._recent_menu = menu.addMenu("显示最近通知")
+        # PySide6 6.8 回收 menuAction 包装器时会连带删除子菜单，显式保留引用
+        self._recent_menu_action = self._recent_menu.menuAction()
         self._recent_menu.aboutToShow.connect(self._rebuild_recent_menu)
 
         self._pause_menu = menu.addMenu("勿扰模式")
+        self._pause_menu_action = self._pause_menu.menuAction()
         self._pause_status = self._pause_menu.addAction("未开启")
         self._pause_status.setEnabled(False)
         self._pause_menu.addSeparator()

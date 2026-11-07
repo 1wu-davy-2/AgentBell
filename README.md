@@ -48,7 +48,7 @@ AgentBell 是一个只做提醒的 Windows / macOS / Linux 桌面工具。AI Age
 
 ### 最近更新
 
-- **v2.19.1**：修复 Linux 托盘菜单生命周期问题。托盘上下文菜单此前只作为局部变量传入，Python 回收后打开「勿扰模式」等子菜单会触发 `QMenu already deleted`；现在托盘持有菜单的强引用。同时修正 macOS 上窗口聚焦测试的平台标志，让 Windows 路径用例在 macOS 上按预期执行。功能与 2.19.0 相同，2.19.0 标签因 Linux arm64 与 macOS 测试未通过而没有发布。
+- **v2.19.1**：修复 Linux 托盘菜单生命周期问题。托盘上下文菜单此前只作为局部变量传入，且 PySide6 6.8 在回收子菜单的 `menuAction` 包装器时会连带删除子菜单，打开「勿扰模式」等子菜单会触发 `QMenu already deleted`；现在托盘同时持有上下文菜单与两个子菜单 action 的强引用。同时修正 macOS 上窗口聚焦测试的平台标志，让 Windows 路径用例在 macOS 上按预期执行。功能与 2.19.0 相同，2.19.0 标签因 Linux arm64 与 macOS 测试未通过而没有发布。
 - **v2.19.0**：会话页新增 Codex / Gemini / Grok / OpenCode 来源，等待推断扩到 Codex / Gemini / Grok；搜索支持 `status:` / `source:` 等字段过滤，统计支持 7 / 30 / 90 天区间与 CSV 导出，通知可批量归档并按日期或来源分组；托盘新增快捷勿扰，规则区新增试运行。平台侧补齐 macOS 的快捷键、回到终端、推断、便携 Node 与原地更新；Wayland 通过 XDG 门户注册全局快捷键；CI 接入 Windows Authenticode 与 macOS Developer ID 签名 / 公证。
 - **v2.18.2**：修复 Release 校验文件。Windows x64 与 arm64 打包任务此前都输出同名的 `SHA256SUMS.txt`，合并发布时互相覆盖，导致 `SHA256SUMS.txt` 缺少 `AgentBell.exe` / `AgentBell-arm64.exe` 中的 arm64 条目；现在各架构分别输出 `SHA256SUMS-windows-<arch>.txt`，合并后 16 个产物全部可校验。功能与 2.18.1 相同。
 - **v2.18.1**：修复 arm64 平台上的 CI 测试。更新器与资产选择测试此前依赖宿主机架构，在 Windows / Linux / macOS 的 arm64 runner 上会按 arm64 选包而失败；现在测试显式传入 `machine`，不再受构建机影响。同时把时间格式测试的夏令时换算改为按本地时区校验。功能与 2.18.0 相同，2.18.0 标签因 arm64 测试未通过而没有发布。
