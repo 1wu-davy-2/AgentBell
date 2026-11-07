@@ -58,6 +58,7 @@ class TrayIcon(QSystemTrayIcon):
 
         menu = QMenu()
         menu.setToolTipsVisible(True)
+        self._menu = menu
 
         listening = menu.addAction(f"AgentBell · 127.0.0.1:{port}")
         listening.setEnabled(False)

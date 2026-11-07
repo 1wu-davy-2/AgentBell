@@ -21,6 +21,7 @@ from agentbell.window_focus import (
 def _exercise_windows_paths(monkeypatch):
     if os.name != "nt":
         monkeypatch.setattr(window_focus, "_IS_LINUX", False)
+        monkeypatch.setattr(window_focus, "_IS_MACOS", False)
 
 
 def test_parse_focus_value_reads_pid_title_and_cwd():
