@@ -56,6 +56,8 @@ class TrayIcon(QSystemTrayIcon):
         self._flash_remaining = 0
         self._flashing = False
 
+        self.activated.connect(self._on_activated)
+
         menu = QMenu()
         menu.setToolTipsVisible(True)
         self._menu = menu
@@ -109,6 +111,13 @@ class TrayIcon(QSystemTrayIcon):
         quit_action = menu.addAction("退出")
         quit_action.triggered.connect(self.quit_requested.emit)
         self.setContextMenu(menu)
+
+    def _on_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
+        if reason in (
+            QSystemTrayIcon.ActivationReason.Trigger,
+            QSystemTrayIcon.ActivationReason.DoubleClick,
+        ):
+            self.open_center_requested.emit()
 
     def set_recent(self, notifications: list[Notification]) -> None:
         self._recent = list(notifications)

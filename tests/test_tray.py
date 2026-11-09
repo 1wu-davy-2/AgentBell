@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QSystemTrayIcon
 
 from agentbell.ui.icons import make_app_icon
 from agentbell.ui.tray import TrayIcon
@@ -34,6 +34,24 @@ def test_tray_about_action_emits_signal(qapp):
         tray.about_requested.connect(lambda: emitted.append(True))
         actions["关于 AgentBell…"].trigger()
         assert emitted == [True]
+    finally:
+        tray.hide()
+        tray.deleteLater()
+
+
+def test_tray_click_opens_center(qapp):
+    tray = TrayIcon(make_app_icon(), 18766, True)
+    try:
+        emitted: list[bool] = []
+        tray.open_center_requested.connect(lambda: emitted.append(True))
+
+        tray.activated.emit(QSystemTrayIcon.ActivationReason.Trigger)
+        tray.activated.emit(QSystemTrayIcon.ActivationReason.DoubleClick)
+        assert emitted == [True, True]
+
+        tray.activated.emit(QSystemTrayIcon.ActivationReason.Context)
+        tray.activated.emit(QSystemTrayIcon.ActivationReason.MiddleClick)
+        assert emitted == [True, True]
     finally:
         tray.hide()
         tray.deleteLater()
