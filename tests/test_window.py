@@ -620,6 +620,20 @@ def test_search_filters_cards_and_can_reset(window_factory):
     assert window._total_label.text() == "共 2 条"
 
 
+def test_ctrl_f_jumps_to_list_and_focuses_search(window_factory):
+    window = window_factory()
+    window.show_center()
+    window.set_page("stats")
+    window.activateWindow()
+    QTest.qWait(30)
+
+    QTest.keyClick(window, Qt.Key.Key_F, Qt.KeyboardModifier.ControlModifier)
+
+    assert window._page == "list"
+    assert window._search_input.hasFocus()
+    window.hide_center()
+
+
 def test_card_ack_and_snooze_signals(window_factory):
     store = NotificationStore()
     store.add(make_notification(1, status="failed", require_ack=True))

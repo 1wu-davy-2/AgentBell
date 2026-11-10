@@ -33,6 +33,8 @@ AgentBell does one thing well: **tell you the moment a round ends, and let you g
 - **Stay quiet**: quiet hours, fullscreen/meeting suppression, lock-screen holding, digest, and success-only-in-center are all configurable.
 - **Route by rules**: match on wait reason, `needs_input`, run duration, and project glob, then override priority, silence, acknowledgement, auto-close, popup, and extra channels. Later matching rules win on scalar fields, and changes apply as soon as settings are saved; **Test run** shows which rule matches a sample notification and the resulting fields.
 - **Find anything**: search supports `status:` / `source:` / `priority:` / `session:` / `run:` / `ack:` field filters; statistics offer 7/30/90-day ranges with CSV export, and notifications can be batch-archived and grouped by date or source.
+- **Get there fast**: the tray shows a numeric unread badge, clicking a toast card's title, summary, or empty area opens the notification center, and `Ctrl+F` jumps to search from any page.
+- **Keep history tidy**: SQLite history supports a row cap plus age-based retention (`history.retention_days`), adjustable in settings with immediate cleanup.
 - **Read session records**: read-only scanning covers Claude Code, Qoder, Codex, Gemini, Grok session files and OpenCode's database, with a full reader, in-session search, copy, and Markdown export.
 - **Stay quiet**: quiet hours, fullscreen/meeting suppression, lock-screen holding, digest, success-only-in-center, and tray **Do Not Disturb** for 30 minutes, 1 hour, or until tomorrow are all configurable.
 - **Local first**: loopback-only HTTP, on-device SQLite history, read-only session parsing, no cloud.
@@ -40,6 +42,7 @@ AgentBell does one thing well: **tell you the moment a round ends, and let you g
 
 ## Recent updates
 
+- **v2.21.0**: The tray now shows a numeric unread badge (`99+` above 99) and returns to it after the unread flash ends. Clicking a toast card's title, summary, or empty area opens the notification center while all card buttons keep their behavior. `Ctrl+F` jumps to the list and focuses search from any page. SQLite history gains age-based retention (`history.retention_days`) alongside the row cap, adjustable in settings with immediate cleanup.
 - **v2.20.0**: Clicking the tray icon now opens the notification center. A left single-click or double-click — including from the Windows tray overflow panel — shows and raises the center, while right-click keeps the existing menu. Unread flashing and Do Not Disturb state are unchanged.
 - **v2.19.1**: Fixes the Linux tray menu lifetime. The context menu was only passed as a local variable, and PySide6 6.8 also deletes a submenu when its `menuAction` wrapper is collected, so opening submenus such as Do Not Disturb raised `QMenu already deleted`; the tray now keeps strong references to the context menu and both submenu actions. The macOS window-focus tests also reset the platform flags so the mocked Windows paths run as intended. Behavior matches 2.19.0, which was never published because its Linux arm64 and macOS tests failed.
 - **v2.19.0**: Four new session sources (Codex, Gemini, Grok, and OpenCode's read-only database); waiting inference now also covers Codex, Gemini, and Grok. Search gains `status:` / `source:` field filters, statistics gain 7/30/90-day ranges and CSV export, and notifications can be batch-archived and grouped by date or source. The tray adds quick Do Not Disturb, and rules gain a test run. Platform parity brings macOS global hotkeys, back-to-terminal, presence inference, portable Node, and in-place zip updates; Wayland registers hotkeys through the XDG GlobalShortcuts portal. CI now supports Windows Authenticode and macOS Developer ID signing plus Apple notarization.
@@ -278,8 +281,8 @@ Preferences cover skins, popup modes, fullscreen background and card placement, 
 
 ```powershell
 pip install -r requirements-dev.txt
-python -m PyInstaller --noconfirm --clean AgentBell34.spec
-# Output: dist\AgentBell-34.exe
+python -m PyInstaller --noconfirm --clean AgentBell35.spec
+# Output: dist\AgentBell-35.exe
 ```
 
 To Authenticode-sign the frozen executable locally, provide the PFX as base64 and its password through environment variables (never on the command line):
@@ -287,7 +290,7 @@ To Authenticode-sign the frozen executable locally, provide the PFX as base64 an
 ```powershell
 $env:WINDOWS_CERT_PFX_BASE64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes("cert.pfx"))
 $env:WINDOWS_CERT_PASSWORD = "pfx-password"
-python scripts/sign_windows.py --target dist\AgentBell-34.exe
+python scripts/sign_windows.py --target dist\AgentBell-35.exe
 ```
 
 Signing uses SHA-256 digests and an RFC 3161 timestamp (`http://timestamp.digicert.com` by default) and verifies with `signtool verify /pa /all`. `--pfx` and `--thumbprint` are also supported, and the password is only read from `WINDOWS_CERT_PASSWORD`; command output masks it.
@@ -298,9 +301,9 @@ Linux builds must run natively per architecture:
 pip install -r requirements-dev.txt
 python -m PyInstaller --noconfirm AgentBell-linux.spec
 # tar.gz + deb + rpm only
-python scripts/build_linux_packages.py --binary dist/AgentBell --version 2.20.0 --arch x64
+python scripts/build_linux_packages.py --binary dist/AgentBell --version 2.21.0 --arch x64
 # all four formats
-python scripts/build_linux_packages.py --binary dist/AgentBell --version 2.20.0 --arch x64 \
+python scripts/build_linux_packages.py --binary dist/AgentBell --version 2.21.0 --arch x64 \
   --appimagetool ./appimagetool --appimage-runtime ./runtime-x86_64
 ```
 
@@ -312,10 +315,10 @@ python scripts/make_macos_icon.py
 python -m PyInstaller --noconfirm AgentBell-macos.spec
 # ad-hoc signing
 python scripts/build_macos_packages.py \
-  --app dist/AgentBell.app --version 2.20.0 --arch arm64
+  --app dist/AgentBell.app --version 2.21.0 --arch arm64
 # Developer ID + Hardened Runtime + notarization
 python scripts/build_macos_packages.py \
-  --app dist/AgentBell.app --version 2.20.0 --arch arm64 \
+  --app dist/AgentBell.app --version 2.21.0 --arch arm64 \
   --identity "Developer ID Application: Example (TEAMID)" \
   --entitlements assets/macos_entitlements.plist --notarize \
   --notary-key AuthKey.p8 --notary-key-id KEYID --notary-issuer ISSUER-UUID
@@ -324,7 +327,7 @@ python scripts/build_macos_packages.py \
 Pushing to `develop` runs tests and packaging on Windows (x64 / arm64), Linux (x64 / arm64), and macOS (x64 / arm64). Pushing a `v*` tag verifies that the tag matches `__version__` in `agentbell/__init__.py`, then publishes a GitHub Release automatically. The Windows workflow picks the highest-numbered `AgentBell<N>.spec`, copies the x64 output to `AgentBell.exe`, and names the arm64 build `AgentBell-arm64.exe`; if `WINDOWS_CERT_PFX_BASE64` is configured, the exe is Authenticode-signed before copying. Linux produces `AgentBell-linux-<arch>.tar.gz`, `.AppImage`, `.deb`, and `.rpm`; macOS produces `AgentBell-macos-<arch>.dmg` and `.zip`, signed with Developer ID and notarized when `MACOS_CERT_P12_BASE64` and the App Store Connect API key secrets are configured, otherwise signed ad-hoc. Each platform and architecture writes its own checksum file, and the release job merges a single `SHA256SUMS.txt`.
 
 ```bash
-git tag v2.20.0
+git tag v2.21.0
 git push origin develop --tags
 ```
 

@@ -41,6 +41,8 @@ def test_save_validates_and_writes_config(qapp, tmp_path):
         dialog._port_spin.setValue(18888)
         dialog._token_edit.setText("new-token")
         dialog._auto_close_spin.setValue(12)
+        dialog._history_limit_spin.setValue(800)
+        dialog._history_retention_spin.setValue(14)
         dialog._success_popup_check.setChecked(False)
         dialog._open_center_check.setChecked(False)
         dialog._overlay_image_edit.setText(str(tmp_path / "bg.png"))
@@ -102,6 +104,8 @@ def test_save_validates_and_writes_config(qapp, tmp_path):
         assert loaded.port == 18888
         assert loaded.token == "new-token"
         assert loaded.auto_close_seconds == 12
+        assert loaded.history.limit == 800
+        assert loaded.history.retention_days == 14
         assert loaded.success_popup is False
         assert loaded.open_center_on_start is False
         assert loaded.overlay_image == str(tmp_path / "bg.png")

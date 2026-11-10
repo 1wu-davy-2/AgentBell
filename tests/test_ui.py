@@ -107,6 +107,42 @@ def test_toast_renders_read_only_actions_and_emits(qapp):
         QTest.qWait(20)
 
 
+def test_card_click_opens_notification_center(qapp):
+    toast = ToastWindow(
+        make_notification(4), 0, logging.getLogger("agentbell.tests")
+    )
+    try:
+        emitted: list[bool] = []
+        toast.center_requested.connect(lambda: emitted.append(True))
+        title = toast.findChild(QLabel, "title")
+        assert title is not None
+        QTest.mouseClick(title, Qt.MouseButton.LeftButton)
+        assert emitted == [True]
+        assert toast._closing is True
+    finally:
+        toast.close_now()
+        toast.deleteLater()
+        QTest.qWait(20)
+
+
+def test_card_click_ignores_buttons(qapp):
+    toast = ToastWindow(
+        make_notification(5), 0, logging.getLogger("agentbell.tests")
+    )
+    try:
+        center: list[bool] = []
+        acked: list[str] = []
+        toast.center_requested.connect(lambda: center.append(True))
+        toast.acknowledged.connect(acked.append)
+        QTest.mouseClick(toast.ack_button, Qt.MouseButton.LeftButton)
+        assert center == []
+        assert acked == [toast.notification.id]
+    finally:
+        toast.close_now()
+        toast.deleteLater()
+        QTest.qWait(20)
+
+
 def test_view_button_disabled_without_usable_link(qapp):
     notification = make_notification(2, link="file:///C:/secret.txt")
     toast = ToastWindow(notification, 0, logging.getLogger("agentbell.tests"))

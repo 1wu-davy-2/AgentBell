@@ -494,6 +494,35 @@ class SettingsDialog(QDialog):
         form.addRow("", self._open_center_check)
         layout.addWidget(group)
 
+        history_group = QGroupBox("历史数据库", page)
+        history_form = QFormLayout(history_group)
+        history_form.setContentsMargins(12, 14, 12, 10)
+        history_form.setSpacing(9)
+
+        self._history_limit_spin = QSpinBox(history_group)
+        self._history_limit_spin.setRange(50, 10000)
+        self._history_limit_spin.setSingleStep(100)
+        self._history_limit_spin.setSuffix(" 条")
+        self._history_limit_spin.setValue(self.config.history.limit)
+        history_form.addRow("条数上限", self._history_limit_spin)
+
+        self._history_retention_spin = QSpinBox(history_group)
+        self._history_retention_spin.setRange(0, 3650)
+        self._history_retention_spin.setSuffix(" 天")
+        self._history_retention_spin.setSpecialValueText("不限")
+        self._history_retention_spin.setValue(self.config.history.retention_days)
+        history_form.addRow("按天保留", self._history_retention_spin)
+
+        history_hint = QLabel(
+            "条数上限与按天保留同时生效，保存后立即清理超出的记录；"
+            "0 天表示只按条数清理。启用状态与数据库路径请编辑 config.json（重启生效）。",
+            history_group,
+        )
+        history_hint.setObjectName("editorHint")
+        history_hint.setWordWrap(True)
+        history_form.addRow("", history_hint)
+        layout.addWidget(history_group)
+
         popup = QGroupBox("弹窗行为", page)
         popup_form = QFormLayout(popup)
         popup_form.setContentsMargins(12, 14, 12, 10)
@@ -1292,6 +1321,11 @@ class SettingsDialog(QDialog):
             {
                 "port": self._port_spin.value(),
                 "token": self._token_edit.text(),
+                "history": {
+                    **data["history"],
+                    "limit": self._history_limit_spin.value(),
+                    "retention_days": self._history_retention_spin.value(),
+                },
                 "auto_close_seconds": self._auto_close_spin.value(),
                 "autostart": self._autostart_check.isChecked(),
                 "open_center_on_start": self._open_center_check.isChecked(),

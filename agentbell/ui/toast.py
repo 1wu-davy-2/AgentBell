@@ -11,6 +11,7 @@ from typing import Mapping
 from PySide6.QtCore import (
     QAbstractAnimation,
     QEasingCurve,
+    QEvent,
     QObject,
     QParallelAnimationGroup,
     QPoint,
@@ -292,6 +293,7 @@ class ToastWindow(QWidget):
         self._snooze_button: QPushButton | None = None
         self._pulse_timer: QTimer | None = None
         self._overlay_backdrop: QWidget | None = None
+        self._card_pressed = False
 
         self.setObjectName("toastRoot")
         self.setWindowTitle("AgentBell 通知")
@@ -307,6 +309,7 @@ class ToastWindow(QWidget):
         self.setAccessibleDescription(notification.headline_text(templates))
 
         self._build_ui()
+        self._install_card_click()
         self._apply_style()
         self._refresh_summary_height()
         if self.popup_mode == "overlay" and not self._show_card:
@@ -572,6 +575,48 @@ class ToastWindow(QWidget):
             self.progress.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             self.progress.setToolTip("自动关闭倒计时（鼠标悬停可暂停）")
             root.addWidget(self.progress)
+
+    def _install_card_click(self) -> None:
+        targets = [
+            self.card,
+            self._icon_label,
+            self._title_label,
+            self._summary_label,
+            self._error_label,
+            self._meta_label,
+            self._progress_label,
+        ]
+        if self._priority_badge is not None:
+            targets.append(self._priority_badge)
+        for widget in targets:
+            if widget is None:
+                continue
+            widget.installEventFilter(self)
+            widget.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802
+        if self._closing:
+            return super().eventFilter(watched, event)
+        event_type = event.type()
+        if (
+            event_type == QEvent.Type.MouseButtonPress
+            and event.button() == Qt.MouseButton.LeftButton
+        ):
+            self._card_pressed = True
+            return False
+        if (
+            event_type == QEvent.Type.MouseButtonRelease
+            and event.button() == Qt.MouseButton.LeftButton
+        ):
+            pressed = self._card_pressed
+            self._card_pressed = False
+            inside = self.card.rect().contains(
+                self.card.mapFromGlobal(event.globalPosition().toPoint())
+            )
+            if pressed and inside:
+                self._on_center_clicked()
+                return True
+        return super().eventFilter(watched, event)
 
     def _apply_style(self) -> None:
         palette = _SKIN_PALETTES[self.popup_skin]

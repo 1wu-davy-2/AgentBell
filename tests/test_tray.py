@@ -65,6 +65,21 @@ def _submenu(menu, title):
     raise AssertionError(f"未找到子菜单：{title}")
 
 
+def test_tray_unread_badge_updates_icon(qapp):
+    tray = TrayIcon(make_app_icon(), 18766, True)
+    try:
+        normal = tray.icon().cacheKey()
+        tray.set_unread(3)
+        assert tray.icon().cacheKey() != normal
+        assert "3 条未读" in tray.toolTip()
+
+        tray.set_unread(0)
+        assert tray.icon().cacheKey() == normal
+    finally:
+        tray.hide()
+        tray.deleteLater()
+
+
 def test_tray_pause_menu_emits_minutes_and_tracks_tooltip(qapp):
     tray = TrayIcon(make_app_icon(), 18766, True)
     try:

@@ -8,6 +8,7 @@
   "history": {
     "enabled": true,
     "limit": 1000,
+    "retention_days": 0,
     "path": ""
   },
   "quiet_hours": {

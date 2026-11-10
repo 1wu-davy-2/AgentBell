@@ -208,7 +208,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         db_path = _resolve_history_path(config_path, config.history.path)
         try:
             storage = NotificationStorage(db_path, logger)
-            logger.info("历史数据库：%s（保留 %d 条）", db_path, config.history.limit)
+            retention = config.history.retention_days
+            scope = f"保留 {config.history.limit} 条"
+            if retention > 0:
+                scope += f" / {retention} 天"
+            logger.info("历史数据库：%s（%s）", db_path, scope)
         except StorageError as exc:
             logger.warning("%s；将继续使用内存历史", exc)
 
@@ -217,6 +221,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         config.history.limit if config.history.enabled else QUEUE_MAX_SIZE,
         storage=storage,
         logger=logger,
+        retention_days=(
+            config.history.retention_days if config.history.enabled else 0
+        ),
     )
     config_ref = ConfigRef(config)
     asgi_app = create_app(

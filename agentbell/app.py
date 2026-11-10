@@ -1232,6 +1232,10 @@ class AgentBellApp(QObject):
         ):
             self._clear_inferred_waits()
         self.hotkey.apply(config.hotkey)
+        if config.history.enabled:
+            self.store.apply_history(
+                config.history.limit, config.history.retention_days
+            )
         self.center.apply_config(config)
         try:
             from .autostart import configure_autostart

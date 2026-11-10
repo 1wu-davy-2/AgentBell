@@ -48,6 +48,8 @@
 
 2.12.0 新增只读动作：`/notify` 的 `actions` 接受 `session` 与 `timeline`，分别打开内置会话记录与本次运行时间线。两类动作只读取通知自身的 `session_id` / `run_id`，忽略 `value`，不执行任何外部命令；未知标识或缺少标识时给出非阻塞提示。动作顺序固定为 `focus` → `session` → `timeline` → 其他，弹窗与通知中心的首个按钮因此总是「回到终端」或「查看记录」。不提供批准权限、自动继续或发送提示词的动作，审批必须回到终端完成。
 
+2.21.0 补齐日常操作细节：托盘图标在存在未读时叠加红色数字角标（超过 99 显示 `99+`），闪烁提醒仍优先于角标；点击弹窗卡片正文会打开通知中心并收起当前弹窗，按钮区域保持原有行为；通知中心支持 `Ctrl+F` 直接切到列表页并聚焦搜索框；历史新增按天保留 `history.retention_days`，默认 0 表示只按条数裁剪，设置页可直接调整条数与天数，保存后立即同时清理内存与 SQLite。
+
 2.20.0 托盘图标新增点击打开通知中心：`TrayIcon` 连接 `QSystemTrayIcon.activated`，收到 `Trigger` 或 `DoubleClick` 时发出 `open_center_requested`，由应用打开并置前既有的通知中心单例；`Context` 等其他原因不处理，右键菜单保持原样。Windows 托盘溢出面板中的图标同样响应左键单击与双击，双击只会重复置前，不会创建第二个窗口。
 
 2.19.1 修复 Linux 托盘菜单生命周期：`QSystemTrayIcon` 不持有上下文菜单的所有权，菜单此前只作为局部变量传给 `setContextMenu`；同时 PySide6 6.8 在回收子菜单的 `menuAction` 包装器时会连带删除子菜单。现在 `TrayIcon` 同时保存上下文菜单与「显示最近通知」「勿扰模式」两个子菜单 action 的强引用，打开子菜单不再触发 `QMenu already deleted`。同步修正 macOS 测试夹具，在非 Windows 环境同时关闭 `_IS_LINUX` 与 `_IS_MACOS`，让 mock 的 Windows 路径按预期执行。功能与 2.19.0 相同，2.19.0 标签因 Linux arm64 与 macOS 测试未通过而没有发布。
@@ -184,7 +186,7 @@ agentbell/
 ├─ requirements.txt       运行依赖
 ├─ requirements-dev.txt   测试/打包依赖
 ├─ run.py                 源码启动入口
-├─ AgentBell34.spec       PyInstaller 配置（Windows，AgentBell-34.exe，含 Hook 脚本资源）
+├─ AgentBell35.spec       PyInstaller 配置（Windows，AgentBell-35.exe，含 Hook 脚本资源）
 ├─ AgentBell-macos.spec   PyInstaller 配置（macOS，AgentBell.app，含 icns 与版本信息）
 ├─ AgentBell-linux.spec   PyInstaller 配置（Linux x64/arm64，产物名 AgentBell，不含 PowerShell 脚本）
 ├─ LICENSE                MIT 许可证
@@ -242,7 +244,7 @@ AgentBell 已就绪：http://127.0.0.1:8765（X-Token 鉴权已开启）
   "open_center_on_start": true,
   "onboarding_seen": false,
   "instance_name": "",
-  "history": { "enabled": true, "limit": 1000, "path": "" },
+  "history": { "enabled": true, "limit": 1000, "retention_days": 0, "path": "" },
   "quiet_hours": {
     "enabled": false,
     "start": "22:00",
@@ -521,7 +523,7 @@ runtime/
 发布约定：
 
 - Release 资产包含 `AgentBell.exe`、`AgentBell-arm64.exe`、每种架构的 `AgentBell-macos-<arch>.dmg` / `.zip` 与 `AgentBell-linux-<arch>.tar.gz`、`.AppImage`、`.deb`、`.rpm`，并合并各平台校验文件为一个 `SHA256SUMS.txt`。Windows 工作流自动选用编号最大的 `AgentBell<数字>.spec`（忽略 Linux / macOS spec）：x64 产物复制为 `AgentBell.exe`，arm64 产物复制为 `AgentBell-arm64.exe`；macOS 使用 `AgentBell-macos.spec`，由 `scripts/build_macos_packages.py` 生成 dmg 与 zip；Linux 使用 `AgentBell-linux.spec`，产物名固定为 `AgentBell` 后交给 `scripts/build_linux_packages.py` 生成四种格式。
-- 打 tag 前先把 `agentbell/__init__.py` 的 `__version__` 改成同一版本；工作流会校验 `v2.20.0` 与 `2.20.0` 一致，不一致时拒绝发布。
+- 打 tag 前先把 `agentbell/__init__.py` 的 `__version__` 改成同一版本；工作流会校验 `v2.21.0` 与 `2.21.0` 一致，不一致时拒绝发布。
 - 发布使用 GitHub Actions 的 `contents: write` 权限；fork 或 PR 构建只上传 artifact，不会发 Release。
 
 ### 历史
@@ -530,6 +532,7 @@ runtime/
 | --- | --- | --- | --- |
 | `history.enabled` | 布尔 | `true` | 开启 SQLite 历史；关闭后仅保留内存记录 |
 | `history.limit` | 整数 | `1000` | 最多保留条数，启动时自动裁剪 |
+| `history.retention_days` | 整数 | `0` | 按天保留历史；0 表示只按条数裁剪，启动、写入与保存设置时自动清理过期记录 |
 | `history.path` | 字符串 | `""` | 数据库路径；空则使用 `config.json` 同目录的 `agentbell.db`，相对路径按配置目录解析 |
 
 同库另建只追加表 `run_events`，用于运行时间线：
@@ -865,7 +868,7 @@ X-Token: your-token        # 仅当 config.token 非空时必需
 - 卡片：标题行显示状态、优先级、来源 Agent、`更新 ×N`、`待确认/已确认`、时间，摘要下方显示进度条、耗时、错误与动作按钮、重新弹出、确认、稍后提醒；已归档卡片带「已归档」标记。
 - 数据统计：总通知数、成功率（成功 / 已结束）、平均耗时（可解析的 `duration`）、待确认数，以及 7 / 30 / 90 天区间内的每日总量/失败量柱状图；「运行时间线」卡片按 `run_id` 统计运行数、运行成功率、P50/P90 运行时长与累计等待时长，等待中未结束的区段计入当前时刻。「导出 CSV」把当前统计区间的通知导出为 UTF-8 CSV，包含接收/更新时间、标题、状态、优先级、来源、摘要、耗时、错误、会话/运行 ID 与确认状态。
 - 运行时间线：有 `run_id` 的卡片右侧显示「时间线」按钮，弹窗按时间顺序列出阶段、相对耗时、绝对时间、状态、来源与关联会话；一次包含等待的运行会显示开始 → 等待输入 → 已继续 → 完成。会话详情页顶部显示最近一次运行的摘要，可直接打开同一时间线。
-- 偏好设置：端口、token、自启、启动打开通知中心、自动关闭、冷却、成功弹窗、默认确认、快捷键、免打扰、全屏抑制、锁屏保留、弹窗模式与皮肤、全屏背景图与显示区域（含全屏拖拽定位与仅主屏卡片）、Agent 会话扫描、会议进程、离开判定、聚合、升级、模板、声音、规则与渠道 JSON，以及「关于」入口。所有标签页均可滚动，小窗口下不会裁切内容。保存后立即应用可热更新的项（含规则）并写回 `config.json`；端口、token 等监听相关配置需重启。
+- 偏好设置：端口、token、自启、启动打开通知中心、自动关闭、冷却、成功弹窗、默认确认、历史数据库（条数上限与按天保留，保存后立即清理）、快捷键、免打扰、全屏抑制、锁屏保留、弹窗模式与皮肤、全屏背景图与显示区域（含全屏拖拽定位与仅主屏卡片）、Agent 会话扫描、会议进程、离开判定、聚合、升级、模板、声音、规则与渠道 JSON，以及「关于」入口。所有标签页均可滚动，小窗口下不会裁切内容。保存后立即应用可热更新的项（含规则）并写回 `config.json`；端口、token 等监听相关配置需重启。
 - 全屏拖拽定位：点「全屏拖拽定位…」进入与真实弹窗一致的全屏预览，卡片可自由拖动，顶部实时显示坐标、尺寸、最近锚点和偏移；点「保存位置」自动写回设置并保存配置，点「取消」不改动原值。
 - 效果预览：设置对话框底部「测试」按钮按当前选择的模式、皮肤和背景图弹出一条预览。预览使用临时通知，不写入 SQLite 历史；`overlay` 预览会实际铺满屏幕，点「知道了」即可返回设置。
 - Agent 会话页：左侧侧栏切换到「Agent 会话」，按项目分组显示本机会话；点「查看记录」进入阅读视图，支持轮次折叠、工具过程、大纲跳转、会话内搜索、复制全文和导出 Markdown；数据只读，不进入通知历史。
@@ -1079,8 +1082,8 @@ PyInstaller 不能跨平台交叉编译，请在目标系统上分别打包。Wi
 ```bash
 pip install -r requirements-dev.txt
 
-# 产物：dist\AgentBell-34.exe（在原生 Arm64 Python 上构建即为 arm64 产物）
-python -m PyInstaller --noconfirm --clean AgentBell34.spec
+# 产物：dist\AgentBell-35.exe（在原生 Arm64 Python 上构建即为 arm64 产物）
+python -m PyInstaller --noconfirm --clean AgentBell35.spec
 ```
 
 Windows ARM64 构建要求原生 Arm64 Python 3.12、提供 `win_arm64` 轮子的 PySide6 与支持 win_arm64 的 PyInstaller；CI 使用 `windows-11-arm` runner 与 `actions/setup-python` 的 `architecture: arm64`。x64 与 arm64 不共用产物，工作流分别上传后命名为 `AgentBell.exe` 与 `AgentBell-arm64.exe`。
@@ -1089,10 +1092,10 @@ Windows ARM64 构建要求原生 Arm64 Python 3.12、提供 `win_arm64` 轮子�
 
 ```bash
 copy config.json dist\config.json
-dist\AgentBell-34.exe
+dist\AgentBell-35.exe
 ```
 
-> 新旧版本默认共用单实例锁：若托盘中已有 AgentBell 在运行，双击 AgentBell-34 只会唤醒旧实例。切换版本前先从托盘退出旧版，再启动新 exe。工作流会自动选用编号最大的 `AgentBell<数字>.spec`，旧 spec 不需要手工维护。
+> 新旧版本默认共用单实例锁：若托盘中已有 AgentBell 在运行，双击 AgentBell-35 只会唤醒旧实例。切换版本前先从托盘退出旧版，再启动新 exe。工作流会自动选用编号最大的 `AgentBell<数字>.spec`，旧 spec 不需要手工维护。
 
 打包后 `config.json`、`logs/`、`agentbell.db`、`chat/` 与 `updates/` 都位于 exe 所在目录。单文件模式首次启动需要解压到临时目录，通常会有 1–3 秒延迟。
 
@@ -1109,7 +1112,7 @@ python -m PyInstaller --noconfirm --clean AgentBell-linux.spec
 # 四种格式（x64 机器；不传 AppImage 工具时只生成 tar.gz + deb + rpm）
 python scripts/build_linux_packages.py \
   --binary dist/AgentBell \
-  --version 2.20.0 \
+  --version 2.21.0 \
   --arch x64 \
   --appimagetool ./appimagetool \
   --appimage-runtime ./runtime-x86_64
@@ -1147,13 +1150,13 @@ python -m PyInstaller --noconfirm --clean AgentBell-macos.spec
 # ad-hoc 签名 + dmg / zip + SHA256SUMS-macos-<arch>.txt
 python scripts/build_macos_packages.py \
   --app dist/AgentBell.app \
-  --version 2.20.0 \
+  --version 2.21.0 \
   --arch arm64
 
 # 本地有 Developer ID 与公证凭据时（推荐发布用）
 python scripts/build_macos_packages.py \
   --app dist/AgentBell.app \
-  --version 2.20.0 \
+  --version 2.21.0 \
   --arch arm64 \
   --identity "Developer ID Application: Example (TEAMID)" \
   --entitlements assets/macos_entitlements.plist \
@@ -1202,7 +1205,7 @@ python scripts/build_macos_packages.py \
 ```powershell
 $env:WINDOWS_CERT_PFX_BASE64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes("cert.pfx"))
 $env:WINDOWS_CERT_PASSWORD = "pfx-password"
-python scripts/sign_windows.py --target dist/AgentBell-34.exe
+python scripts/sign_windows.py --target dist/AgentBell-35.exe
 ```
 
 也可以直接传 `--pfx cert.pfx`，或用 `--thumbprint` 使用证书存储中的证书；密码只从 `WINDOWS_CERT_PASSWORD` 读取，签名命令输出会把密码替换为 `******`。`signtool` 默认从 PATH 或 Windows SDK 目录发现，也可用 `--signtool` 指定。
@@ -1210,11 +1213,11 @@ python scripts/sign_windows.py --target dist/AgentBell-34.exe
 发布新版本：
 
 ```bash
-# 1. 修改 agentbell/__init__.py 的 __version__，例如 2.20.0
+# 1. 修改 agentbell/__init__.py 的 __version__，例如 2.21.0
 # 2. 提交并打同版本 tag（tag 去掉 v 后必须与 __version__ 完全一致）
 git add -A
-git commit -m "feat: 托盘点击打开通知中心并发布 2.20.0"
-git tag v2.20.0
+git commit -m "feat: 未读角标、卡片点击、Ctrl+F 与历史按天保留并发布 2.21.0"
+git tag v2.21.0
 git push origin develop --tags
 ```
 

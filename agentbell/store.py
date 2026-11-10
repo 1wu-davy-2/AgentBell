@@ -28,8 +28,10 @@ class NotificationStore:
         limit: int = DEFAULT_HISTORY_LIMIT,
         storage: NotificationStorage | None = None,
         logger: logging.Logger | None = None,
+        retention_days: int = 0,
     ) -> None:
         self._limit = max(1, int(limit))
+        self._retention_days = max(0, int(retention_days))
         self._items: deque[Notification] = deque(maxlen=self._limit)
         self._by_id: dict[str, Notification] = {}
         self._dedupe_index: dict[str, str] = {}
@@ -37,6 +39,7 @@ class NotificationStore:
         self._storage = storage
         self._logger = logger or logging.getLogger("agentbell.store")
         if storage is not None:
+            storage.prune(self._limit, self._retention_days)
             for notification in storage.load_recent(self._limit):
                 self._insert_locked(notification)
 
@@ -267,6 +270,34 @@ class NotificationStore:
         with self._lock:
             return self._storage is not None
 
+    def apply_history(self, limit: int, retention_days: int) -> None:
+        with self._lock:
+            new_limit = max(1, int(limit))
+            self._retention_days = max(0, int(retention_days))
+            cutoff = (
+                datetime.now().astimezone()
+                - timedelta(days=self._retention_days)
+                if self._retention_days > 0
+                else None
+            )
+            kept_items = [
+                item
+                for item in self._items
+                if cutoff is None or item.received_at >= cutoff
+            ][:new_limit]
+            if new_limit != self._limit or len(kept_items) != len(self._items):
+                self._limit = new_limit
+                kept = deque(kept_items, maxlen=new_limit)
+                self._items = kept
+                self._by_id = {item.id: item for item in kept}
+                self._dedupe_index = {
+                    item.dedupe_key: item.id
+                    for item in kept
+                    if item.dedupe_key
+                }
+            if self._storage is not None:
+                self._storage.prune(self._limit, self._retention_days)
+
     # ---------- internals ----------
 
     def _merge(
@@ -448,7 +479,7 @@ class NotificationStore:
         if self._storage is None:
             return
         self._storage.save(notification)
-        self._storage.prune(self._limit)
+        self._storage.prune(self._limit, self._retention_days)
 
     def _memory_stats_locked(self) -> dict[str, Any]:
         counts = {"succeeded": 0, "failed": 0, "canceled": 0, "running": 0}

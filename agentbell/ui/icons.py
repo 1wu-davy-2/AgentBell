@@ -143,6 +143,41 @@ def status_pixmap(status: Status, size: int = 38) -> QPixmap:
     return pixmap
 
 
+def make_unread_icon(count: int) -> QIcon:
+    label = "99+" if count > 99 else str(max(1, int(count)))
+    multi = len(label) > 1
+    icon = QIcon()
+    for size in (16, 24, 32, 48, 64, 128, 256):
+        pixmap = _render_app_icon(size)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        scale = size / 64.0
+        radius = (17.0 if multi else 15.0) * scale
+        center = QPointF(
+            (47.0 if multi else 49.0) * scale,
+            (19.0 if multi else 15.0) * scale,
+        )
+        painter.setPen(QPen(QColor("#FFFFFF"), max(1.0, 2.0 * scale)))
+        painter.setBrush(QColor("#FF4D4F"))
+        painter.drawEllipse(center, radius, radius)
+        if size >= 24:
+            font = painter.font()
+            font.setBold(True)
+            font.setPixelSize(max(7, int(round((13.0 if multi else 15.0) * scale))))
+            painter.setFont(font)
+            painter.setPen(QColor("#FFFFFF"))
+            box = QRectF(
+                center.x() - radius,
+                center.y() - radius,
+                radius * 2,
+                radius * 2,
+            )
+            painter.drawText(box, Qt.AlignmentFlag.AlignCenter, label)
+        painter.end()
+        icon.addPixmap(pixmap)
+    return icon
+
+
 def make_alert_icon() -> QIcon:
     icon = QIcon()
     for size in (16, 24, 32, 48, 64, 128, 256):

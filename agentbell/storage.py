@@ -659,9 +659,18 @@ class NotificationStorage:
                 self._logger.warning("更新归档状态失败：%s", exc)
                 return 0
 
-    def prune(self, limit: int) -> None:
+    def prune(self, limit: int, retention_days: int = 0) -> None:
         with self._lock:
             try:
+                if retention_days > 0:
+                    cutoff = _iso(
+                        datetime.now().astimezone()
+                        - timedelta(days=int(retention_days))
+                    )
+                    self._connection.execute(
+                        "DELETE FROM notifications WHERE received_at < ?",
+                        (cutoff,),
+                    )
                 self._connection.execute(
                     "DELETE FROM notifications WHERE id NOT IN "
                     "(SELECT id FROM notifications "

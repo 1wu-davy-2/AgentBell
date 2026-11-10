@@ -38,6 +38,7 @@ def test_missing_config_is_created_with_defaults(tmp_path):
         "window_seconds": 60,
     }
     assert data["history"]["enabled"] is True
+    assert data["history"]["retention_days"] == 0
     assert data["rules"] == []
     assert data["channels"] == []
     assert data["hotkey"] == "Ctrl+Alt+A"
@@ -63,6 +64,21 @@ def test_valid_config_is_loaded(tmp_path):
     assert config.auto_close_seconds == 0
     assert config.autostart is True
     assert config.auth_enabled is True
+
+
+def test_history_retention_days_is_parsed(tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps({"history": {"retention_days": 30}}), encoding="utf-8"
+    )
+    config, _ = load_config(path)
+    assert config.history.retention_days == 30
+
+    path.write_text(
+        json.dumps({"history": {"retention_days": -1}}), encoding="utf-8"
+    )
+    with pytest.raises(ConfigError, match="retention_days"):
+        load_config(path)
 
 
 def test_missing_fields_use_defaults(tmp_path):

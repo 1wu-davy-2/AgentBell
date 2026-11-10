@@ -3415,6 +3415,12 @@ class NotificationWindow(QMainWindow):
         elif page == "list" and self._cards_dirty:
             self._rebuild_cards()
 
+    def focus_search(self) -> None:
+        if self._page != "list":
+            self.set_page("list")
+        self._search_input.setFocus(Qt.FocusReason.ShortcutFocusReason)
+        self._search_input.selectAll()
+
     def _on_stats_clicked(self, checked: bool) -> None:
         self.set_page("stats" if checked else "list")
 
@@ -3988,9 +3994,11 @@ class NotificationWindow(QMainWindow):
         for key, label in self._stats_status_labels.items():
             label.setText(f"{STATUS_LABELS[key]} {int(stats.get(key) or 0)}")
         if self.config.history.enabled and self._store.persistent:
-            self._stats_hint.setText(
-                f"来自本地历史 · 保留 {self.config.history.limit} 条"
-            )
+            retention = self.config.history.retention_days
+            scope = f"保留 {self.config.history.limit} 条"
+            if retention > 0:
+                scope += f" / {retention} 天"
+            self._stats_hint.setText(f"来自本地历史 · {scope}")
         elif self.config.history.enabled:
             self._stats_hint.setText("历史数据库未启用，仅统计本次运行")
         else:
@@ -4672,6 +4680,13 @@ class NotificationWindow(QMainWindow):
     def keyPressEvent(self, event) -> None:
         if event.key() == Qt.Key.Key_Escape:
             self.hide_center()
+            event.accept()
+            return
+        if (
+            event.key() == Qt.Key.Key_F
+            and event.modifiers() & Qt.KeyboardModifier.ControlModifier
+        ):
+            self.focus_search()
             event.accept()
             return
         super().keyPressEvent(event)

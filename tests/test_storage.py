@@ -402,6 +402,95 @@ def test_prune_keeps_newest(tmp_path):
         storage.close()
 
 
+def test_prune_retention_days_drops_old_notifications(tmp_path):
+    storage = open_storage(tmp_path)
+    try:
+        now = datetime.now().astimezone()
+        storage.save(
+            make_notification(1, received_at=now - timedelta(days=30))
+        )
+        storage.save(
+            make_notification(2, received_at=now - timedelta(days=10))
+        )
+        storage.save(make_notification(3, received_at=now))
+
+        storage.prune(10, retention_days=7)
+        assert [item.id for item in storage.load_recent(10)] == ["id0003"]
+    finally:
+        storage.close()
+
+
+def test_store_applies_retention_on_startup(tmp_path):
+    path = tmp_path / "history.db"
+    storage = NotificationStorage(path, logging.getLogger("agentbell.tests"))
+    now = datetime.now().astimezone()
+    storage.save(make_notification(1, received_at=now - timedelta(days=30)))
+    storage.save(make_notification(2, received_at=now))
+    storage.close()
+
+    reopened = NotificationStorage(path, logging.getLogger("agentbell.tests"))
+    store = NotificationStore(
+        storage=reopened, limit=50, retention_days=7
+    )
+    try:
+        assert [item.id for item in store.snapshot()] == ["id0002"]
+    finally:
+        store.close()
+
+
+def test_store_apply_history_trims_memory_and_storage(tmp_path):
+    path = tmp_path / "history.db"
+    storage = NotificationStorage(path, logging.getLogger("agentbell.tests"))
+    now = datetime.now().astimezone()
+    for index in range(3):
+        storage.save(
+            make_notification(index, received_at=now + timedelta(seconds=index))
+        )
+    store = NotificationStore(storage=storage, limit=50)
+    try:
+        assert len(store) == 3
+        store.apply_history(2, 0)
+        assert len(store) == 2
+    finally:
+        store.close()
+
+    reopened = NotificationStorage(path, logging.getLogger("agentbell.tests"))
+    try:
+        assert [item.id for item in reopened.load_recent(10)] == [
+            "id0002",
+            "id0001",
+        ]
+    finally:
+        reopened.close()
+
+
+def test_store_apply_history_drops_expired_items(tmp_path):
+    storage = open_storage(tmp_path)
+    now = datetime.now().astimezone()
+    storage.save(make_notification(1, received_at=now - timedelta(days=30)))
+    storage.save(make_notification(2, received_at=now))
+    store = NotificationStore(storage=storage, limit=50)
+    try:
+        assert len(store) == 2
+        store.apply_history(50, 7)
+        assert [item.id for item in store.snapshot()] == ["id0002"]
+    finally:
+        store.close()
+
+
+def test_prune_retention_zero_keeps_count_only(tmp_path):
+    storage = open_storage(tmp_path)
+    try:
+        now = datetime.now().astimezone()
+        storage.save(
+            make_notification(1, received_at=now - timedelta(days=30))
+        )
+        storage.prune(10, retention_days=0)
+        assert [item.id for item in storage.load_recent(10)] == ["id0001"]
+    finally:
+        storage.close()
+
+
 def test_store_merge_keeps_session_and_clears_waiting(tmp_path):
     storage = open_storage(tmp_path)
     store = NotificationStore(storage=storage, limit=50)

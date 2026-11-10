@@ -7,7 +7,7 @@ from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
 from ..models import Notification
-from .icons import make_alert_icon
+from .icons import make_alert_icon, make_unread_icon
 
 _STATUS_MARKS = {
     "succeeded": "✓",
@@ -40,6 +40,7 @@ class TrayIcon(QSystemTrayIcon):
         super().__init__(icon, parent)
         self._normal_icon = icon
         self._alert_icon = make_alert_icon()
+        self._unread_icon: QIcon | None = None
         self._recent: list[Notification] = []
         self._unread = 0
         self._pause_until: datetime | None = None
@@ -124,9 +125,19 @@ class TrayIcon(QSystemTrayIcon):
 
     def set_unread(self, count: int) -> None:
         self._unread = max(0, int(count))
+        self._unread_icon = (
+            make_unread_icon(self._unread) if self._unread else None
+        )
         self._unread_action.setText(f"{self._unread} 条未读通知")
         self._unread_action.setVisible(self._unread > 0)
+        self._apply_icon()
         self._apply_tooltip()
+
+    def _apply_icon(self) -> None:
+        if self._flashing and self._flash_on:
+            self.setIcon(self._alert_icon)
+            return
+        self.setIcon(self._unread_icon or self._normal_icon)
 
     def set_pause_until(self, until: datetime | None) -> None:
         self._pause_until = until
@@ -174,14 +185,14 @@ class TrayIcon(QSystemTrayIcon):
         self._flash_timer.stop()
         self._flashing = False
         self._flash_on = False
-        self.setIcon(self._normal_icon)
+        self._apply_icon()
 
     def _toggle_flash(self) -> None:
         if self._flash_remaining <= 0:
             self.stop_flash()
             return
         self._flash_on = not self._flash_on
-        self.setIcon(self._alert_icon if self._flash_on else self._normal_icon)
+        self._apply_icon()
         self._flash_remaining -= 1
 
     def _rebuild_recent_menu(self) -> None:

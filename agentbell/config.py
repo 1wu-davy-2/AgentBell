@@ -74,6 +74,7 @@ class QuietHoursConfig:
 class HistoryConfig:
     enabled: bool = True
     limit: int = DEFAULT_HISTORY_LIMIT
+    retention_days: int = 0
     path: str = ""
 
 
@@ -555,6 +556,7 @@ def _read_history(data: dict[str, Any]) -> HistoryConfig:
     return HistoryConfig(
         enabled=_read_bool(section, "enabled", True),
         limit=_read_int(section, "limit", DEFAULT_HISTORY_LIMIT, 50, 10000),
+        retention_days=_read_int(section, "retention_days", 0, 0, 3650),
         path=_read_str(section, "path", "", 260),
     )
 
