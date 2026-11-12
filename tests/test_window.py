@@ -242,6 +242,42 @@ def test_empty_state_copy_button_works(window_factory):
     assert "http://127.0.0.1:8765/notify" in QGuiApplication.clipboard().text()
 
 
+def test_mode_combo_reflects_config_and_persists_switch(window_factory, tmp_path):
+    path = tmp_path / "config.json"
+    config = AppConfig(port=8765, token="test-token", integration_mode="finish_only")
+    window = window_factory(config=config, config_path=path)
+
+    assert window.mode_combo.count() == 3
+    assert window.mode_combo.currentData() == "finish_only"
+    assert window.mode_combo.currentText() == "仅结束"
+
+    window.mode_combo.setCurrentIndex(window.mode_combo.findData("full"))
+
+    assert window.config.integration_mode == "full"
+    saved, _ = load_config(path)
+    assert saved.integration_mode == "full"
+    assert "30% / 60% / 90%" in window.mode_combo.toolTip()
+
+
+def test_copy_instructions_follow_selected_mode(window_factory):
+    window = window_factory(
+        config=AppConfig(
+            port=8765, token="test-token", integration_mode="finish_only"
+        )
+    )
+    window.copy_button.click()
+    text = QGuiApplication.clipboard().text()
+    assert '"mode": "finish_only"' in text
+    assert "30% / 60% / 90%" not in text
+    assert '"phase": "started"' not in text
+
+    window.mode_combo.setCurrentIndex(window.mode_combo.findData("full"))
+    window.copy_button.click()
+    text = QGuiApplication.clipboard().text()
+    assert '"mode": "full"' in text
+    assert "30% / 60% / 90%" in text
+
+
 def test_filtered_empty_state_can_return_to_all(window_factory):
     store = NotificationStore()
     store.add(make_notification(1))
@@ -1639,6 +1675,178 @@ def test_open_timeline_by_run_opens_persistent_events(
     assert window.open_timeline_by_run("missing-run") is False
     assert window.open_timeline_by_run("") is False
     assert len(opened) == 1
+    store.close()
+
+
+def test_card_session_history_button_requires_session_id(qapp):
+    logger = logging.getLogger("agentbell.tests")
+    with_session = NotificationCard(
+        make_notification(1, session_id="s-1"), logger, allow_timeline=True
+    )
+    assert with_session.session_history_button is not None
+    requested: list[Notification] = []
+    with_session.session_history_requested.connect(requested.append)
+    with_session.session_history_button.click()
+    assert [item.session_id for item in requested] == ["s-1"]
+
+    without_session = NotificationCard(
+        make_notification(2), logger, allow_timeline=True
+    )
+    assert without_session.session_history_button is None
+    without_storage = NotificationCard(
+        make_notification(3, session_id="s-1"), logger, allow_timeline=False
+    )
+    assert without_storage.session_history_button is None
+    with_session.deleteLater()
+    without_session.deleteLater()
+    without_storage.deleteLater()
+
+
+def test_build_session_history_dialog_collects_rounds(
+    tmp_path, window_factory
+):
+    store = open_persistent_store(tmp_path)
+    storage = store._storage
+    assert storage is not None
+    base = datetime.now().astimezone()
+    store.replace_notification(
+        make_notification(
+            1,
+            title="第一轮",
+            status="running",
+            session_id="s-1",
+            run_id="session:s-1",
+            received_at=base,
+        )
+    )
+    store.replace_notification(
+        make_notification(
+            2,
+            title="第二轮",
+            status="failed",
+            session_id="s-1",
+            run_id="session:s-1",
+            received_at=base + timedelta(minutes=1),
+        )
+    )
+    store.add(make_notification(3, title="其他会话", session_id="s-2"))
+    for notification_id, kind, offset, status in (
+        ("id0001", "started", 0, "running"),
+        ("id0001", "finished", 40, "failed"),
+        ("id0002", "started", 60, "running"),
+        ("id0002", "finished", 100, "succeeded"),
+    ):
+        storage.append_run_event(
+            RunEvent(
+                run_id="session:s-1",
+                notification_id=notification_id,
+                kind=kind,
+                occurred_at=base + timedelta(seconds=offset),
+                session_id="s-1",
+                status=status,
+                title="会话任务",
+            )
+        )
+    session = make_session(0, "TaskBeacon", agent="qoder")
+    session = AgentSession(
+        agent=session.agent,
+        session_id="s-1",
+        project=session.project,
+        project_path=session.project_path,
+        path=session.path,
+        updated_at=base,
+        title="AgentBell 开发",
+    )
+    window = window_factory(store)
+    window.update_sessions([session])
+
+    dialog = window._build_session_history_dialog("s-1")
+    try:
+        assert [item.notification.title for item in dialog.rounds] == [
+            "第一轮",
+            "第二轮",
+        ]
+        assert [len(item.events) for item in dialog.rounds] == [2, 2]
+        assert dialog.title_text == "AgentBell 开发"
+        assert dialog.agent == "Qoder"
+        assert dialog.project == "TaskBeacon"
+        assert len(dialog.round_cards) == 2
+        assert len(dialog.event_rows) == 4
+        chips = [
+            label.text()
+            for label in dialog.findChildren(QLabel, "timelineMetaChip")
+        ]
+        assert "Qoder" in chips
+        assert "项目 TaskBeacon" in chips
+        assert "2 轮" in chips
+    finally:
+        dialog.deleteLater()
+        store.close()
+
+
+def test_detail_run_block_supports_notifications_only(
+    tmp_path, window_factory
+):
+    store = NotificationStore()
+    base = datetime.now().astimezone()
+    store.add(
+        make_notification(1, session_id="sess-1", received_at=base)
+    )
+    window = window_factory(store)
+    session = AgentSession(
+        agent="qoder",
+        session_id="sess-1",
+        project="demo",
+        project_path="E:/demo",
+        path="E:/demo/session.jsonl",
+        updated_at=base,
+        title="纯通知会话",
+    )
+    window._refresh_detail_run(session)
+    assert window._detail_run_card.isHidden() is False
+    assert window._detail_run_count == 1
+    assert "1 轮通知" in window._detail_run_summary._full_text
+    assert window._detail_history_button.isHidden() is False
+    assert window._detail_run_button.isHidden() is True
+    store.close()
+
+
+def test_open_session_history_opens_dialog(
+    tmp_path, window_factory, monkeypatch
+):
+    store = open_persistent_store(tmp_path)
+    base = datetime.now().astimezone()
+    stored, _ = store.add(
+        make_notification(1, title="历史任务", session_id="s-1", received_at=base)
+    )
+    window = window_factory(store)
+    session = AgentSession(
+        agent="qoder",
+        session_id="s-1",
+        project="TaskBeacon",
+        project_path="E:/opt/TaskBeacon",
+        path="E:/opt/TaskBeacon/s.jsonl",
+        updated_at=base,
+        title="AgentBell 开发",
+    )
+    window.update_sessions([session])
+    opened = []
+    monkeypatch.setattr(
+        "agentbell.ui.window.SessionTimelineDialog.exec",
+        lambda self: opened.append(self) or 0,
+    )
+
+    window._open_session_history(stored)
+    assert len(opened) == 1
+    assert opened[0].session_id == "s-1"
+    assert opened[0].title_text == "AgentBell 开发"
+    assert [item.notification.title for item in opened[0].rounds] == ["历史任务"]
+
+    window._session_detail_session = session
+    window._open_detail_session_history()
+    assert len(opened) == 2
+    assert opened[1].title_text == "AgentBell 开发"
+    assert [item.notification.id for item in opened[1].rounds] == [stored.id]
     store.close()
 
 

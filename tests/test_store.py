@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import logging
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 
-from agentbell.models import Notification
+from agentbell.models import IntegrationProfile, Notification
 from agentbell.storage import NotificationStorage
 from agentbell.store import NotificationStore
 
@@ -243,6 +243,45 @@ def test_run_id_prefers_session_then_dedupe_then_single(tmp_path):
         store.close()
 
 
+def test_session_notifications_returns_oldest_first(tmp_path):
+    store = open_persistent_store(tmp_path)
+    try:
+        base = datetime.now().astimezone()
+        for index in range(3):
+            store.add(
+                make_notification(
+                    index + 1,
+                    session_id="s-1",
+                    received_at=base + timedelta(minutes=index),
+                )
+            )
+        store.add(make_notification(9, session_id="other"))
+        items = store.session_notifications("s-1")
+        assert [item.id for item in items] == ["id1", "id2", "id3"]
+        assert [item.id for item in store.session_notifications("s-1", limit=2)] == [
+            "id2",
+            "id3",
+        ]
+        assert store.session_notifications("missing") == []
+        assert store.session_notifications(None) == []
+    finally:
+        store.close()
+
+
+def test_session_notifications_memory_fallback():
+    store = NotificationStore()
+    base = datetime.now().astimezone()
+    store.add(make_notification(1, session_id="s-1", received_at=base))
+    store.add(
+        make_notification(
+            2, session_id="s-1", received_at=base + timedelta(minutes=1)
+        )
+    )
+    store.add(make_notification(3, session_id="s-2"))
+    items = store.session_notifications("s-1")
+    assert [item.id for item in items] == ["id1", "id2"]
+
+
 def test_store_infers_started_waiting_resumed_finished(tmp_path):
     store = open_persistent_store(tmp_path)
     try:
@@ -312,6 +351,42 @@ def test_explicit_phase_appends_single_event(tmp_path):
         events = store.run_events(stored.run_id)
         assert [event.kind for event in events] == ["progress"]
         assert events[0].project == "demo"
+    finally:
+        store.close()
+
+
+def test_silent_start_and_final_update_share_one_card_and_timeline(tmp_path):
+    store = open_persistent_store(tmp_path)
+    try:
+        start, start_updated = store.add(
+            make_notification(
+                1,
+                status="running",
+                dedupe_key="round-1",
+                run_id="round-1",
+                silent=True,
+            ),
+            phase="started",
+        )
+        final, final_updated = store.add(
+            make_notification(
+                2,
+                status="succeeded",
+                dedupe_key="round-1",
+                run_id="round-1",
+                title="任务完成",
+            ),
+            phase="finished",
+        )
+
+        assert start_updated is False
+        assert final_updated is True
+        assert final.id == start.id
+        assert len(store) == 1
+        assert [event.kind for event in store.run_events("round-1")] == [
+            "started",
+            "finished",
+        ]
     finally:
         store.close()
 
@@ -388,3 +463,35 @@ def test_archive_updates_memory_and_persists(tmp_path):
         assert persisted is not None and persisted.archived is False
     finally:
         reopened.close()
+
+
+def test_integration_profiles_memory_and_persistent(tmp_path):
+    now = datetime.now().astimezone()
+    store = NotificationStore()
+    profile = IntegrationProfile(
+        agent="Qoder",
+        mode="finish_only",
+        source="manual",
+        updated_at=now,
+    )
+    assert store.record_integration_profile(profile) is True
+    assert store.record_integration_profile(profile) is False
+    assert [item.agent for item in store.integration_profiles()] == ["Qoder"]
+
+    storage = NotificationStorage(
+        tmp_path / "history.db", logging.getLogger("agentbell.tests")
+    )
+    persistent = NotificationStore(storage=storage)
+    try:
+        persistent.record_integration_profile(
+            IntegrationProfile(
+                agent="Claude Code",
+                mode="start_finish",
+                updated_at=now + timedelta(minutes=1),
+            )
+        )
+        profiles = persistent.integration_profiles()
+        assert [item.agent for item in profiles] == ["Claude Code"]
+        assert profiles[0].mode == "start_finish"
+    finally:
+        persistent.close()

@@ -65,6 +65,26 @@ def result_payload(response):
     return json.loads(result["content"][0]["text"])
 
 
+def test_status_lists_integration_profiles():
+    client, _inbox, _store = build()
+    report = client.post(
+        "/integration/report",
+        json={"agent": "Qoder", "mode": "finish_only"},
+        headers=HEADERS,
+    )
+    assert report.status_code == 202
+
+    status = result_payload(call_tool(client, "get_status"))
+    assert status["integration_profiles"] == [
+        {
+            "agent": "Qoder",
+            "mode": "finish_only",
+            "source": "",
+            "updated_at": status["integration_profiles"][0]["updated_at"],
+        }
+    ]
+
+
 def test_mcp_requires_token():
     client, inbox, _store = build()
     response = client.post(

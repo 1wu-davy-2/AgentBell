@@ -6,6 +6,7 @@ import logging
 import queue
 import re
 import uuid
+from dataclasses import replace
 from datetime import datetime, timedelta
 from typing import Any, Callable
 
@@ -30,6 +31,8 @@ from .config import AppConfig
 from .mcp import McpServer
 from .models import (
     ActionKind,
+    IntegrationMode,
+    IntegrationProfile,
     Notification,
     NotificationAction,
     PopupMode,
@@ -48,6 +51,7 @@ from .models import (
     sanitize_metadata,
 )
 from .policy import apply_rules
+from .session_link import SessionLinker
 from .store import NotificationStore
 from .usage import UsageLedger, UsageReport, default_report_id
 
@@ -204,6 +208,28 @@ class SessionReportPayload(BaseModel):
         if self.needs_input and self.wait_reason is None:
             self.wait_reason = "other"
         return self
+
+
+class IntegrationReportPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
+
+    agent: str = Field(min_length=1, max_length=100)
+    mode: IntegrationMode
+    source: str = Field(default="", max_length=100)
+
+    @field_validator("agent", "source", mode="before")
+    @classmethod
+    def _compact_text(cls, value: Any) -> Any:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return " ".join(value.replace("\x00", " ").split())
+        return value
+
+    @field_validator("mode", mode="before")
+    @classmethod
+    def _lower_mode(cls, value: Any) -> Any:
+        return value.strip().lower() if isinstance(value, str) else value
 
 
 class NotifyPayload(BaseModel):
@@ -693,6 +719,7 @@ def create_app(
     store: NotificationStore | None = None,
     ledger: UsageLedger | None = None,
     sessions: SessionReportRegistry | None = None,
+    session_linker: SessionLinker | None = None,
 ) -> FastAPI:
     def current_config() -> AppConfig:
         return config() if callable(config) else config
@@ -711,7 +738,13 @@ def create_app(
     @app.middleware("http")
     async def verify_token(request: Request, call_next):
         path = request.url.path
-        protected = {"/notify", "/mcp", "/usage/report", "/sessions/report"}
+        protected = {
+            "/notify",
+            "/mcp",
+            "/usage/report",
+            "/sessions/report",
+            "/integration/report",
+        }
         if path not in protected or not startup_config.token:
             return await call_next(request)
         supplied = request.headers.get("x-token")
@@ -768,6 +801,28 @@ def create_app(
             source=payload.source or fallback_source,
             project=project,
         )
+        if not notification.session_id and session_linker is not None:
+            linked = session_linker.resolve(
+                notification.source or fallback_source,
+                origin.working_dir if origin is not None else "",
+                now,
+            )
+            if linked is not None:
+                notification = replace(
+                    notification,
+                    session_id=linked.session_id,
+                    metadata={
+                        **notification.metadata,
+                        "session_link": "auto",
+                    },
+                )
+                logger.info(
+                    "通知已自动关联会话 id=%s session=%s agent=%s project=%s",
+                    notification.id,
+                    linked.session_id,
+                    linked.agent,
+                    linked.project,
+                )
         stored, updated = history.add(
             notification,
             phase=payload.phase,
@@ -865,6 +920,37 @@ def create_app(
             "version": sessions.version,
         }
 
+    def record_integration(payload: IntegrationReportPayload) -> dict[str, Any]:
+        now = datetime.now().astimezone()
+        previous = next(
+            (
+                item
+                for item in history.integration_profiles()
+                if item.agent == payload.agent
+            ),
+            None,
+        )
+        changed = (
+            previous is None
+            or previous.mode != payload.mode
+            or previous.source != payload.source
+        )
+        profile = IntegrationProfile(
+            agent=payload.agent,
+            mode=payload.mode,
+            source=payload.source,
+            updated_at=now,
+        )
+        history.record_integration_profile(profile)
+        return {
+            "ok": True,
+            "agent": profile.agent,
+            "mode": profile.mode,
+            "source": profile.source,
+            "updated_at": now.isoformat(timespec="seconds"),
+            "changed": changed,
+        }
+
     @app.post("/notify", status_code=202)
     async def notify(request: Request):
         payload, error_response = await _read_payload(request, logger)
@@ -952,6 +1038,33 @@ def create_app(
         )
         return result
 
+    @app.post("/integration/report", status_code=202)
+    async def integration_report(request: Request):
+        data, error_response = await _read_json_body(request, logger)
+        if error_response is not None:
+            return error_response
+        try:
+            payload = IntegrationReportPayload.model_validate(data)
+        except ValidationError as exc:
+            summary = _validation_summary(exc)
+            logger.warning(
+                "接入登记校验失败 client=%s details=%s",
+                _client(request),
+                summary,
+            )
+            return JSONResponse(
+                status_code=422, content={"ok": False, "error": summary}
+            )
+        result = record_integration(payload)
+        logger.info(
+            "收到接入登记 agent=%s mode=%s source=%s client=%s",
+            _log_text(result["agent"], 60),
+            result["mode"],
+            _log_text(result["source"], 60) or "-",
+            _client(request),
+        )
+        return result
+
     def mcp_notify(arguments: dict[str, Any]) -> dict[str, Any]:
         try:
             payload = NotifyPayload.model_validate(arguments)
@@ -997,6 +1110,15 @@ def create_app(
             "usage_ledger": ledger is not None,
             "session_registry": sessions is not None,
             "external_sessions": sessions.count if sessions is not None else 0,
+            "integration_profiles": [
+                {
+                    "agent": profile.agent,
+                    "mode": profile.mode,
+                    "source": profile.source,
+                    "updated_at": profile.updated_at.isoformat(timespec="seconds"),
+                }
+                for profile in history.integration_profiles()
+            ],
             "stats_7d": {
                 "total": stats.get("total", 0),
                 "succeeded": stats.get("succeeded", 0),

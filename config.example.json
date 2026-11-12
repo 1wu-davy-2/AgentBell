@@ -38,6 +38,7 @@
     "margin": 32
   },
   "hold_when_locked": true,
+  "integration_mode": "start_finish",
   "agent_sessions": {
     "enabled": true,
     "scan_interval_seconds": 120,

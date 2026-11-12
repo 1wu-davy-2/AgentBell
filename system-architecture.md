@@ -48,6 +48,8 @@
 
 2.12.0 新增只读动作：`/notify` 的 `actions` 接受 `session` 与 `timeline`，分别打开内置会话记录与本次运行时间线。两类动作只读取通知自身的 `session_id` / `run_id`，忽略 `value`，不执行任何外部命令；未知标识或缺少标识时给出非阻塞提示。动作顺序固定为 `focus` → `session` → `timeline` → 其他，弹窗与通知中心的首个按钮因此总是「回到终端」或「查看记录」。不提供批准权限、自动继续或发送提示词的动作，审批必须回到终端完成。
 
+2.24.0 新增会话历史流与保守自动关联，并增加三种「更新上下文」接入模式。同一个 `session_id` 的多轮通知按 `received_at` 排成一条会话历史，通知卡片新增「会话历史流」入口，Agent 会话详情顶部由「本次运行」扩展为「历史流」；每轮展示标题、状态、耗时与摘要，并可展开该轮的运行事件。事件按 `run_events.notification_id` 归属到具体轮次，而不是按可能被多轮共享的 `run_id` 整段重复，因此历史上回落到 `session:<id>` 的会话也能按轮查看。自动关联仅在没有显式 `session_id` 时触发，要求同一 Agent、项目路径重叠、扫描会话在最近 30 分钟内仍有更新且候选唯一；命中后写入 `session_id` 并在 `metadata.session_link="auto"` 标记，界面显示「自动关联」。显式值始终优先，存在歧义、目录不相关或会话过旧时不猜测，也不回填旧通知。通知表新增 `(session_id, received_at)` 索引，会话事件流按时间升序读取。接入模式方面，通知中心顶栏新增模式下拉，`integration_mode` 默认 `start_finish`，可选 `full` / `finish_only`；`build_agent_instructions` 按模式裁剪字段说明与示例（`finish_only` 不出现静默开始、进度与 `run_id`，`full` 增加 30% / 60% / 90% 进度与等待字段），复制与切换只作用于后续生成的文本，不写入 Agent 配置。新增 `POST /integration/report` 接收 `{agent, mode, source}`，按 Agent UPSERT 到 `integration_profiles` 表并通过 MCP `get_status` 与「运行环境」页只读展示；接口复用同一 Token 中间件与请求体上限，未知模式返回 422。
+
 2.23.0 补齐外部 Agent 数据面：通知新增 `metadata` 扁平元信息（模型、轮次、工具、文件、上下文等，受键数、长度与总字节上限约束），`phase` 增加 `compaction`。新增 `POST /usage/report` 与 `POST /sessions/report`，分别写入持久化用量账本与外部会话注册表，并暴露为 MCP `report_usage` / `report_session`；用量账本 `usage.sqlite3` 与 `agentbell.db` 一样跟随配置文件目录（`--config` 调试时不会写入安装目录），外部用量按 `report_id` 幂等累加，计入今日 Token / 成本与预算提醒，外部会话以心跳形式进入「进行中」，10 分钟无心跳自动过期且不读取外部文件。MCP 工具因此扩展为 5 个，`get_status` 同步返回账本与注册表状态。
 
 2.22.0 新增本地语音播报、MCP Server 与 Token / 成本守卫。语音播报只调用系统 TTS（Windows System.Speech、macOS `say`、Linux `spd-say` / `espeak`），文本写入本地临时 UTF-8 文件后以参数传递，不联网、不经过 shell。MCP 在既有 FastAPI 应用中新增 `POST /mcp`，实现 JSON-RPC 2.0（协议版本 `2024-11-05`），提供 `notify`、`search_history`、`get_status` 三个工具；`notify` 直接复用 `/notify` 的校验、去重、规则、历史与入队逻辑，鉴权支持 `X-Token` 与 `Authorization: Bearer`。用量守卫在后台线程增量只读扫描 Claude Code / Qoder 的 `assistant.message.usage` 与 Codex 的 `token_count`，按 `(mtime, size)` 缓存文件偏移并去重消息 ID，统计今日 Token 与按前缀匹配单价估算的成本；达到预警或预算阈值时生成一条按天按级别去重的通知，并进入现有打扰策略与历史。另附 DeepSeek Harness 的 `agentbell-notify` 技能与 dsh bundle 插件。
@@ -84,6 +86,7 @@
 - 等待输入：进行中通知可带 `needs_input` 与等待原因（权限、提问、限流、上下文超限、其他），卡片与「进行中」页的活跃会话同步标记；「待输入」子筛选只显示等待中的通知与会话。显式上报为主，Claude Code / Qoder / Codex / Gemini / Grok 尾部只读推断为可关闭的兜底。
 - 一键接入提醒：在运行环境页写入 Claude Code / Gemini CLI / Grok 的等待与结束 Hook，Codex 支持结束提醒；写入前预览，按时间戳备份，使用配置锁与原子替换，只追加带标记的条目，可随时撤销。
 - 运行时间线：同一 `run_id` 的事件写入只追加的 `run_events`，卡片「时间线」按钮展示阶段、相对耗时、状态与来源；会话详情显示最近一次运行摘要，统计页增加运行数、运行成功率、P50/P90 耗时与累计等待。
+- 会话历史流：同一 `session_id` 的通知按时间汇总为连续记录，卡片与会话详情均可打开；每轮显示标题、状态、耗时与摘要，并按 `notification_id` 展开该轮的开始、进展与完成事件。未显式提供 `session_id` 时，只在同一 Agent、项目路径重叠、会话 30 分钟内仍有更新且候选唯一时自动关联并标记「自动关联」，不做歧义猜测，也不回填旧通知。
 - 只读动作：通知可带「查看记录」「时间线」按钮，直接打开本地会话与运行时间线；不包含审批、自动继续、发送提示词或任意命令。
 - 优先级：`low` / `normal` / `high` / `critical`；紧急通知常驻，必须点「知道了」才消失。
 - 弹窗外观：`midnight` 午夜蓝 / `light` 晨光白 / `ocean` 深海青 / `amber` 琥珀暖四套皮肤，可按全局配置、规则或单条通知指定。
@@ -145,6 +148,7 @@ agentbell/
 │  ├─ macos_desktop.py    macOS 原生后端：Carbon 热键、CoreGraphics 空闲/全屏、lsappinfo/osascript 窗口与聚焦
 │  ├─ search_query.py     通知中心字段过滤语法解析（status/source/priority/session/run/ack）
 │  ├─ agent_sessions.py   Claude Code / Qoder / Codex / Gemini / Grok / OpenCode 会话扫描、外部会话心跳注册表与导出
+│  ├─ session_link.py     通知与会话的保守自动关联（同 Agent、项目重叠、近期更新、唯一候选）
 │  ├─ attention.py        等待输入推断：尾部增量读取、信号识别、去重与恢复
 │  ├─ agent_launch.py     Agent 检测、项目内启动终端（PowerShell / macOS / Linux）与提示词传递
 │  ├─ toolchain.py        便携 Node / Agent CLI 安装（Windows zip / macOS & Linux tar.xz）、校验与清单
@@ -169,7 +173,7 @@ agentbell/
 │     ├─ onboarding.py    四步首次启动介绍覆盖层（自动播放、暂停、跳过）
 │     ├─ about.py         「关于 AgentBell」标志展示、尺寸/变体与 SVG 导出
 │     ├─ window.py        cc-switch 风格通知中心、搜索、统计、Agent 会话、Agent 启动与阅读视图
-│     ├─ timeline.py      运行时间线弹窗（阶段、相对耗时、状态与来源）
+│     ├─ timeline.py      运行时间线与会话历史流弹窗（阶段、相对耗时、轮次与事件归属）
 │     ├─ toolchain_page.py 「运行环境」页面（安装、卸载、进度、提醒接入、DeepSeek 预设）
 │     ├─ hooks_panel.py   「提醒接入」行、预览确认、批量接入与撤销
 │     ├─ settings.py      偏好设置对话框
@@ -198,7 +202,7 @@ agentbell/
 ├─ requirements.txt       运行依赖
 ├─ requirements-dev.txt   测试/打包依赖
 ├─ run.py                 源码启动入口
-├─ AgentBell37.spec       PyInstaller 配置（Windows，AgentBell-37.exe，含 Hook 脚本资源）
+├─ AgentBell38.spec       PyInstaller 配置（Windows，AgentBell-38.exe，含 Hook 脚本资源）
 ├─ AgentBell-macos.spec   PyInstaller 配置（macOS，AgentBell.app，含 icns 与版本信息）
 ├─ AgentBell-linux.spec   PyInstaller 配置（Linux x64/arm64，产物名 AgentBell，不含 PowerShell 脚本）
 ├─ integrations/deepseek-harness/  DeepSeek Harness 技能与 dsh bundle 插件
@@ -281,6 +285,7 @@ AgentBell 已就绪：http://127.0.0.1:8765（X-Token 鉴权已开启）
     "card_on_primary_only": false
   },
   "hold_when_locked": true,
+  "integration_mode": "start_finish",
   "agent_sessions": {
     "enabled": true,
     "scan_interval_seconds": 120,
@@ -345,7 +350,7 @@ AgentBell 已就绪：http://127.0.0.1:8765（X-Token 鉴权已开启）
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `port` | 整数 | `8765` | 仅绑定 `127.0.0.1`，范围 1–65535 |
-| `token` | 字符串 | `""` | 非空时，`POST /notify`、`POST /mcp`、`POST /usage/report`、`POST /sessions/report` 必须携带相同的 `X-Token`（`/mcp` 也接受 `Authorization: Bearer`）；为空则关闭鉴权 |
+| `token` | 字符串 | `""` | 非空时，`POST /notify`、`POST /mcp`、`POST /usage/report`、`POST /sessions/report`、`POST /integration/report` 必须携带相同的 `X-Token`（`/mcp` 也接受 `Authorization: Bearer`）；为空则关闭鉴权 |
 | `auto_close_seconds` | 整数 | `30` | 弹窗自动关闭秒数，范围 0–3600；`0` 表示不自动关闭 |
 | `autostart` | 布尔 | `false` | 是否随当前用户登录启动；修改后下次启动生效 |
 | `open_center_on_start` | 布尔 | `true` | 双击启动后自动打开通知中心，并播放淡入上浮动画；再次启动已有实例时也会打开 |
@@ -355,6 +360,7 @@ AgentBell 已就绪：http://127.0.0.1:8765（X-Token 鉴权已开启）
 | `away_idle_seconds` | 整数 | `300` | 无键鼠操作超过该秒数视为离开；`0` 关闭离开判定 |
 | `presence_poll_seconds` | 整数 | `5` | 空闲/全屏/会议状态轮询间隔，范围 1–60 |
 | `allow_local_paths` | 布尔 | `false` | 是否允许通知携带 `path` 动作打开本地文件 |
+| `integration_mode` | 字符串 | `start_finish` | 复制给 Agent 的接入指令使用哪种更新模式：`full` 最全 / `start_finish` 开始+结束 / `finish_only` 仅结束；大小写不敏感，非法值启动时报配置错误。切换后立即写回配置，重启保持 |
 
 > 修改 `port` 或 `token` 后需要重启 AgentBell；在设置对话框里保存端口也只会在下次启动生效。
 
@@ -517,6 +523,7 @@ runtime/
 - Node：读 `https://nodejs.org/dist/index.json`，取最新的 LTS 版本；Windows 下载 `win-x64` / `win-arm64` zip，Linux 下载 `linux-x64` / `linux-arm64` tar.xz。下载后按官方 `SHASUMS256.txt` 校验 SHA-256，解压出的唯一根目录整体移动到 `runtime/node`。
 - Agent CLI：全部是官方 npm 包，使用便携 Node 自带的 npm（Windows 为 `runtime/node/node.exe`，Linux 为 `runtime/node/bin/node` 加 `npm-cli.js`），`--prefix runtime/agents`，不写系统全局目录。
 - 外部工具（如 cc-switch）：AgentBell 不代下载、不代解压，页面上只提供「打开下载页」按钮跳转 GitHub Releases，由用户自行安装。
+- 已登记的更新模式：页面底部「已登记的更新模式」只读列出 `integration_profiles` 中的 Agent、模式与上报时间，按更新时间倒序；数据来自 `/integration/report`，进入「运行环境」页时刷新，不提供修改入口。
 - 所有下载只允许 HTTPS 与白名单域名（nodejs.org、npm 官方源 / 镜像），并限制大小（单文件 200 MB、解压 900 MB）；重定向后重新校验域名。
 
 行为：
@@ -552,7 +559,7 @@ runtime/
 发布约定：
 
 - Release 资产包含 `AgentBell.exe`、`AgentBell-arm64.exe`、每种架构的 `AgentBell-macos-<arch>.dmg` / `.zip` 与 `AgentBell-linux-<arch>.tar.gz`、`.AppImage`、`.deb`、`.rpm`，并合并各平台校验文件为一个 `SHA256SUMS.txt`。Windows 工作流自动选用编号最大的 `AgentBell<数字>.spec`（忽略 Linux / macOS spec）：x64 产物复制为 `AgentBell.exe`，arm64 产物复制为 `AgentBell-arm64.exe`；macOS 使用 `AgentBell-macos.spec`，由 `scripts/build_macos_packages.py` 生成 dmg 与 zip；Linux 使用 `AgentBell-linux.spec`，产物名固定为 `AgentBell` 后交给 `scripts/build_linux_packages.py` 生成四种格式。
-- 打 tag 前先把 `agentbell/__init__.py` 的 `__version__` 改成同一版本；工作流会校验 `v2.23.0` 与 `2.23.0` 一致，不一致时拒绝发布。
+- 打 tag 前先把 `agentbell/__init__.py` 的 `__version__` 改成同一版本；工作流会校验 `v2.24.0` 与 `2.24.0` 一致，不一致时拒绝发布。
 - 发布使用 GitHub Actions 的 `contents: write` 权限；fork 或 PR 构建只上传 artifact，不会发 Release。
 
 ### 历史
@@ -588,6 +595,22 @@ CREATE INDEX IF NOT EXISTS idx_run_events_session ON run_events(session_id);
 - 只追加、不更新；同一 `run_id` 的同一 `kind` 在 5 秒内重复上报时直接跳过。
 - 不单独建 `runs` 表；运行状态由首尾事件推导，统计时按 `run_id` 分组。
 - 通知被删除或裁剪后，若没有其他通知引用该 `run_id`，对应事件一并清理；清空历史时全部删除。旧数据库启动时自动建表，无需手动迁移。
+- 会话历史读取：通知表新增 `idx_notifications_session(session_id, received_at)` 索引，按会话取最近 200 条后反转为时间升序；单会话事件流按 `session_id` 与 `occurred_at` 升序读取（默认上限 2000 条），再由 `notification_id` 将事件归入具体轮次。这样即使多轮通知共享同一个回落的 `session:<id>` 运行编号，每轮也只展示自己的事件。
+
+同库另建接入登记表 `integration_profiles`，记录每个 Agent 最近一次上报的更新模式：
+
+```sql
+CREATE TABLE IF NOT EXISTS integration_profiles (
+    agent TEXT PRIMARY KEY,
+    mode TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL
+);
+```
+
+- 同一 Agent 重复上报时按主键 UPSERT，只保留最新一条；模式必须在 `full` / `start_finish` / `finish_only` 内，读取到未知值时跳过该行。
+- 登记内容只有 Agent 名称、模式、来源与更新时间，不含提示词、会话正文或密钥；写入失败只记日志，不影响通知管线。
+- `integration_profiles` 只用于展示与 MCP `get_status` 读取，不参与通知处理、去重或提醒策略。
 
 ### 提示声音与模板
 
@@ -736,7 +759,7 @@ curl http://127.0.0.1:8765/health
 {"ok":true,"app":"AgentBell","version":"2.7.0","auth":true}
 ```
 
-AgentBell 提供 `GET /health`、`POST /notify`、`POST /mcp`、`POST /usage/report` 与 `POST /sessions/report`，不提供 Web 页面或 HTTP 通知列表；记录显示在应用内的原生通知中心里。
+AgentBell 提供 `GET /health`、`POST /notify`、`POST /mcp`、`POST /usage/report`、`POST /sessions/report` 与 `POST /integration/report`，不提供 Web 页面或 HTTP 通知列表；记录显示在应用内的原生通知中心里。
 
 ### `POST /notify`
 
@@ -763,7 +786,7 @@ X-Token: your-token        # 仅当 config.token 非空时必需
 | `needs_input` | 布尔 | `false` | 标记 `running` 通知正在等待用户；仅允许与 `status=running` 一起使用，否则返回 422 |
 | `wait_reason` | 字符串 | `other` | 等待原因：`permission` / `question` / `rate_limit` / `context_limit` / `other`；未知值回落到 `other`；`needs_input=false` 时会被清空 |
 | `wait_source` | 字符串 | `explicit` | `explicit` / `inferred`；未知值回落到 `explicit`；`needs_input=false` 时会被清空 |
-| `session_id` | 字符串 | `null` | Agent 会话标识，最长 120 字符；用于关联活跃会话并结束同一会话的旧等待 |
+| `session_id` | 字符串 | `null` | Agent 会话标识，最长 120 字符；用于关联活跃会话、结束同一会话的旧等待并汇总会话历史流。未显式提供时可能按保守规则自动关联，见下文 |
 | `run_id` | 字符串 | 按规则生成 | 运行标识，最长 120 字符；不传时依次回落为 `session:<session_id>`、`notify:<dedupe_key>`、`single:<通知 id>` |
 | `phase` | 字符串 | `null` | 时间线阶段：`started` / `progress` / `waiting_input` / `resumed` / `finished` / `note` / `compaction`；显式传入时只追加该阶段，不再自动推断 |
 | `metadata` | 对象 | `{}` | 扁平元信息，用于展示模型、轮次、工具、文件与上下文：最多 32 键，键名 64 字符、值 512 字符，JSON 总字节上限 4096；标量转字符串，列表 / 集合记为数量，嵌套对象忽略 |
@@ -803,7 +826,9 @@ X-Token: your-token        # 仅当 config.token 非空时必需
 
 等待输入：`needs_input=true` 未填 `priority` 时默认 `high`；`wait_reason` / `wait_source` 留空分别补 `other` / `explicit`。显式 `needs_input=false` 会清除该通知的等待标记；同一 `session_id` 的新事件也会结束之前的等待卡片。
 
-运行事件：未传 `phase` 时，首次出现的 `running` 追加 `started`，终态追加 `finished`，并自动补出 `waiting_input` / `resumed`；显式传 `phase` 时只追加这一条，`compaction` 用于标记上下文压缩。同一 `run_id`、同一阶段在 5 秒内重复上报会跳过，避免进度刷屏。事件只追加，不更新已有行。
+会话关联：显式 `session_id` 始终优先。未提供时，只有以下条件全部满足才自动填入：通知来源与扫描会话属于同一 Agent（忽略大小写、空格与符号，支持常见别名）；`origin.working_dir` 与会话项目路径相同，或一方是另一方的子目录（路径归一化且不区分大小写）；会话在通知接收前 30 分钟内仍有更新；候选恰好一个。命中后 `session_id` 写入通知，并在 `metadata.session_link="auto"` 标记，卡片与历史流显示「自动关联」。多个候选、路径不相关、会话过旧或缺少工作目录时保持未关联并记录日志；不回填历史通知。
+
+运行事件：未传 `phase` 时，首次出现的 `running` 追加 `started`，终态追加 `finished`，并自动补出 `waiting_input` / `resumed`；显式传 `phase` 时只追加这一条，`compaction` 用于标记上下文压缩。同一 `run_id`、同一阶段在 5 秒内重复上报会跳过，避免进度刷屏。事件只追加，不更新已有行。只收到一条终态通知时，时间线只有一个事件，弹窗只显示绝对时间与「无法计算相对耗时与跨度」提示；通知带 `duration` 时在头部显示耗时。需要完整时间线时，发送端应在开始时静默上报 `status=running` + `phase=started`，结束时用同一 `run_id` / `dedupe_key` 更新为终态并带 `phase=finished`。会话历史流按 `received_at` 排列同一 `session_id` 的通知，并按 `notification_id` 把事件归入具体轮次；为每轮提供独立 `run_id` 可获得最清晰的单轮事件，只有 `session_id` 时运行编号回落为 `session:<id>`，历史流仍能正确拆分。
 
 元信息：`metadata` 在 API、存储写入与读取三处统一清洗；卡片按模型、轮次、工具、文件、上下文、压缩、授权的顺序最多展示 4 个信息胶囊，未识别的键保留在数据中但不展示。
 
@@ -892,7 +917,7 @@ X-Token: your-token        # 仅当 config.token 非空时必需
 | --- | --- | --- |
 | `notify` | `title`（必填）、`status`、`summary`、`priority`、`needs_input`、`wait_reason`、`source`、`dedupe_key`、`run_id`、`session_id`、`duration`、`link`、`require_ack`、`silent`、`metadata` | 与 `/notify` 相同的入队结果（`ok`、`id`、`queued`、`updated` 等）；来源缺省为 `MCP` |
 | `search_history` | `query`、`limit`（1–100，默认 20） | `count` 与最多 `limit` 条通知摘要（含 `wait_reason` 与 `metadata`） |
-| `get_status` | 无 | 版本、端口、鉴权状态、账本 / 会话注册表状态、历史条数与近 7 天统计 |
+| `get_status` | 无 | 版本、端口、鉴权状态、账本 / 会话注册表状态、接入登记 `integration_profiles`、历史条数与近 7 天统计 |
 | `report_usage` | `model`（必填）、`report_id`、`source`、`input_tokens`、`output_tokens`、`cache_read_tokens`、`cache_write_tokens`、`cost_usd`、`occurred_at`、`session_id`、`run_id`、`project` | 幂等写入结果：`report_id`、`duplicate`、`total_tokens`、`version` |
 | `report_session` | `session_id`（必填）、`agent`、`title`、`project`、`project_path`、`status`、`detail`、`turn`、`updated_at`、`started_at`、`run_id`、`needs_input`、`wait_reason` | `stored`、`active`、当前 `sessions` 数量与 `version` |
 
@@ -939,6 +964,18 @@ curl -s http://127.0.0.1:8765/mcp \
 | `needs_input` / `wait_reason` | 布尔 / 字符串 | `false` / `null` | 等待状态；`wait_reason` 取 `permission` / `question` / `rate_limit` / `context_limit` / `other` |
 
 响应包含 `session_id`、`agent`、`active`、`stored`、当前 `sessions` 数量与注册表 `version`。注册表只保存在内存中，默认 10 分钟无心跳自动过期，不读取外部会话文件；路径为空的会话仍可查看上报的 `detail`，但不会提供打开文件夹或复制路径。
+
+### `POST /integration/report`
+
+Agent 接入时登记自己实际使用的更新模式。请求头与 `/notify` 相同，成功返回 HTTP 202。
+
+| 字段 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `agent` | 字符串 | 必填 | Agent 名称，1–100 字符，首尾空白会被压缩；同名重复上报覆盖旧记录 |
+| `mode` | 字符串 | 必填 | `full` 最全 / `start_finish` 开始+结束 / `finish_only` 仅结束；大小写不敏感，其他值返回 422 |
+| `source` | 字符串 | `""` | 登记来源，最长 100 字符，例如 `hook`、`manual`、`mcp` |
+
+响应包含 `ok`、`agent`、`mode`、`source`、`updated_at` 与 `changed`（同 Agent 同模式重复上报时为 `false`）。登记只写入本机 `agentbell.db` 的 `integration_profiles` 表，不改变当前配置或通知行为；`integration_mode` 仍由通知中心顶栏控制复制出的接入指令。MCP `get_status` 返回 `integration_profiles` 列表，按更新时间倒序。
 
 ## 提醒行为说明
 
@@ -1007,12 +1044,14 @@ curl -s http://127.0.0.1:8765/mcp \
 ## 通知中心与统计
 
 - 左侧筛选：全部 / 成功 / 失败 / 已取消 / 进行中；顶栏显示当前筛选数量与未读数。
+- 接入模式下拉：顶栏「复制 Agent 接入指令」左侧列出「最全 / 开始+结束 / 仅结束」，切换后立即写回 `integration_mode` 并发出 `settings_saved`，同时刷新按钮提示与后续生成的接入文本；已复制的内容不会回溯修改。
 - Agent 来源筛选：状态标签右侧下拉列出当前历史中的来源 Agent 及条数，选择后状态计数、总条数和卡片同步收窄；可与搜索、状态筛选叠加，「全部 Agent」或清除筛选恢复。
 - 搜索：默认匹配标题、摘要、错误与来源；支持字段过滤 `status:` / `source:` / `priority:` / `session:` / `run:` / `ack:`，中文字段名（状态 / 来源 / 优先级 / 会话 / 运行 / 确认）等价，多个值用空格分隔取并集，无效值退回全文搜索；输入后 260ms 自动搜索，搜索状态下可一键清除。
 - 归档与分组：列表默认只显示未归档通知，可切换已归档或全部；进入「批量管理」后多选并批量归档 / 取消归档；分组方式支持按日期、按来源或不分组。归档只改变列表可见性，不删除历史。
 - 卡片：标题行显示状态、优先级、来源 Agent、`更新 ×N`、`待确认/已确认`、时间，摘要下方显示进度条、耗时、错误与动作按钮、重新弹出、确认、稍后提醒；已归档卡片带「已归档」标记。
 - 数据统计：总通知数、成功率（成功 / 已结束）、平均耗时（可解析的 `duration`）、待确认数，以及 7 / 30 / 90 天区间内的每日总量/失败量柱状图；「运行时间线」卡片按 `run_id` 统计运行数、运行成功率、P50/P90 运行时长与累计等待时长，等待中未结束的区段计入当前时刻；「今日 Token 与成本」卡片显示用量扫描的今日 Token、估算成本、模型数、预算占用与最近扫描时间。「导出 CSV」把当前统计区间的通知导出为 UTF-8 CSV，包含接收/更新时间、标题、状态、优先级、来源、摘要、耗时、错误、会话/运行 ID 与确认状态。
 - 运行时间线：有 `run_id` 的卡片右侧显示「时间线」按钮，弹窗按时间顺序列出阶段、相对耗时、绝对时间、状态、来源与关联会话；一次包含等待的运行会显示开始 → 等待输入 → 已继续 → 完成。会话详情页顶部显示最近一次运行的摘要，可直接打开同一时间线。
+- 会话历史流：有 `session_id` 的卡片右侧显示「会话历史流」按钮；会话详情顶部显示「N 轮通知 · 最近运行摘要」并同时提供「历史流」与「时间线」入口（无事件时只显示历史流）。弹窗按时间列出该会话每一轮，显示第几轮、标题、状态、耗时、摘要与「自动关联」标记，默认展开最近一轮；头部汇总 Agent、项目、会话 ID、轮次数、成功率、时间跨度与自动关联轮数，没有通知时显示空状态提示。
 - 偏好设置：端口、token、自启、启动打开通知中心、自动关闭、冷却、成功弹窗、默认确认、历史数据库（条数上限与按天保留，保存后立即清理）、快捷键、免打扰、全屏抑制、锁屏保留、弹窗模式与皮肤、全屏背景图与显示区域（含全屏拖拽定位与仅主屏卡片）、Agent 会话扫描、等待输入推断、Token 与成本守卫、会议进程、离开判定、聚合、升级、模板、本地语音播报、声音、规则与渠道 JSON，以及「关于」入口。所有标签页均可滚动，小窗口下不会裁切内容。保存后立即应用可热更新的项（含规则、语音与用量扫描）并写回 `config.json`；端口、token 等监听相关配置需重启。
 - 全屏拖拽定位：点「全屏拖拽定位…」进入与真实弹窗一致的全屏预览，卡片可自由拖动，顶部实时显示坐标、尺寸、最近锚点和偏移；点「保存位置」自动写回设置并保存配置，点「取消」不改动原值。
 - 效果预览：设置对话框底部「测试」按钮按当前选择的模式、皮肤和背景图弹出一条预览。预览使用临时通知，不写入 SQLite 历史；`overlay` 预览会实际铺满屏幕，点「知道了」即可返回设置。
@@ -1227,7 +1266,7 @@ PyInstaller 不能跨平台交叉编译，请在目标系统上分别打包。Wi
 ```bash
 pip install -r requirements-dev.txt
 
-# 产物：dist\AgentBell-37.exe（在原生 Arm64 Python 上构建即为 arm64 产物）
+# 产物：dist\AgentBell-38.exe（在原生 Arm64 Python 上构建即为 arm64 产物）
 python -m PyInstaller --noconfirm --clean AgentBell37.spec
 ```
 
@@ -1237,10 +1276,10 @@ Windows ARM64 构建要求原生 Arm64 Python 3.12、提供 `win_arm64` 轮子�
 
 ```bash
 copy config.json dist\config.json
-dist\AgentBell-37.exe
+dist\AgentBell-38.exe
 ```
 
-> 新旧版本默认共用单实例锁：若托盘中已有 AgentBell 在运行，双击 AgentBell-37 只会唤醒旧实例。切换版本前先从托盘退出旧版，再启动新 exe。工作流会自动选用编号最大的 `AgentBell<数字>.spec`，旧 spec 不需要手工维护。
+> 新旧版本默认共用单实例锁：若托盘中已有 AgentBell 在运行，双击 AgentBell-38 只会唤醒旧实例。切换版本前先从托盘退出旧版，再启动新 exe。工作流会自动选用编号最大的 `AgentBell<数字>.spec`，旧 spec 不需要手工维护。
 
 打包后 `config.json`、`logs/`、`agentbell.db`、`usage.sqlite3`、`chat/` 与 `updates/` 都位于 exe 所在目录。单文件模式首次启动需要解压到临时目录，通常会有 1–3 秒延迟。
 
@@ -1257,7 +1296,7 @@ python -m PyInstaller --noconfirm --clean AgentBell-linux.spec
 # 四种格式（x64 机器；不传 AppImage 工具时只生成 tar.gz + deb + rpm）
 python scripts/build_linux_packages.py \
   --binary dist/AgentBell \
-  --version 2.23.0 \
+  --version 2.24.0 \
   --arch x64 \
   --appimagetool ./appimagetool \
   --appimage-runtime ./runtime-x86_64
@@ -1295,13 +1334,13 @@ python -m PyInstaller --noconfirm --clean AgentBell-macos.spec
 # ad-hoc 签名 + dmg / zip + SHA256SUMS-macos-<arch>.txt
 python scripts/build_macos_packages.py \
   --app dist/AgentBell.app \
-  --version 2.23.0 \
+  --version 2.24.0 \
   --arch arm64
 
 # 本地有 Developer ID 与公证凭据时（推荐发布用）
 python scripts/build_macos_packages.py \
   --app dist/AgentBell.app \
-  --version 2.23.0 \
+  --version 2.24.0 \
   --arch arm64 \
   --identity "Developer ID Application: Example (TEAMID)" \
   --entitlements assets/macos_entitlements.plist \
@@ -1350,7 +1389,7 @@ python scripts/build_macos_packages.py \
 ```powershell
 $env:WINDOWS_CERT_PFX_BASE64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes("cert.pfx"))
 $env:WINDOWS_CERT_PASSWORD = "pfx-password"
-python scripts/sign_windows.py --target dist/AgentBell-37.exe
+python scripts/sign_windows.py --target dist/AgentBell-38.exe
 ```
 
 也可以直接传 `--pfx cert.pfx`，或用 `--thumbprint` 使用证书存储中的证书；密码只从 `WINDOWS_CERT_PASSWORD` 读取，签名命令输出会把密码替换为 `******`。`signtool` 默认从 PATH 或 Windows SDK 目录发现，也可用 `--signtool` 指定。
@@ -1358,11 +1397,11 @@ python scripts/sign_windows.py --target dist/AgentBell-37.exe
 发布新版本：
 
 ```bash
-# 1. 修改 agentbell/__init__.py 的 __version__，例如 2.23.0
+# 1. 修改 agentbell/__init__.py 的 __version__，例如 2.24.0
 # 2. 提交并打同版本 tag（tag 去掉 v 后必须与 __version__ 完全一致）
 git add -A
-git commit -m "feat: 外部用量与会话上报、通知元信息与 MCP 工具扩展并发布 2.23.0"
-git tag v2.23.0
+git commit -m "feat: 会话历史流与保守自动关联并发布 2.24.0"
+git tag v2.24.0
 git push origin develop --tags
 ```
 
@@ -1380,7 +1419,7 @@ $env:QT_QPA_PLATFORM="offscreen"; python -m pytest -q
 QT_QPA_PLATFORM=offscreen python -m pytest -q
 ```
 
-覆盖：鉴权与 401、字段默认值/空值/长度、非法状态、危险链接、GB18030 请求体、疑似编码丢失告警、`origin` 动作生成与上限、仅 `working_dir` 的目录名兜底、`focus` 参数校验、窗口选择排序与去重、`FocusRequest` 往返、`overlay_area` 配置校验与卡片摆放、全屏拖拽编辑器的锚点换算与保存、空/坏 JSON、超大请求体、队列满、去重合并、待确认与动作、规则匹配、等待原因/`needs_input`/时长/项目条件、规则实时配置、规则字段往返与非法时长、免打扰/全屏/会议/锁屏决策、优先级弹窗策略、弹窗模式与皮肤、全屏自定义背景图与失效回落、渠道选择、配置校验、Agent 启动的检测排序、CLI 参数与环境变量、提示词不进入命令行、桌面应用不支持提示词、启动失败与项目校验、最近项目持久化、启动记录与回到终端、SQLite 存取/搜索/统计/裁剪、通知中心筛选/搜索/统计/设置、通知来源筛选与计数联动、Agent 会话扫描与标题提取、会话记录解析/搜索/大纲/复制与导出/缺失文件兜底、设置效果预览与清理、弹窗文案/按钮/去重更新/聚合、居中与全屏弹窗互斥、锁屏暂停、单实例唤醒、自动关闭与悬停暂停、启动自动打开与会话动画收尾、标志 SVG/像素/单色与图标尺寸、启动三行时间线与收起、首次介绍的四步导航/键盘/暂停/跳过与 `onboarding_seen` 持久化、关于窗口的尺寸变体与 SVG 导出、更新仓库归一化与版本比较、Release 解析与稳定资产选择、404/网络错误映射、下载域名白名单/大小/SHA-256 校验与残留清理、源码模式拒绝替换、更新脚本环境变量与不插值路径、`chat/` 自动创建与默认项目回落、Agent 项目主页按钮、Agent 卡片双击启动、`run_events` 追加与同阶段 5 秒合并、`run_id` 生成优先级、阶段推断（开始/等待/继续/完成）、旧库迁移与孤儿事件清理、会话运行时间线读取、时间线弹窗与卡片入口、会话详情「本次运行」摘要、运行次数/成功率/P50/P90/累计等待统计、`session` / `timeline` 动作的标识校验与排序、只读动作忽略 `value`、未知动作类型 422、存储往返、通知中心按会话 ID / 运行 ID 打开成功与失败、弹窗只读动作按钮、Hook 检测与 JSON 合并/撤销、Grok 独立文件、Codex `notify` 插入与精确撤销、备份与幂等、坏 JSON 不覆盖、PowerShell 脚本的权限/问题/完成分类与轮次状态、Codex 参数式 JSON 输入、真实环回 POST 的 token 与请求体、运行环境页的接入/撤销/批量接入与 Codex 冲突提示、Linux X11 热键掩码解析与无显示环境降级、`/proc` 进程表与端口反查、Linux 终端选择与提示词不插值、跨平台 Hook 命令生成与撤销、Linux tar.gz 更新资产选择/解压/替换脚本、Linux `tar.xz` Node 安装与 `runtime` PATH 布局。
+覆盖：鉴权与 401、字段默认值/空值/长度、非法状态、危险链接、GB18030 请求体、疑似编码丢失告警、`origin` 动作生成与上限、仅 `working_dir` 的目录名兜底、`focus` 参数校验、窗口选择排序与去重、`FocusRequest` 往返、`overlay_area` 配置校验与卡片摆放、全屏拖拽编辑器的锚点换算与保存、空/坏 JSON、超大请求体、队列满、去重合并、待确认与动作、规则匹配、等待原因/`needs_input`/时长/项目条件、规则实时配置、规则字段往返与非法时长、免打扰/全屏/会议/锁屏决策、优先级弹窗策略、弹窗模式与皮肤、全屏自定义背景图与失效回落、渠道选择、配置校验、Agent 启动的检测排序、CLI 参数与环境变量、提示词不进入命令行、桌面应用不支持提示词、启动失败与项目校验、最近项目持久化、启动记录与回到终端、SQLite 存取/搜索/统计/裁剪、通知中心筛选/搜索/统计/设置、通知来源筛选与计数联动、Agent 会话扫描与标题提取、会话记录解析/搜索/大纲/复制与导出/缺失文件兜底、设置效果预览与清理、弹窗文案/按钮/去重更新/聚合、居中与全屏弹窗互斥、锁屏暂停、单实例唤醒、自动关闭与悬停暂停、启动自动打开与会话动画收尾、标志 SVG/像素/单色与图标尺寸、启动三行时间线与收起、首次介绍的四步导航/键盘/暂停/跳过与 `onboarding_seen` 持久化、关于窗口的尺寸变体与 SVG 导出、更新仓库归一化与版本比较、Release 解析与稳定资产选择、404/网络错误映射、下载域名白名单/大小/SHA-256 校验与残留清理、源码模式拒绝替换、更新脚本环境变量与不插值路径、`chat/` 自动创建与默认项目回落、Agent 项目主页按钮、Agent 卡片双击启动、`run_events` 追加与同阶段 5 秒合并、`run_id` 生成优先级、阶段推断（开始/等待/继续/完成）、旧库迁移与孤儿事件清理、会话运行时间线读取、会话历史流按通知归集事件与空状态、自动关联的唯一候选/路径重叠/歧义/过期/跨 Agent 过滤、时间线弹窗与卡片入口、会话详情「本次运行」摘要、运行次数/成功率/P50/P90/累计等待统计、`session` / `timeline` 动作的标识校验与排序、只读动作忽略 `value`、未知动作类型 422、存储往返、通知中心按会话 ID / 运行 ID 打开成功与失败、弹窗只读动作按钮、Hook 检测与 JSON 合并/撤销、Grok 独立文件、Codex `notify` 插入与精确撤销、备份与幂等、坏 JSON 不覆盖、PowerShell 脚本的权限/问题/完成分类与轮次状态、Codex 参数式 JSON 输入、真实环回 POST 的 token 与请求体、运行环境页的接入/撤销/批量接入与 Codex 冲突提示、三种接入模式文本裁剪（仅结束不含静默开始/进度/`run_id`，最全含 30/60/90 与等待字段）、非法模式回落与配置校验、`/integration/report` 鉴权/422/UPSERT/`changed` 标记、`integration_profiles` 存储往返与排序、MCP `get_status` 返回登记、顶栏模式切换持久化与运行环境页展示、Linux X11 热键掩码解析与无显示环境降级、`/proc` 进程表与端口反查、Linux 终端选择与提示词不插值、跨平台 Hook 命令生成与撤销、Linux tar.gz 更新资产选择/解压/替换脚本、Linux `tar.xz` Node 安装与 `runtime` PATH 布局。
 
 ## 常见问题
 
@@ -1524,7 +1563,7 @@ PyInstaller 单文件包常见现象。可将 exe 加入信任目录，或改用
 - 单实例通道只接受「打开通知中心」请求，不执行任意命令；通道使用当前用户的本地套接字 / 命名管道。
 - 更新下载只接受 HTTPS 的 GitHub 域名与 GitHub 发布资源域名，拒绝非 GitHub 重定向；安装包受 300 MB 上限、Release 记录的 `size` 与 `sha256:` digest 校验。Windows 替换脚本从环境变量读取路径与参数，不把外部文本拼接进 PowerShell 代码；Linux 由 `/bin/sh` 脚本从环境变量读取路径，重启命令用 `shlex.join` 拼接且不使用 `shell=True`，只从 tar.gz 中提取 `AgentBell`。旧版都会备份，替换失败自动回滚。
 - 更新仓库默认指向本项目公开仓库，可改为其他仓库或清空；程序不会下载或执行 Release 中的任何脚本，也不会执行 npm / pip 安装命令；源码模式不自动替换。
-- `/mcp`、`/usage/report`、`/sessions/report` 与 `/notify` 共用同一鉴权、请求体上限与校验链路；缺失或错误 token 返回 401，MCP 工具不能执行命令、读取会话正文或批准权限。Bearer token 与 `X-Token` 使用恒定时间比较。外部用量账本与会话注册表只写本机，不读取外部会话文件，也不接受任意回调地址。
+- `/mcp`、`/usage/report`、`/sessions/report`、`/integration/report` 与 `/notify` 共用同一鉴权、请求体上限与校验链路；缺失或错误 token 返回 401，MCP 工具不能执行命令、读取会话正文或批准权限。Bearer token 与 `X-Token` 使用恒定时间比较。外部用量账本与会话注册表只写本机，不读取外部会话文件，也不接受任意回调地址。接入模式登记只保存 Agent、模式、来源与时间，不含提示词、会话正文或密钥，也不触发任何配置写入。
 - 语音播报只调用系统 TTS；文本写入当前用户的临时目录并以参数传入，不使用 shell，不联网；临时文件在进程结束后删除，日志不记录朗读文本。
 - 用量扫描只读取会话文件中的 Token 计数字段，不解析或保存正文；统计结果只存在内存与设置/历史中，不写入会话文件，也不上传。预算提醒与普通通知走同一套免打扰、规则与渠道策略。
 - DeepSeek Harness 插件只接受 `127.0.0.1` / `localhost` / `::1` 端点，token 只放在 `X-Token` 请求头，不打印、不写入 URL；技能与插件都不读取会话正文，也不能批准权限或继续任务。

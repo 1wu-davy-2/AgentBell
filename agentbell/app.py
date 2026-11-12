@@ -49,6 +49,7 @@ from .models import (
 from .policy import Decision, Presence, apply_rules, decide, quiet_hours_end
 from .presence import PresenceMonitor
 from .server import UvicornServerThread
+from .session_link import SessionLinker
 from .store import NotificationStore
 from .ui.icons import make_app_icon
 from .ui.toast import ToastManager
@@ -105,6 +106,7 @@ class AgentBellApp(QObject):
         config_ref: ConfigRef | None = None,
         ledger: UsageLedger | None = None,
         session_registry: SessionReportRegistry | None = None,
+        session_linker: SessionLinker | None = None,
     ) -> None:
         super().__init__()
         self.qapp = qapp
@@ -117,6 +119,7 @@ class AgentBellApp(QObject):
         self.store = store
         self.ledger = ledger
         self.session_registry = session_registry
+        self.session_linker = session_linker
         self.config_path = config_path
         self._recent: deque[Notification] = deque(maxlen=RECENT_LIMIT)
         self._local_sessions: list[AgentSession] = []
@@ -406,6 +409,8 @@ class AgentBellApp(QObject):
             if (item.agent, item.session_id) not in external_keys
         ] + external
         merged.sort(key=lambda item: item.updated_at, reverse=True)
+        if self.session_linker is not None:
+            self.session_linker.update(merged)
         self.center.update_sessions(merged)
 
     def _refresh_session_sources(self) -> None:

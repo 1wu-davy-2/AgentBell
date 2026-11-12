@@ -10,6 +10,7 @@ from typing import Any
 from .models import (
     ATTENTION_AGENTS,
     DEFAULT_TEMPLATES,
+    INTEGRATION_MODES,
     OVERLAY_ANCHORS,
     OVERLAY_CARD_WIDTH_MAX,
     OVERLAY_CARD_WIDTH_MIN,
@@ -21,6 +22,7 @@ from .models import (
     PRIORITIES,
     STATUSES,
     WAIT_REASONS,
+    IntegrationMode,
     OverlayAnchor,
     PopupMode,
     PopupSkin,
@@ -234,6 +236,7 @@ class AppConfig:
     presence_poll_seconds: int = 5
     popup_mode: PopupMode = "corner"
     popup_skin: PopupSkin = "midnight"
+    integration_mode: IntegrationMode = "start_finish"
     overlay_image: str = ""
     overlay_area: OverlayAreaConfig = field(default_factory=OverlayAreaConfig)
     hold_when_locked: bool = True
@@ -479,6 +482,15 @@ def _read_optional_popup_skin(
     if data.get(key) is None:
         return None
     return _read_popup_skin(data, key)
+
+
+def _read_integration_mode(
+    data: dict[str, Any], key: str = "integration_mode"
+) -> IntegrationMode:
+    value = _read_str(data, key, "start_finish", 20).lower()
+    if value not in INTEGRATION_MODES:
+        raise ConfigError(f'"{key}" 必须是 {" / ".join(INTEGRATION_MODES)}')
+    return value  # type: ignore[return-value]
 
 
 def _read_overlay_area(data: dict[str, Any]) -> OverlayAreaConfig:
@@ -967,6 +979,7 @@ def _parse_config(data: dict[str, Any]) -> AppConfig:
         ),
         popup_mode=_read_popup_mode(data, "popup_mode", "corner"),
         popup_skin=_read_popup_skin(data, "popup_skin", "midnight"),
+        integration_mode=_read_integration_mode(data),
         overlay_image=_read_str(data, "overlay_image", "", 1024),
         overlay_area=_read_overlay_area(data),
         hold_when_locked=_read_bool(data, "hold_when_locked", True),

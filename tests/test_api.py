@@ -3,16 +3,18 @@ from __future__ import annotations
 import json
 import logging
 import queue
+from datetime import datetime
 
 import pytest
 from fastapi.testclient import TestClient
 
 import agentbell.api as api_module
 from agentbell import window_focus
-from agentbell.agent_sessions import SessionReportRegistry
+from agentbell.agent_sessions import AgentSession, SessionReportRegistry
 from agentbell.api import MAX_BODY_BYTES, create_app
 from agentbell.config import AppConfig, ConfigRef, RuleConfig
 from agentbell.models import Notification
+from agentbell.session_link import SessionLinker
 from agentbell.storage import NotificationStorage
 from agentbell.store import NotificationStore
 from agentbell.usage import UsageLedger
@@ -34,6 +36,7 @@ def build(
     config_source=None,
     ledger=None,
     sessions=None,
+    session_linker=None,
 ):
     inbox: queue.Queue[Notification] = queue.Queue(maxsize=maxsize)
     source = config_source
@@ -48,6 +51,7 @@ def build(
         store=store,
         ledger=ledger,
         sessions=sessions,
+        session_linker=session_linker,
     )
     return TestClient(app), inbox
 
@@ -281,6 +285,112 @@ def test_explicit_source_and_origin_are_not_overridden(monkeypatch):
     notification = inbox.get_nowait()
     assert notification.source == "deploy-bot"
     assert json.loads(notification.actions[0].value)["pid"] == 4321
+
+
+def test_notify_auto_links_unique_recent_session(tmp_path):
+    project = tmp_path / "proj"
+    linker = SessionLinker()
+    linker.update(
+        [
+            AgentSession(
+                agent="qoder",
+                session_id="s-auto",
+                project="proj",
+                project_path=str(project),
+                path="",
+                updated_at=datetime.now().astimezone(),
+            )
+        ]
+    )
+    client, inbox = build(session_linker=linker)
+    response = client.post(
+        "/notify",
+        json={
+            "title": "自动关联",
+            "status": "succeeded",
+            "source": "Qoder",
+            "origin": {"working_dir": str(project / "agentbell")},
+        },
+        headers=auth_headers(),
+    )
+    assert response.status_code == 202
+    notification = inbox.get_nowait()
+    assert notification.session_id == "s-auto"
+    assert notification.metadata["session_link"] == "auto"
+
+
+def test_explicit_session_id_wins_over_auto_link(tmp_path):
+    project = tmp_path / "proj"
+    linker = SessionLinker()
+    linker.update(
+        [
+            AgentSession(
+                agent="qoder",
+                session_id="s-auto",
+                project="proj",
+                project_path=str(project),
+                path="",
+                updated_at=datetime.now().astimezone(),
+            )
+        ]
+    )
+    client, inbox = build(session_linker=linker)
+    response = client.post(
+        "/notify",
+        json={
+            "title": "显式会话",
+            "status": "succeeded",
+            "source": "Qoder",
+            "session_id": "s-explicit",
+            "origin": {"working_dir": str(project)},
+        },
+        headers=auth_headers(),
+    )
+    assert response.status_code == 202
+    notification = inbox.get_nowait()
+    assert notification.session_id == "s-explicit"
+    assert "session_link" not in notification.metadata
+
+
+def test_notify_does_not_guess_between_multiple_sessions(tmp_path):
+    project = tmp_path / "proj"
+    now = datetime.now().astimezone()
+    linker = SessionLinker()
+    linker.update(
+        [
+            AgentSession(
+                agent="qoder",
+                session_id="s-1",
+                project="proj",
+                project_path=str(project),
+                path="",
+                updated_at=now,
+            ),
+            AgentSession(
+                agent="qoder",
+                session_id="s-2",
+                project="proj",
+                project_path=str(project),
+                path="",
+                updated_at=now,
+            ),
+        ]
+    )
+    client, inbox = build(session_linker=linker)
+    response = client.post(
+        "/notify",
+        json={
+            "title": "无法唯一关联",
+            "status": "succeeded",
+            "source": "Qoder",
+            "origin": {"working_dir": str(project)},
+        },
+        headers=auth_headers(),
+    )
+    assert response.status_code == 202
+    notification = inbox.get_nowait()
+    assert notification.session_id is None
+    assert "session_link" not in notification.metadata
 
 
 def test_origin_keeps_focus_action_first_and_limits_total_actions():
@@ -1239,3 +1349,67 @@ def test_session_report_without_registry_returns_503():
         "/sessions/report", json={"session_id": "x"}, headers=auth_headers()
     )
     assert response.status_code == 503
+
+
+def test_integration_report_requires_auth_and_valid_mode():
+    client, _inbox = build()
+    unauthorized = client.post(
+        "/integration/report", json={"agent": "Qoder", "mode": "full"}
+    )
+    assert unauthorized.status_code == 401
+
+    bad_mode = client.post(
+        "/integration/report",
+        json={"agent": "Qoder", "mode": "bogus"},
+        headers=auth_headers(),
+    )
+    assert bad_mode.status_code == 422
+    assert bad_mode.json()["ok"] is False
+
+    missing_agent = client.post(
+        "/integration/report",
+        json={"mode": "full"},
+        headers=auth_headers(),
+    )
+    assert missing_agent.status_code == 422
+
+
+def test_integration_report_upserts_profile():
+    store = NotificationStore()
+    client, _inbox = build(store=store)
+    response = client.post(
+        "/integration/report",
+        json={
+            "agent": "  Claude   Code ",
+            "mode": "Finish_Only",
+            "source": "manual",
+        },
+        headers=auth_headers(),
+    )
+    assert response.status_code == 202
+    body = response.json()
+    assert body["agent"] == "Claude Code"
+    assert body["mode"] == "finish_only"
+    assert body["changed"] is True
+
+    updated = client.post(
+        "/integration/report",
+        json={"agent": "Claude Code", "mode": "full"},
+        headers=auth_headers(),
+    )
+    assert updated.status_code == 202
+    assert updated.json()["mode"] == "full"
+    assert updated.json()["changed"] is True
+
+    repeated = client.post(
+        "/integration/report",
+        json={"agent": "Claude Code", "mode": "full"},
+        headers=auth_headers(),
+    )
+    assert repeated.status_code == 202
+    assert repeated.json()["changed"] is False
+
+    profiles = store.integration_profiles()
+    assert len(profiles) == 1
+    assert profiles[0].agent == "Claude Code"
+    assert profiles[0].mode == "full"

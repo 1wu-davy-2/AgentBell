@@ -30,6 +30,7 @@ AgentBell does one thing well: **tell you the moment a round ends, and let you g
 - **Replay the run**: events sharing one `run_id` (start, wait, resume, finish) form an append-only timeline; cards open a timeline dialog, and statistics break down run success, P50/P90 duration, and total waiting time.
 - **Walk away**: do something else while the agent works. One ring and one card when it finishes.
 - **Close the loop**: a notification can focus the terminal (`origin.pid`), open the local session record or run timeline, retry a failed task, or remind you later. Read-only actions never approve permissions or continue an agent.
+- **Stream a session**: notifications sharing a `session_id` flow into one chronological history, reachable from the card and the agent session detail. Each round expands into its start, progress, and finish events. Without an explicit `session_id`, AgentBell links only a unique same-agent, same-project session updated within the last 30 minutes and marks it **Auto-linked**.
 - **Stay quiet**: quiet hours, fullscreen/meeting suppression, lock-screen holding, digest, and success-only-in-center are all configurable.
 - **Route by rules**: match on wait reason, `needs_input`, run duration, and project glob, then override priority, silence, acknowledgement, auto-close, popup, and extra channels. Later matching rules win on scalar fields, and changes apply as soon as settings are saved; **Test run** shows which rule matches a sample notification and the resulting fields.
 - **Find anything**: search supports `status:` / `source:` / `priority:` / `session:` / `run:` / `ack:` field filters; statistics offer 7/30/90-day ranges with CSV export, and notifications can be batch-archived and grouped by date or source.
@@ -41,11 +42,13 @@ AgentBell does one thing well: **tell you the moment a round ends, and let you g
 - **Hear the result**: optional local TTS reads the title and status aloud, with summary, rate, and minimum-priority controls; synthesis stays on-device.
 - **Talk MCP**: `POST /mcp` exposes `notify`, `search_history`, `get_status`, `report_usage`, and `report_session` over JSON-RPC 2.0 with Bearer or `X-Token` auth, ready for Claude Code and other MCP clients.
 - **Accept external data**: notifications can carry `metadata` (model, turn, tools, files, context), while external agents can idempotently report tokens and cost through `/usage/report` and show heartbeating sessions under Running through `/sessions/report`.
+- **Pick an update mode**: switch between **Full / Start+Finish / Finish only** in the notification center top bar; copied instructions adapt to the selected mode, and agents can register their actual mode through `POST /integration/report`, visible under Runtime and in local SQLite.
 - **Guard the budget**: read-only incremental scans total today's Claude Code / Qoder / Codex tokens plus external reports, estimate cost from your own per-model pricing, and send a deduplicated alert at the daily budget.
 - **Stay small**: no agent orchestration, no workflow changes, no web UI. It waits in the tray and rings when it should.
 
 ## Recent updates
 
+- **v2.24.0**: Three update modes and a registration endpoint. The top bar switches between **Full** (start + 30% / 60% / 90% key progress + waiting input + finish), **Start+Finish** (silent start plus one finish notification), and **Finish only** (one conclusion per round, the most token-efficient); copied instructions are generated per mode. Agents can report the mode they actually use through `POST /integration/report`; registrations are stored per agent in the local SQLite `integration_profiles` table, shown under Runtime, and returned by MCP `get_status`. Also: session history streams. Notifications sharing a `session_id` are grouped into one chronological history, with a new button on notification cards and a history entry at the top of the agent session detail. Each round expands into its start, progress, and finish events, while the header summarizes the agent, project, success rate, span, and auto-linked rounds. Without an explicit `session_id`, a notification is linked only when the same agent, same project directory, session updated within the last 30 minutes, and exactly one candidate all match; the card and history mark it **Auto-linked**. Explicit ids always win, ambiguous cases are skipped, and old notifications are never backfilled. Events are attributed by `notification_id`, so rounds sharing one `run_id` do not duplicate events.
 - **v2.23.0**: External agent data support. Notifications gain a flat `metadata` map for model, turn, tool, file, and context chips, and `phase=compaction` records context compaction. New `POST /usage/report` and `POST /sessions/report` endpoints let external agents idempotently report tokens and cost and show heartbeating sessions under Running; the MCP tool list grows to `notify`, `search_history`, `get_status`, `report_usage`, and `report_session`. External data stays local, and session heartbeats expire after 10 minutes without an update.
 - **v2.22.0**: Local voice announcements, an MCP server, and a Token/cost guard. Voice uses the platform TTS engine and never leaves the machine. `POST /mcp` serves `notify`, `search_history`, and `get_status` over JSON-RPC 2.0, reusing the existing notification pipeline and accepting Bearer auth. The guard incrementally scans Claude Code / Qoder / Codex sessions read-only, tracks daily token and cost budgets, sends one deduplicated alert per level, and adds a "Today's tokens and cost" card to statistics. A DeepSeek Harness `agentbell-notify` skill and dsh bundle plugin are included for per-turn reporting.
 - **v2.21.0**: The tray now shows a numeric unread badge (`99+` above 99) and returns to it after the unread flash ends. Clicking a toast card's title, summary, or empty area opens the notification center while all card buttons keep their behavior. `Ctrl+F` jumps to the list and focuses search from any page. SQLite history gains age-based retention (`history.retention_days`) alongside the row cap, adjustable in settings with immediate cleanup.
@@ -176,8 +179,10 @@ Filter by status and agent source in the toolbar, and search titles, summaries, 
 ### 3. Let agents notify you automatically
 
 1. Click **复制 Agent 接入指令** (Copy agent integration instructions) in the top-right corner.
-2. Paste it into your agent (Claude Code, Codex, Qoder, etc.) once.
-3. The instructions include the current port, `X-Token`, field reference, and the rule to notify **after every round**, including failures and cancellations.
+2. Choose the update mode in the dropdown left of the button: **Full** (silent start, 30% / 60% / 90% progress on the same card, waiting input, and a finish conclusion), **Start+Finish** (only a silent start and a finish per round), or **Finish only** (one conclusion per round, the most token-efficient).
+3. Paste it into your agent (Claude Code, Codex, Qoder, etc.) once.
+4. The instructions are generated for the selected mode and include the current port, `X-Token`, field reference, the rule to notify **after every round** (including failures and cancellations), and a request to register the actual mode through `POST /integration/report`. Registrations stay local and appear under Runtime.
+5. Instructions are conversational only: they never write `CLAUDE.md`, project files, agent settings, or hook configuration. Use section 4 to install hooks manually.
 
 Ask the agent to include `origin.pid` so notification cards can offer a **back to terminal** button. To add **View record** or **Timeline**, declare the read-only actions described in section 6.
 
@@ -228,6 +233,10 @@ Events sharing one `run_id` form one run. AgentBell derives the id in this order
 ```
 
 `phase` accepts `started` / `progress` / `waiting_input` / `resumed` / `finished` / `note` / `compaction`, where `compaction` marks context compaction. An explicit phase appends exactly one event without inference. Repeating the same phase for the same run within five seconds is merged, so progress updates do not flood the timeline. A **Timeline** button appears on cards when a run exists; session detail shows the latest run summary, and statistics expose run-level metrics. See [system-architecture.md](system-architecture.md) for all fields.
+
+For a full **start → finish** timeline, report in two steps: at the beginning send a `status="running"`, `phase="started"`, `silent=true` notification using the same `dedupe_key` and `run_id` for the whole round; at the end send the final notification with the same `dedupe_key` / `run_id` and `phase="finished"`. Both notifications should carry the same `session_id`. The start notification does not pop up, the final one updates the same card in place, and a single-event timeline shows only the absolute time instead of a meaningless `+0s`.
+
+Notifications sharing a `session_id` are also grouped into one **session history stream**. The card and the agent session detail both open it, listing every round in chronological order with expandable start, progress, and finish events; give each round its own `run_id` when possible. Without one, events still fall back to `session:<session_id>` and are attributed to the correct round by `notification_id`, so nothing is duplicated. If no `session_id` is reported, AgentBell links a notification only when the same agent, same project directory, a session updated within the last 30 minutes, and exactly one candidate all match, and marks it **Auto-linked**; multiple candidates or a mismatched directory mean no guess, and old notifications are never backfilled. Always report `session_id` explicitly when stable attribution matters.
 
 To put **View record** and **Timeline** buttons on the popup and in the notification center, ask the agent to declare read-only actions:
 
@@ -347,7 +356,7 @@ Installation, token lookup order, `error` / `aborted` status mapping, and securi
 ```powershell
 pip install -r requirements-dev.txt
 python -m PyInstaller --noconfirm --clean AgentBell37.spec
-# Output: dist\AgentBell-37.exe
+# Output: dist\AgentBell-38.exe
 ```
 
 To Authenticode-sign the frozen executable locally, provide the PFX as base64 and its password through environment variables (never on the command line):
@@ -355,7 +364,7 @@ To Authenticode-sign the frozen executable locally, provide the PFX as base64 an
 ```powershell
 $env:WINDOWS_CERT_PFX_BASE64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes("cert.pfx"))
 $env:WINDOWS_CERT_PASSWORD = "pfx-password"
-python scripts/sign_windows.py --target dist\AgentBell-37.exe
+python scripts/sign_windows.py --target dist\AgentBell-38.exe
 ```
 
 Signing uses SHA-256 digests and an RFC 3161 timestamp (`http://timestamp.digicert.com` by default) and verifies with `signtool verify /pa /all`. `--pfx` and `--thumbprint` are also supported, and the password is only read from `WINDOWS_CERT_PASSWORD`; command output masks it.
@@ -366,9 +375,9 @@ Linux builds must run natively per architecture:
 pip install -r requirements-dev.txt
 python -m PyInstaller --noconfirm AgentBell-linux.spec
 # tar.gz + deb + rpm only
-python scripts/build_linux_packages.py --binary dist/AgentBell --version 2.23.0 --arch x64
+python scripts/build_linux_packages.py --binary dist/AgentBell --version 2.24.0 --arch x64
 # all four formats
-python scripts/build_linux_packages.py --binary dist/AgentBell --version 2.23.0 --arch x64 \
+python scripts/build_linux_packages.py --binary dist/AgentBell --version 2.24.0 --arch x64 \
   --appimagetool ./appimagetool --appimage-runtime ./runtime-x86_64
 ```
 
@@ -380,10 +389,10 @@ python scripts/make_macos_icon.py
 python -m PyInstaller --noconfirm AgentBell-macos.spec
 # ad-hoc signing
 python scripts/build_macos_packages.py \
-  --app dist/AgentBell.app --version 2.23.0 --arch arm64
+  --app dist/AgentBell.app --version 2.24.0 --arch arm64
 # Developer ID + Hardened Runtime + notarization
 python scripts/build_macos_packages.py \
-  --app dist/AgentBell.app --version 2.23.0 --arch arm64 \
+  --app dist/AgentBell.app --version 2.24.0 --arch arm64 \
   --identity "Developer ID Application: Example (TEAMID)" \
   --entitlements assets/macos_entitlements.plist --notarize \
   --notary-key AuthKey.p8 --notary-key-id KEYID --notary-issuer ISSUER-UUID
@@ -392,7 +401,7 @@ python scripts/build_macos_packages.py \
 Pushing to `develop` runs tests and packaging on Windows (x64 / arm64), Linux (x64 / arm64), and macOS (x64 / arm64). Pushing a `v*` tag verifies that the tag matches `__version__` in `agentbell/__init__.py`, then publishes a GitHub Release automatically. The Windows workflow picks the highest-numbered `AgentBell<N>.spec`, copies the x64 output to `AgentBell.exe`, and names the arm64 build `AgentBell-arm64.exe`; if `WINDOWS_CERT_PFX_BASE64` is configured, the exe is Authenticode-signed before copying. Linux produces `AgentBell-linux-<arch>.tar.gz`, `.AppImage`, `.deb`, and `.rpm`; macOS produces `AgentBell-macos-<arch>.dmg` and `.zip`, signed with Developer ID and notarized when `MACOS_CERT_P12_BASE64` and the App Store Connect API key secrets are configured, otherwise signed ad-hoc. Each platform and architecture writes its own checksum file, and the release job merges a single `SHA256SUMS.txt`.
 
 ```bash
-git tag v2.23.0
+git tag v2.24.0
 git push origin develop --tags
 ```
 

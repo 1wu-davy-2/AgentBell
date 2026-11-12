@@ -21,6 +21,8 @@ from PySide6.QtWidgets import (
 )
 
 from ..config import ToolchainConfig
+from ..integration import INTEGRATION_MODE_LABELS
+from ..models import IntegrationProfile
 from ..toolchain import (
     DEEPSEEK_CODEX_TOML,
     NODE_ID,
@@ -93,6 +95,20 @@ QLabel#toolHint {
 }
 QLabel#toolHint[state="error"] {
     color: #C24141;
+}
+QFrame#integrationProfiles {
+    background-color: #F8FAFD;
+    border: 1px solid #E6EBF3;
+    border-radius: 10px;
+}
+QLabel#integrationProfilesTitle {
+    font-size: 10px;
+    font-weight: 600;
+    color: #7A8494;
+}
+QLabel#integrationProfilesText {
+    font-size: 11px;
+    color: #3A424D;
 }
 QPushButton#toolAction {
     background-color: #F5F6FA;
@@ -475,6 +491,7 @@ class ToolchainPage(QWidget):
         )
         self._hooks_panel.status_message.connect(self._on_hooks_status)
         host_layout.addWidget(self._hooks_panel)
+        host_layout.addWidget(self._build_profiles_box(host))
 
         host_layout.addSpacing(8)
         host_layout.addWidget(
@@ -546,6 +563,39 @@ class ToolchainPage(QWidget):
         row.uninstall_requested.connect(self._uninstall)
         self._rows[component_id] = row
         return row
+
+    def _build_profiles_box(self, parent: QWidget) -> QWidget:
+        box = QFrame(parent)
+        box.setObjectName("integrationProfiles")
+        layout = QVBoxLayout(box)
+        layout.setContentsMargins(14, 10, 14, 10)
+        layout.setSpacing(4)
+        title = QLabel("已登记的更新模式", box)
+        title.setObjectName("integrationProfilesTitle")
+        layout.addWidget(title)
+        self._profiles_label = QLabel(
+            "还没有 Agent 登记；复制接入指令后，Agent 首次接入会调用 "
+            "/integration/report 登记模式。",
+            box,
+        )
+        self._profiles_label.setObjectName("integrationProfilesText")
+        self._profiles_label.setWordWrap(True)
+        layout.addWidget(self._profiles_label)
+        return box
+
+    def set_integration_profiles(self, profiles: list[IntegrationProfile]) -> None:
+        if not profiles:
+            self._profiles_label.setText(
+                "还没有 Agent 登记；复制接入指令后，Agent 首次接入会调用 "
+                "/integration/report 登记模式。"
+            )
+            return
+        lines = []
+        for profile in profiles:
+            label = INTEGRATION_MODE_LABELS.get(profile.mode, profile.mode)
+            stamp = profile.updated_at.astimezone().strftime("%m-%d %H:%M")
+            lines.append(f"{profile.agent} · {label} · {stamp}")
+        self._profiles_label.setText("\n".join(lines))
 
     def _build_provider_panel(self, parent: QWidget) -> QWidget:
         panel = QFrame(parent)

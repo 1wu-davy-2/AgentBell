@@ -85,7 +85,12 @@ from ..config import (
     ConfigError,
     save_config,
 )
-from ..integration import build_agent_instructions
+from ..integration import (
+    INTEGRATION_MODE_HINTS,
+    INTEGRATION_MODE_LABELS,
+    build_agent_instructions,
+    normalize_integration_mode,
+)
 from ..models import (
     RUN_EVENT_LABELS,
     STATUS_LABELS,
@@ -102,7 +107,12 @@ from ..window_focus import FocusRequest
 from .icons import make_app_icon
 from .motion import motion_enabled
 from .onboarding import OnboardingOverlay
-from .timeline import RunTimelineDialog, format_run_span
+from .timeline import (
+    RunTimelineDialog,
+    SessionRound,
+    SessionTimelineDialog,
+    format_run_span,
+)
 from .toolchain_page import ToolchainPage
 
 SIDEBAR_WIDTH = 232
@@ -701,6 +711,7 @@ class NotificationCard(QFrame):
     snooze_requested = Signal(str, int)
     action_requested = Signal(object, object)
     timeline_requested = Signal(object)
+    session_history_requested = Signal(object)
     selection_changed = Signal(str, bool)
 
     def __init__(
@@ -999,6 +1010,17 @@ class NotificationCard(QFrame):
                 lambda: self.timeline_requested.emit(self.notification)
             )
             side.addWidget(self.timeline_button)
+
+        self.session_history_button: QToolButton | None = None
+        if allow_timeline and notification.session_id:
+            self.session_history_button = self._make_action(
+                "agents", "#6B5BD2", "查看会话历史流"
+            )
+            self.session_history_button.setAccessibleName("会话历史流")
+            self.session_history_button.clicked.connect(
+                lambda: self.session_history_requested.emit(self.notification)
+            )
+            side.addWidget(self.session_history_button)
 
         self.replay_button = self._make_action(
             "bell", "#4F647F", "再次弹出这条提醒"
@@ -2157,10 +2179,28 @@ class NotificationWindow(QMainWindow):
         self.copy_button.setIconSize(QSize(16, 16))
         self.copy_button.setFixedSize(186, 34)
         self.copy_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.copy_button.setToolTip("复制接入指令，粘贴给 Agent 后即可每轮自动推送")
+        self.copy_button.setToolTip(
+            f"复制「{self._integration_mode_label()}」接入指令，粘贴给 Agent 后即可按该模式推送"
+        )
         self.copy_button.setAccessibleName("复制 Agent 接入指令")
         self.copy_button.clicked.connect(self.copy_agent_instructions)
         layout.addWidget(self.copy_button, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        self.mode_combo = QComboBox(topbar)
+        self.mode_combo.setObjectName("modeSelect")
+        self.mode_combo.setFixedSize(148, 34)
+        self.mode_combo.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.mode_combo.setAccessibleName("接入更新模式")
+        for value, label in INTEGRATION_MODE_LABELS.items():
+            self.mode_combo.addItem(label, value)
+        mode = normalize_integration_mode(self.config.integration_mode)
+        index = self.mode_combo.findData(mode)
+        self.mode_combo.setCurrentIndex(max(0, index))
+        self.mode_combo.setToolTip(INTEGRATION_MODE_HINTS[mode])
+        self.mode_combo.currentIndexChanged.connect(
+            self._on_integration_mode_changed
+        )
+        layout.addWidget(self.mode_combo, 0, Qt.AlignmentFlag.AlignVCenter)
 
         divider = QFrame(topbar)
         divider.setObjectName("topDivider")
@@ -3368,12 +3408,13 @@ class NotificationWindow(QMainWindow):
         layout.addWidget(toolbar)
 
         self._detail_run_events: list[RunEvent] = []
+        self._detail_run_count = 0
         self._detail_run_card = QFrame(page)
         self._detail_run_card.setObjectName("detailRunCard")
         run_layout = QHBoxLayout(self._detail_run_card)
         run_layout.setContentsMargins(14, 8, 10, 8)
         run_layout.setSpacing(10)
-        run_badge = QLabel("本次运行", self._detail_run_card)
+        run_badge = QLabel("历史流", self._detail_run_card)
         run_badge.setObjectName("detailRunBadge")
         run_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
         run_badge.setFixedHeight(22)
@@ -3381,6 +3422,15 @@ class NotificationWindow(QMainWindow):
         self._detail_run_summary = ElidedLabel("", self._detail_run_card)
         self._detail_run_summary.setObjectName("detailRunSummary")
         run_layout.addWidget(self._detail_run_summary, 1)
+        self._detail_history_button = QPushButton("历史流", self._detail_run_card)
+        self._detail_history_button.setObjectName("detailRunButton")
+        self._detail_history_button.setFixedSize(64, 26)
+        self._detail_history_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._detail_history_button.setToolTip("按时间查看该会话的全部通知与运行事件")
+        self._detail_history_button.clicked.connect(
+            self._open_detail_session_history
+        )
+        run_layout.addWidget(self._detail_history_button)
         self._detail_run_button = QPushButton("时间线", self._detail_run_card)
         self._detail_run_button.setObjectName("detailRunButton")
         self._detail_run_button.setFixedSize(64, 26)
@@ -3526,6 +3576,7 @@ class NotificationWindow(QMainWindow):
             self._refresh_launch_records()
         elif page == "toolchain":
             self._toolchain_page.refresh()
+            self._refresh_integration_profiles()
         elif page == "list" and self._cards_dirty:
             self._rebuild_cards()
 
@@ -4009,6 +4060,9 @@ class NotificationWindow(QMainWindow):
                     card.snooze_requested.connect(self.snooze_requested.emit)
                     card.action_requested.connect(self.action_requested.emit)
                     card.timeline_requested.connect(self._open_timeline)
+                    card.session_history_requested.connect(
+                        self._open_session_history
+                    )
                     card.selection_changed.connect(self._on_card_selected)
                     self._list_layout.addWidget(card)
                     self._cards.append(card)
@@ -4474,13 +4528,105 @@ class NotificationWindow(QMainWindow):
 
     def _refresh_detail_run(self, session: AgentSession) -> None:
         events = self._store.session_run_events(session.session_id)
+        notifications = self._store.session_notifications(session.session_id)
         self._detail_run_events = events
-        if not events:
+        self._detail_run_count = len(notifications)
+        if not events and not notifications:
             self._detail_run_summary.set_full_text("")
             self._detail_run_card.hide()
             return
-        self._detail_run_summary.set_full_text(_run_summary_text(events))
+        parts: list[str] = []
+        if notifications:
+            parts.append(f"{len(notifications)} 轮通知")
+        if events:
+            parts.append(_run_summary_text(events))
+        self._detail_run_summary.set_full_text(" · ".join(parts))
+        self._detail_history_button.setVisible(bool(notifications))
+        self._detail_run_button.setVisible(bool(events))
         self._detail_run_card.show()
+
+    def _build_session_history_dialog(
+        self,
+        session_id: str,
+        session: AgentSession | None = None,
+    ) -> SessionTimelineDialog:
+        notifications = self._store.session_notifications(session_id)
+        events_by_notification: dict[str, list[RunEvent]] = {}
+        for event in self._store.session_event_stream(session_id):
+            if event.notification_id:
+                events_by_notification.setdefault(event.notification_id, []).append(
+                    event
+                )
+        rounds: list[SessionRound] = []
+        for item in notifications:
+            events = events_by_notification.get(item.id)
+            if events is None and item.run_id:
+                events = [
+                    event
+                    for event in self._store.run_events(item.run_id)
+                    if event.notification_id == item.id
+                ]
+            rounds.append(
+                SessionRound(notification=item, events=events or [])
+            )
+        if session is None:
+            session = next(
+                (
+                    item
+                    for item in self._sessions
+                    if item.session_id == session_id
+                ),
+                None,
+            )
+        if session is not None:
+            title = session.display_title
+            agent = session.agent_label
+            project = session.project or session.project_path
+        else:
+            latest_event = next(
+                (
+                    item.events[-1]
+                    for item in reversed(rounds)
+                    if item.events
+                ),
+                None,
+            )
+            latest = notifications[-1] if notifications else None
+            title = (
+                latest.title
+                if latest is not None
+                else f"会话 {session_id[:8]}"
+            )
+            agent = (latest.source if latest is not None else "") or (
+                latest_event.agent if latest_event is not None else ""
+            )
+            project = (
+                latest_event.project if latest_event is not None else ""
+            )
+        return SessionTimelineDialog(
+            title,
+            rounds,
+            self.logger,
+            self,
+            session_id=session_id,
+            agent=agent,
+            project=project,
+        )
+
+    def _open_session_history(self, notification: Notification) -> None:
+        if not notification.session_id:
+            return
+        dialog = self._build_session_history_dialog(notification.session_id)
+        dialog.exec()
+        dialog.deleteLater()
+
+    def _open_detail_session_history(self) -> None:
+        session = self._session_detail_session
+        if session is None or not session.session_id:
+            return
+        dialog = self._build_session_history_dialog(session.session_id, session)
+        dialog.exec()
+        dialog.deleteLater()
 
     def _open_detail_run_timeline(self) -> None:
         session = self._session_detail_session
@@ -4650,20 +4796,45 @@ class NotificationWindow(QMainWindow):
 
     # ---------- actions ----------
 
+    def _integration_mode_label(self) -> str:
+        mode = normalize_integration_mode(self.config.integration_mode)
+        return INTEGRATION_MODE_LABELS[mode]
+
+    def _on_integration_mode_changed(self, _index: int) -> None:
+        mode = normalize_integration_mode(str(self.mode_combo.currentData() or ""))
+        self.mode_combo.setToolTip(INTEGRATION_MODE_HINTS[mode])
+        if mode == self.config.integration_mode:
+            return
+        config = replace(self.config, integration_mode=mode)
+        self.config = config
+        if self._config_path is not None:
+            try:
+                save_config(self._config_path, config)
+            except ConfigError as exc:
+                self.logger.warning("保存接入模式失败：%s", exc)
+        self.settings_saved.emit(config)
+        self._copy_timer.stop()
+        self._reset_copy_button()
+        self.logger.info("接入模式已切换为 %s", mode)
+
     def copy_agent_instructions(self) -> None:
-        text = build_agent_instructions(self.config.port, self.config.token)
+        mode = normalize_integration_mode(self.config.integration_mode)
+        text = build_agent_instructions(self.config.port, self.config.token, mode)
         QGuiApplication.clipboard().setText(text)
         self.logger.info(
-            "已复制 Agent 接入指令：端口=%d 鉴权=%s 字数=%d",
+            "已复制 Agent 接入指令：端口=%d 鉴权=%s 模式=%s 字数=%d",
             self.config.port,
             "开启" if self.config.auth_enabled else "未开启",
+            mode,
             len(text),
         )
         self.copy_button.setText("已复制接入指令")
         self.copy_button.setIcon(_paint_icon("check", QColor("#FFFFFF"), 16))
         self.copy_button.setProperty("copied", True)
         _repolish(self.copy_button)
-        self.copy_button.setToolTip("接入指令已复制，直接粘贴给 Agent 即可")
+        self.copy_button.setToolTip(
+            f"已复制「{INTEGRATION_MODE_LABELS[mode]}」接入指令，直接粘贴给 Agent 即可"
+        )
         self._copy_timer.start()
 
     def _reset_copy_button(self) -> None:
@@ -4672,8 +4843,13 @@ class NotificationWindow(QMainWindow):
         self.copy_button.setProperty("copied", False)
         _repolish(self.copy_button)
         self.copy_button.setToolTip(
-            "复制接入指令，粘贴给 Agent 后即可每轮自动推送"
+            f"复制「{self._integration_mode_label()}」接入指令，粘贴给 Agent 后即可按该模式推送"
         )
+
+    def _refresh_integration_profiles(self) -> None:
+        refresh = getattr(self._toolchain_page, "set_integration_profiles", None)
+        if refresh is not None:
+            refresh(self._store.integration_profiles())
 
     def open_settings(self) -> None:
         if self._shutting_down:
@@ -4703,6 +4879,16 @@ class NotificationWindow(QMainWindow):
         self._hotkey_label.setText(
             f"快捷键 {config.hotkey}" if config.hotkey else "未设置全局快捷键"
         )
+        mode = normalize_integration_mode(config.integration_mode)
+        if hasattr(self, "mode_combo"):
+            self.mode_combo.blockSignals(True)
+            index = self.mode_combo.findData(mode)
+            if index >= 0:
+                self.mode_combo.setCurrentIndex(index)
+            self.mode_combo.blockSignals(False)
+            self.mode_combo.setToolTip(INTEGRATION_MODE_HINTS[mode])
+        if hasattr(self, "copy_button") and not self._copy_timer.isActive():
+            self._reset_copy_button()
         self._signature = None
         self._live_signature = None
         self._cards_dirty = True
@@ -4713,6 +4899,7 @@ class NotificationWindow(QMainWindow):
         self._refresh_recent_projects()
         self._sync_launcher_start()
         self._toolchain_page.apply_config(config.toolchain)
+        self._refresh_integration_profiles()
         if self._page == "stats":
             self.refresh_stats()
         elif self._page == "sessions":
@@ -5035,6 +5222,31 @@ QPushButton#copyButton:pressed {
 }
 QPushButton#copyButton[copied="true"] {
     background-color: #179A62;
+}
+QComboBox#modeSelect {
+    background-color: #F5F6FA;
+    border: 1px solid #E5E8EE;
+    border-radius: 9px;
+    color: #3A424D;
+    font-size: 11px;
+    padding: 0px 10px;
+}
+QComboBox#modeSelect:hover {
+    background-color: #EFF2F7;
+    border-color: #D5DAE3;
+}
+QComboBox#modeSelect::drop-down {
+    border: none;
+    width: 18px;
+}
+QComboBox#modeSelect QAbstractItemView {
+    background-color: #FFFFFF;
+    border: 1px solid #E3E7ED;
+    border-radius: 7px;
+    color: #323A45;
+    selection-background-color: #EAF2FF;
+    selection-color: #1F2329;
+    padding: 4px;
 }
 QFrame#topDivider {
     background-color: #E9ECF0;

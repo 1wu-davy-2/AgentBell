@@ -4,7 +4,12 @@ import logging
 import sqlite3
 from datetime import datetime, timedelta
 
-from agentbell.models import Notification, NotificationAction, RunEvent
+from agentbell.models import (
+    IntegrationProfile,
+    Notification,
+    NotificationAction,
+    RunEvent,
+)
 from agentbell.storage import NotificationStorage
 from agentbell.store import NotificationStore
 
@@ -615,6 +620,55 @@ def test_run_events_append_and_read(tmp_path):
         storage.close()
 
 
+def test_session_event_stream_returns_all_runs_oldest_first(tmp_path):
+    storage = open_storage(tmp_path)
+    try:
+        base = datetime.now().astimezone()
+        events = [
+            make_event(
+                "run-a",
+                "started",
+                base,
+                notification_id="id1",
+                session_id="s-1",
+            ),
+            make_event(
+                "run-b",
+                "started",
+                base + timedelta(seconds=60),
+                notification_id="id2",
+                session_id="s-1",
+            ),
+            make_event(
+                "run-a",
+                "finished",
+                base + timedelta(seconds=30),
+                notification_id="id1",
+                session_id="s-1",
+            ),
+            make_event(
+                "run-c",
+                "started",
+                base + timedelta(seconds=10),
+                notification_id="id3",
+                session_id="s-2",
+            ),
+        ]
+        for event in events:
+            assert storage.append_run_event(event) is True
+        loaded = storage.load_session_event_stream("s-1")
+        assert [(event.run_id, event.kind) for event in loaded] == [
+            ("run-a", "started"),
+            ("run-a", "finished"),
+            ("run-b", "started"),
+        ]
+        assert storage.load_session_event_stream("s-1", limit=2) == loaded[:2]
+        assert storage.load_session_event_stream("") == []
+        assert storage.load_session_event_stream("missing") == []
+    finally:
+        storage.close()
+
+
 def test_run_events_merge_same_phase_within_five_seconds(tmp_path):
     storage = open_storage(tmp_path)
     try:
@@ -741,6 +795,31 @@ def test_prune_and_clear_remove_orphan_run_events(tmp_path):
         storage.close()
 
 
+def test_load_session_notifications_returns_oldest_first(tmp_path):
+    storage = open_storage(tmp_path)
+    try:
+        base = datetime.now().astimezone()
+        for index in range(3):
+            storage.save(
+                make_notification(
+                    index + 1,
+                    session_id="s-1",
+                    received_at=base + timedelta(minutes=index),
+                )
+            )
+        storage.save(
+            make_notification(9, session_id="other", received_at=base)
+        )
+        items = storage.load_session_notifications("s-1")
+        assert [item.id for item in items] == ["id0001", "id0002", "id0003"]
+        limited = storage.load_session_notifications("s-1", limit=2)
+        assert [item.id for item in limited] == ["id0002", "id0003"]
+        assert storage.load_session_notifications("") == []
+        assert storage.load_session_notifications("missing") == []
+    finally:
+        storage.close()
+
+
 def test_load_session_run_events_returns_latest_run(tmp_path):
     storage = open_storage(tmp_path)
     try:
@@ -794,5 +873,53 @@ def test_archive_bulk_round_trip(tmp_path):
         loaded = {item.id: item for item in storage.load_recent(10)}
         assert all(item.archived is False for item in loaded.values())
         assert all(item.archived_at is None for item in loaded.values())
+    finally:
+        storage.close()
+
+
+def test_integration_profiles_round_trip_and_upsert(tmp_path):
+    storage = open_storage(tmp_path)
+    try:
+        now = datetime.now().astimezone()
+        storage.record_integration_profile(
+            IntegrationProfile(
+                agent="Qoder",
+                mode="finish_only",
+                source="manual",
+                updated_at=now,
+            )
+        )
+        profiles = storage.load_integration_profiles()
+        assert len(profiles) == 1
+        assert profiles[0].agent == "Qoder"
+        assert profiles[0].mode == "finish_only"
+        assert profiles[0].source == "manual"
+
+        later = now + timedelta(minutes=5)
+        storage.record_integration_profile(
+            IntegrationProfile(
+                agent="Qoder",
+                mode="full",
+                source="hook",
+                updated_at=later,
+            )
+        )
+        profiles = storage.load_integration_profiles()
+        assert len(profiles) == 1
+        assert profiles[0].mode == "full"
+        assert profiles[0].source == "hook"
+        assert profiles[0].updated_at >= now
+
+        storage.record_integration_profile(
+            IntegrationProfile(
+                agent="Claude Code",
+                mode="start_finish",
+                updated_at=later,
+            )
+        )
+        assert [item.agent for item in storage.load_integration_profiles()] == [
+            "Claude Code",
+            "Qoder",
+        ]
     finally:
         storage.close()

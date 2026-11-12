@@ -8,7 +8,9 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from .models import (
+    INTEGRATION_MODES,
     RUN_EVENT_KINDS,
+    IntegrationProfile,
     Notification,
     NotificationAction,
     RunEvent,
@@ -76,6 +78,12 @@ CREATE INDEX IF NOT EXISTS idx_run_events_run
     ON run_events(run_id, occurred_at);
 CREATE INDEX IF NOT EXISTS idx_run_events_session
     ON run_events(session_id);
+CREATE TABLE IF NOT EXISTS integration_profiles (
+    agent TEXT PRIMARY KEY,
+    mode TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL
+);
 """
 
 _EXTRA_COLUMNS = (
@@ -96,6 +104,8 @@ CREATE INDEX IF NOT EXISTS idx_notifications_run
     ON notifications(run_id);
 CREATE INDEX IF NOT EXISTS idx_notifications_archived
     ON notifications(archived);
+CREATE INDEX IF NOT EXISTS idx_notifications_session
+    ON notifications(session_id, received_at);
 """
 
 _COLUMNS = (
@@ -384,6 +394,96 @@ class NotificationStorage:
                 self._logger.warning("读取通知历史失败：%s", exc)
                 return []
         return [_row_to_notification(row) for row in rows]
+
+    def load_session_notifications(
+        self, session_id: str, limit: int = 200
+    ) -> list[Notification]:
+        """Return one session's notifications, oldest first."""
+        if not session_id:
+            return []
+        with self._lock:
+            try:
+                rows = self._connection.execute(
+                    "SELECT * FROM notifications WHERE session_id = ? "
+                    "ORDER BY received_at DESC, rowid DESC LIMIT ?",
+                    (session_id, int(limit)),
+                ).fetchall()
+            except sqlite3.Error as exc:
+                self._logger.warning(
+                    "读取会话通知失败 session=%s：%s", session_id, exc
+                )
+                return []
+        rows.reverse()
+        return [_row_to_notification(row) for row in rows]
+
+    def load_session_event_stream(
+        self, session_id: str, limit: int = 2000
+    ) -> list[RunEvent]:
+        """Return every run event recorded for one session, oldest first."""
+        if not session_id:
+            return []
+        with self._lock:
+            try:
+                rows = self._connection.execute(
+                    "SELECT * FROM run_events WHERE session_id = ? "
+                    "ORDER BY occurred_at, id LIMIT ?",
+                    (session_id, int(limit)),
+                ).fetchall()
+            except sqlite3.Error as exc:
+                self._logger.warning(
+                    "读取会话事件流失败 session=%s：%s", session_id, exc
+                )
+                return []
+        return [_row_to_run_event(row) for row in rows]
+
+    def record_integration_profile(self, profile: IntegrationProfile) -> None:
+        with self._lock:
+            try:
+                self._connection.execute(
+                    "INSERT INTO integration_profiles (agent, mode, source, updated_at) "
+                    "VALUES (?, ?, ?, ?) "
+                    "ON CONFLICT(agent) DO UPDATE SET "
+                    "mode = excluded.mode, source = excluded.source, "
+                    "updated_at = excluded.updated_at",
+                    (
+                        profile.agent,
+                        profile.mode,
+                        profile.source,
+                        _iso(profile.updated_at),
+                    ),
+                )
+                self._connection.commit()
+            except sqlite3.Error as exc:
+                self._logger.warning(
+                    "写入接入模式失败 agent=%s：%s", profile.agent, exc
+                )
+
+    def load_integration_profiles(self) -> list[IntegrationProfile]:
+        with self._lock:
+            try:
+                rows = self._connection.execute(
+                    "SELECT agent, mode, source, updated_at "
+                    "FROM integration_profiles "
+                    "ORDER BY updated_at DESC, agent ASC"
+                ).fetchall()
+            except sqlite3.Error as exc:
+                self._logger.warning("读取接入模式失败：%s", exc)
+                return []
+        profiles: list[IntegrationProfile] = []
+        for row in rows:
+            updated_at = _parse_dt(row["updated_at"])
+            if updated_at is None:
+                continue
+            mode = row["mode"] if row["mode"] in INTEGRATION_MODES else "start_finish"
+            profiles.append(
+                IntegrationProfile(
+                    agent=str(row["agent"]),
+                    mode=mode,  # type: ignore[arg-type]
+                    source=str(row["source"] or ""),
+                    updated_at=updated_at,
+                )
+            )
+        return profiles
 
     def export_notifications(
         self, days: int = 7, limit: int = 10000

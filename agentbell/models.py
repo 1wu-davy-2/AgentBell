@@ -19,6 +19,7 @@ ActionKind = Literal[
 ]
 PopupMode = Literal["corner", "center", "overlay"]
 PopupSkin = Literal["midnight", "light", "ocean", "amber"]
+IntegrationMode = Literal["full", "start_finish", "finish_only"]
 OverlayAnchor = Literal[
     "center",
     "top",
@@ -49,6 +50,11 @@ ATTENTION_AGENT_LABELS: dict[str, str] = {
 }
 POPUP_MODES: tuple[PopupMode, ...] = ("corner", "center", "overlay")
 POPUP_SKINS: tuple[PopupSkin, ...] = ("midnight", "light", "ocean", "amber")
+INTEGRATION_MODES: tuple[IntegrationMode, ...] = (
+    "full",
+    "start_finish",
+    "finish_only",
+)
 OVERLAY_ANCHORS: tuple[OverlayAnchor, ...] = (
     "center",
     "top",
@@ -488,3 +494,13 @@ class RunEvent:
     @property
     def kind_label(self) -> str:
         return RUN_EVENT_LABELS.get(self.kind, self.kind)
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationProfile:
+    """Last notification protocol an external agent reported for itself."""
+
+    agent: str
+    mode: IntegrationMode
+    source: str = ""
+    updated_at: datetime = field(default_factory=lambda: datetime.now().astimezone())

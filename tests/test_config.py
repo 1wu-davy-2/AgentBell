@@ -550,3 +550,25 @@ def test_invalid_voice_and_usage_values(tmp_path, section, message):
     path.write_text(json.dumps(section), encoding="utf-8")
     with pytest.raises(ConfigError, match=message):
         load_config(path)
+
+
+def test_integration_mode_defaults_to_start_finish(tmp_path):
+    path = tmp_path / "config.json"
+    config, _ = load_config(path)
+    assert config.integration_mode == "start_finish"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["integration_mode"] == "start_finish"
+
+
+def test_integration_mode_accepts_known_values_case_insensitively(tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text('{"integration_mode": "Finish_Only"}', encoding="utf-8")
+    config, _ = load_config(path)
+    assert config.integration_mode == "finish_only"
+
+
+def test_integration_mode_rejects_unknown_value(tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text('{"integration_mode": "bogus"}', encoding="utf-8")
+    with pytest.raises(ConfigError, match="integration_mode"):
+        load_config(path)

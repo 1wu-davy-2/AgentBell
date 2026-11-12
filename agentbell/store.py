@@ -9,6 +9,7 @@ from typing import Any
 
 from .models import (
     PRIORITY_RANK,
+    IntegrationProfile,
     Notification,
     RunEvent,
     RunEventKind,
@@ -35,6 +36,7 @@ class NotificationStore:
         self._items: deque[Notification] = deque(maxlen=self._limit)
         self._by_id: dict[str, Notification] = {}
         self._dedupe_index: dict[str, str] = {}
+        self._integration_profiles: dict[str, IntegrationProfile] = {}
         self._lock = threading.RLock()
         self._storage = storage
         self._logger = logger or logging.getLogger("agentbell.store")
@@ -150,6 +152,51 @@ class NotificationStore:
             if self._storage is None or not session_id:
                 return []
             return self._storage.load_session_run_events(session_id, limit)
+
+    def session_event_stream(
+        self, session_id: str | None, limit: int = 2000
+    ) -> list[RunEvent]:
+        with self._lock:
+            if self._storage is None or not session_id:
+                return []
+            return self._storage.load_session_event_stream(session_id, limit)
+
+    def session_notifications(
+        self, session_id: str | None, limit: int = 200
+    ) -> list[Notification]:
+        if not session_id:
+            return []
+        with self._lock:
+            if self._storage is not None:
+                return self._storage.load_session_notifications(
+                    session_id, limit
+                )
+            items = [
+                item for item in self._items if item.session_id == session_id
+            ]
+        items.sort(key=lambda item: item.received_at)
+        return items[-max(1, int(limit)) :]
+
+    def record_integration_profile(self, profile: IntegrationProfile) -> bool:
+        """Remember the protocol mode an external agent reported for itself."""
+        with self._lock:
+            existing = self._integration_profiles.get(profile.agent)
+            if existing == profile:
+                return False
+            self._integration_profiles[profile.agent] = profile
+            if self._storage is not None:
+                self._storage.record_integration_profile(profile)
+            return True
+
+    def integration_profiles(self) -> list[IntegrationProfile]:
+        with self._lock:
+            if self._storage is not None:
+                return self._storage.load_integration_profiles()
+            return sorted(
+                self._integration_profiles.values(),
+                key=lambda item: item.updated_at,
+                reverse=True,
+            )
 
     def acknowledge(self, notification_id: str, now: datetime | None = None) -> Notification | None:
         with self._lock:

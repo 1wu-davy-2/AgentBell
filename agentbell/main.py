@@ -23,6 +23,7 @@ from .log import install_exception_hooks, setup_logging
 from .models import Notification
 from .paths import config_file, ensure_chat_dir, usage_db
 from .server import ListenerError, bind_listener
+from .session_link import SessionLinker
 from .single_instance import SingleInstanceError, SingleInstanceGuard, default_server_name
 from .storage import NotificationStorage, StorageError
 from .store import NotificationStore
@@ -236,6 +237,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "SQLite" if ledger.persistent else "内存",
     )
     session_registry = SessionReportRegistry(logger)
+    session_linker = SessionLinker(logger)
     asgi_app = create_app(
         lambda: config_ref.current,
         inbox,
@@ -243,6 +245,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         store=store,
         ledger=ledger,
         sessions=session_registry,
+        session_linker=session_linker,
     )
     controller: AgentBellApp | None = None
     splash: SplashWindow | None = None
@@ -262,6 +265,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             config_ref=config_ref,
             ledger=ledger,
             session_registry=session_registry,
+            session_linker=session_linker,
         )
 
         def _on_splash_finished() -> None:

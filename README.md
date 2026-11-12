@@ -41,6 +41,7 @@ AgentBell 是一个只做提醒的 Windows / macOS / Linux 桌面工具。AI Age
 - 规则分流：可按等待原因、`needs_input`、运行时长和项目 glob 匹配，分别覆盖优先级、是否静音、确认、自动关闭、弹窗与额外通道；后匹配规则覆盖标量字段，设置保存后立即生效。规则区提供「试运行」，用一条样例通知查看命中的规则与最终字段。
 - 免打扰、全屏 / 会议抑制、锁屏保留、聚合摘要与未读升级；托盘「勿扰模式」可快速暂停 30 分钟、1 小时或到明早。
 - 待确认、5/15/30 分钟稍后提醒，以及回到终端、查看记录、打开时间线、打开链接、复制、重试等动作；查看记录与时间线只读，不包含审批或自动继续。
+- 会话历史流：同一 `session_id` 的多轮通知按时间汇成一条连续记录，通知卡片与 Agent 会话详情可直接打开；每轮可展开开始、进展与完成事件。未显式提供 `session_id` 时，仅在 Agent、项目目录与更新时间唯一匹配时自动关联，并标注「自动关联」。
 - 通知中心搜索支持 `status:` / `source:` / `priority:` / `session:` / `run:` / `ack:` 字段过滤；支持状态与 Agent 来源筛选、进行中自动汇入近期活跃会话与外部心跳会话、7 / 30 / 90 天统计区间与 CSV 导出、批量归档和按日期 / 来源分组。
 - 托盘未读数字角标；点击弹窗卡片的标题、摘要或空白区域可直达通知中心；通知中心任意页面按 `Ctrl+F` 回到列表并聚焦搜索。
 - 历史数据库支持条数上限与按天保留（`history.retention_days`），设置页可直接调整，保存后立即清理过期记录。
@@ -51,11 +52,13 @@ AgentBell 是一个只做提醒的 Windows / macOS / Linux 桌面工具。AI Age
 - 本地语音播报：通知到达时用系统 TTS 朗读标题与状态，可选摘要、语速与最低优先级；只在本机合成，不联网。
 - MCP Server：`POST /mcp` 提供 `notify`、`search_history`、`get_status`、`report_usage`、`report_session` 五个工具，支持 JSON-RPC 2.0 与 Bearer / `X-Token` 鉴权，可直接接入 Claude Code 等 MCP 客户端。
 - 外部数据接入：外部 Agent 可通过 `/usage/report` 幂等上报 Token / 成本，通过 `/sessions/report` 以心跳把活跃会话显示在「进行中」；两者也提供同名 MCP 工具，仍只连本机。
+- 三种更新模式：通知中心顶栏可切换「最全 / 开始+结束 / 仅结束」，复制出的接入指令随模式调整；Agent 接入时可通过 `POST /integration/report` 登记实际使用的模式，登记结果在「运行环境」页与本机数据库中可查。
 - Token 与成本守卫：只读增量统计 Claude Code / Qoder / Codex 今日 Token，并累加外部上报用量；按自定义单价估算成本，达到每日预算阈值时推送去重提醒。
 - DeepSeek Harness 接入：提供 `agentbell-notify` 技能与官方 bundle 插件，可按需或每轮自动上报。
 
 ### 最近更新
 
+- **v2.24.0**：新增三种更新模式与登记接口。通知中心顶栏可在「最全」（开始 + 30% / 60% / 90% 关键进度 + 等待输入 + 结束）、「开始+结束」（静默开始 + 结束一条）与「仅结束」（每轮只发一条结论）之间切换，复制出的接入指令按所选模式生成字段与示例，节省 Token。Agent 接入时可调用 `POST /integration/report` 上报实际模式，按 Agent 记录在本机 SQLite 的 `integration_profiles` 表，并在「运行环境」页展示；MCP `get_status` 也能读到。另新增会话历史流：同一 `session_id` 的多轮通知按时间汇总，通知卡片新增「会话历史流」按钮，Agent 会话详情顶部显示「历史流」入口；每轮可展开开始、进展与完成事件，头部汇总 Agent、项目、成功率、跨度与自动关联轮数。未显式提供 `session_id` 时，只在同一 Agent、同一项目目录、会话在最近 30 分钟内仍有更新且候选唯一时自动关联并标记；显式值始终优先，存在歧义时不做猜测，也不回填旧通知。事件按 `notification_id` 归入具体轮次，共享 `run_id` 不会导致重复展示。
 - **v2.23.0**：补齐外部 Agent 数据面。通知新增 `metadata`，可携带模型、轮次、工具、文件与上下文占用，卡片展示信息胶囊；`phase=compaction` 可记录上下文压缩。新增 `POST /usage/report` 与 `POST /sessions/report`，外部 Agent 可幂等上报 Token / 成本，并以心跳把活跃会话显示在「进行中」；MCP 工具扩展为 `notify`、`search_history`、`get_status`、`report_usage`、`report_session` 五个。外部数据仍只写本机，会话心跳 10 分钟无更新自动过期。
 - **v2.22.0**：新增本地语音播报、MCP Server 与 Token / 成本守卫。语音使用系统 TTS，只在本机合成；`POST /mcp` 提供 `notify`、`search_history`、`get_status` 三个工具，复用通知管线并支持 Bearer 鉴权；用量守卫只读增量扫描 Claude Code / Qoder / Codex 会话，按每日 Token / 成本预算推送去重提醒，统计页新增「今日 Token 与成本」卡片。另提供 DeepSeek Harness 的 `agentbell-notify` 技能与 dsh bundle 插件，每轮结束可自动上报。
 - **v2.21.0**：托盘新增未读数字角标（超过 99 显示 `99+`），未读闪烁结束后自动回到角标；点击弹窗卡片的标题、摘要或空白区域可直接打开通知中心，卡片按钮行为不变；通知中心任意页面按 `Ctrl+F` 会回到通知记录并聚焦搜索框。历史数据库新增按天保留（`history.retention_days`），与条数上限同时生效，设置页可直接调整并立即清理过期记录。
@@ -235,8 +238,15 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8765/notify" -Method Post `
 #### 3. 让 Agent 每轮自动推送
 
 1. 点击通知中心右上角的「复制 Agent 接入指令」。
-2. 把剪贴板内容粘贴给 Agent（Claude Code、Codex、Qoder 等），发一次即可。
-3. 指令包含当前端口、`X-Token`、字段说明和编码要求，并要求它**每轮任务结束都推送一次**，无论成功、失败还是取消。
+2. 先在按钮左侧的模式下拉里选择更新方式：
+
+   - **最全**：开始静默上报，30% / 60% / 90% 关键节点更新同一张卡片，等待输入即时提醒，结束再发一条结论。
+   - **开始+结束**：每轮只有静默开始与结束两条，不写中途进度。
+   - **仅结束**：每轮只在结束时发一条结论，最省 Token。
+
+3. 把剪贴板内容粘贴给 Agent（Claude Code、Codex、Qoder 等），发一次即可。
+4. 指令按所选模式生成字段说明与示例，包含当前端口、`X-Token`、编码要求，并要求它**每轮任务结束都推送一次**，无论成功、失败还是取消；还会要求 Agent 调用 `POST /integration/report` 登记实际使用的模式。登记只写本机，可在「运行环境」页查看。
+5. 接入指令只用于对话内约定，不会写入 `CLAUDE.md`、项目文件、Agent 设置或 Hook 配置；需要 Hook 时按第 4 节手动接入。
 
 如果希望通知卡片带「回到终端」按钮，让 Agent 在请求里带上 `origin.pid`；`window_title` 和 `working_dir` 可作为兜底。即使忘了填，AgentBell 也会尝试按本机连接自动识别发送进程；`source` 留空时同样会自动补出来源 Agent。需要「查看记录」或「时间线」按钮时，按第 6 节在 `actions` 中声明只读动作。
 
@@ -287,6 +297,10 @@ Agent 停下来等你处理时，可以让它显式上报一条 `status="running
 ```
 
 `phase` 可选 `started` / `progress` / `waiting_input` / `resumed` / `finished` / `note` / `compaction`；显式传入时按原样追加一条事件，不再自动推断。同一运行、同一阶段 5 秒内重复上报会合并为一条，避免进度刷屏。通知卡片右侧出现「时间线」按钮后，可查看阶段、相对耗时、状态和来源；会话详情页会显示最近一次运行的摘要，统计页可看运行级指标。完整字段见 [system-architecture.md](system-architecture.md)。
+
+如果希望每次运行都有完整的「开始 → 完成」时间线，推荐两步上报：开始时发一条 `status="running"`、`phase="started"`、`silent=true` 的通知，结束时用相同的 `dedupe_key` / `run_id` 发送最终通知并带 `phase="finished"`；两条通知都建议携带同一个 `session_id`。开始通知不弹窗，结束会原地更新同一张卡片；只有一个事件时，时间线只显示绝对时间，不再显示无意义的 `+0s`。
+
+同一 `session_id` 的多轮通知会自动汇成「会话历史流」。通知卡片右侧与 Agent 会话详情顶部都提供入口，按时间列出每一轮并展开该轮的开始、进展与完成事件；每轮最好使用独立的 `run_id`，未提供时仍可回落到 `session:<session_id>`，事件会按 `notification_id` 归入具体轮次，不会重复。没有显式 `session_id` 时，AgentBell 只在同一 Agent、同一项目目录、会话最近 30 分钟内仍有更新且候选唯一时自动关联，并在卡片和历史流中标注「自动关联」；存在多个候选或目录不匹配时不做猜测，也不会回填历史通知。需要稳定归属时请始终显式上报 `session_id`。
 
 如果希望弹窗和通知中心直接出现「查看记录」「时间线」按钮，让 Agent 在 `actions` 里声明只读动作：
 
@@ -411,7 +425,7 @@ AgentBell 会按间隔只读增量扫描本机 Claude Code、Qoder 与 Codex 的
 ```powershell
 pip install -r requirements-dev.txt
 python -m PyInstaller --noconfirm --clean AgentBell37.spec
-# 产物：dist\AgentBell-37.exe
+# 产物：dist\AgentBell-38.exe
 ```
 
 Windows 配置 Authenticode 证书后，可对产物签名并验证：
@@ -419,7 +433,7 @@ Windows 配置 Authenticode 证书后，可对产物签名并验证：
 ```powershell
 $env:WINDOWS_CERT_PFX_BASE64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes("cert.pfx"))
 $env:WINDOWS_CERT_PASSWORD = "pfx-password"
-python scripts/sign_windows.py --target dist/AgentBell-37.exe
+python scripts/sign_windows.py --target dist/AgentBell-38.exe
 ```
 
 Linux 原生构建（不跨架构编译）：
@@ -428,9 +442,9 @@ Linux 原生构建（不跨架构编译）：
 pip install -r requirements-dev.txt
 python -m PyInstaller --noconfirm AgentBell-linux.spec
 # 仅 tar.gz + deb + rpm（不传 AppImage 工具）
-python scripts/build_linux_packages.py --binary dist/AgentBell --version 2.23.0 --arch x64
+python scripts/build_linux_packages.py --binary dist/AgentBell --version 2.24.0 --arch x64
 # 生成全部四种格式
-python scripts/build_linux_packages.py --binary dist/AgentBell --version 2.23.0 --arch x64 \
+python scripts/build_linux_packages.py --binary dist/AgentBell --version 2.24.0 --arch x64 \
   --appimagetool ./appimagetool --appimage-runtime ./runtime-x86_64
 ```
 
@@ -442,10 +456,10 @@ python scripts/make_macos_icon.py
 python -m PyInstaller --noconfirm AgentBell-macos.spec
 # ad-hoc 签名
 python scripts/build_macos_packages.py \
-  --app dist/AgentBell.app --version 2.23.0 --arch arm64
+  --app dist/AgentBell.app --version 2.24.0 --arch arm64
 # Developer ID 签名 + 公证（凭据也可用环境变量提供）
 python scripts/build_macos_packages.py \
-  --app dist/AgentBell.app --version 2.23.0 --arch arm64 \
+  --app dist/AgentBell.app --version 2.24.0 --arch arm64 \
   --identity "Developer ID Application: Example (TEAMID)" \
   --entitlements assets/macos_entitlements.plist \
   --notarize \
@@ -455,7 +469,7 @@ python scripts/build_macos_packages.py \
 推送到 `develop` 会触发 Windows（x64 / arm64）、Linux（x64 / arm64）与 macOS（x64 / arm64）测试和打包；推送 `v*` 标签会校验标签与 `agentbell/__init__.py` 的 `__version__` 一致，然后自动发布 Release。Windows 工作流会选用编号最大的 `AgentBell<N>.spec`，x64 产物复制为 `AgentBell.exe`，ARM64 命名 `AgentBell-arm64.exe`；Linux 按架构生成 `AgentBell-linux-<arch>.tar.gz`、`.AppImage`、`.deb` 与 `.rpm`；macOS 生成 `AgentBell-macos-<arch>.dmg` 与 `.zip`。每个平台与架构附一份校验文件，最后合并一份 `SHA256SUMS.txt`。配置 GitHub Secrets 后，Windows 产物会用 signtool 签名，macOS 会做 Developer ID 签名、公证与 staple。
 
 ```bash
-git tag v2.23.0
+git tag v2.24.0
 git push origin develop --tags
 ```
 
