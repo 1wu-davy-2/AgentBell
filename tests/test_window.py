@@ -30,6 +30,7 @@ from agentbell.ui.window import (
     LaunchRecordCard,
     NotificationCard,
     NotificationWindow,
+    _metadata_chip_items,
     build_stats_csv,
     format_received_at,
     format_seconds,
@@ -82,6 +83,51 @@ def make_notification(index: int, **overrides) -> Notification:
     }
     values.update(overrides)
     return Notification(**values)
+
+
+def test_metadata_chip_items_format_and_cap():
+    notification = make_notification(
+        1,
+        metadata={
+            "model": "deepseek-chat",
+            "turn": "3",
+            "tools": "2",
+            "files": "1",
+            "context_percent": "82.5",
+            "compaction": "true",
+        },
+    )
+
+    assert _metadata_chip_items(notification) == [
+        ("模型 deepseek-chat", "模型：deepseek-chat"),
+        ("轮次 第 3 轮", "轮次：3"),
+        ("工具 2 次", "工具：2"),
+        ("文件 1 个", "文件：1"),
+    ]
+
+
+def test_external_session_card_hides_terminal_without_path(qapp):
+    session = AgentSession(
+        agent="deepseek",
+        session_id="dsh-1",
+        project="TaskBeacon",
+        project_path="",
+        path="",
+        updated_at=datetime.now().astimezone(),
+        title="Dsh 会话",
+        external=True,
+        detail="等待权限",
+        wait_reason="permission",
+    )
+
+    card = ActiveSessionCard(session)
+    try:
+        assert card.terminal_button.isHidden()
+        texts = [label.toolTip() for label in card.findChildren(QLabel)]
+        assert any("外部心跳" in text and "等待权限" in text for text in texts)
+        assert card.view_button.text() == "查看记录"
+    finally:
+        card.deleteLater()
 
 
 def test_window_lists_newest_first_and_updates_counts(window_factory):

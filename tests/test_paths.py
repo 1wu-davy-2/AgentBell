@@ -17,6 +17,17 @@ def test_chat_and_updates_live_beside_config(tmp_path, monkeypatch):
     assert paths.default_project_dir() == created
 
 
+def test_usage_db_follows_config_path(tmp_path, monkeypatch):
+    install_dir = tmp_path / "install"
+    monkeypatch.setattr(paths, "app_dir", lambda: install_dir)
+
+    assert paths.usage_db() == install_dir / "usage.sqlite3"
+    assert (
+        paths.usage_db(tmp_path / "debug" / "config.json")
+        == tmp_path / "debug" / "usage.sqlite3"
+    )
+
+
 def test_frozen_macos_uses_application_support(tmp_path, monkeypatch):
     monkeypatch.setattr(paths.sys, "frozen", True, raising=False)
     monkeypatch.setattr(paths.sys, "platform", "darwin")

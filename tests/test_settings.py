@@ -12,7 +12,12 @@ from PySide6.QtCore import QTime
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QPushButton, QScrollArea
 
-from agentbell.config import AppConfig, RuleConfig, load_config
+from agentbell.config import (
+    AppConfig,
+    RuleConfig,
+    UsageConfig,
+    load_config,
+)
 from agentbell.ui.settings import RuleTesterDialog, SettingsDialog
 
 pytest.importorskip("PySide6")
@@ -130,6 +135,49 @@ def test_save_validates_and_writes_config(qapp, tmp_path):
         assert loaded.rules[0].require_ack is True
         assert loaded.channels[0].type == "ntfy"
         assert loaded.channels[0].topic == "agentbell-test"
+    finally:
+        dialog.deleteLater()
+        QTest.qWait(20)
+
+
+def test_voice_and_usage_controls_save(qapp, tmp_path):
+    path = tmp_path / "config.json"
+    dialog = SettingsDialog(
+        AppConfig(
+            port=18765,
+            usage=UsageConfig(pricing={"demo-model": {"input": 1.5}}),
+        ),
+        path,
+        logging.getLogger("agentbell.tests"),
+    )
+    try:
+        dialog._voice_enabled_check.setChecked(True)
+        dialog._voice_priority_combo.setCurrentIndex(
+            dialog._voice_priority_combo.findData("high")
+        )
+        dialog._voice_rate_spin.setValue(3)
+        dialog._voice_summary_check.setChecked(False)
+        dialog._voice_chars_spin.setValue(77)
+        dialog._usage_enabled_check.setChecked(True)
+        dialog._usage_interval_spin.setValue(120)
+        dialog._usage_token_spin.setValue(2_000_000)
+        dialog._usage_cost_spin.setValue(5.5)
+        dialog._usage_alert_spin.setValue(70)
+
+        dialog._save()
+
+        loaded, _ = load_config(path)
+        assert loaded.voice.enabled is True
+        assert loaded.voice.min_priority == "high"
+        assert loaded.voice.rate == 3
+        assert loaded.voice.include_summary is False
+        assert loaded.voice.max_chars == 77
+        assert loaded.usage.enabled is True
+        assert loaded.usage.scan_interval_seconds == 120
+        assert loaded.usage.daily_token_budget == 2_000_000
+        assert loaded.usage.daily_cost_budget == 5.5
+        assert loaded.usage.alert_percent == 70
+        assert loaded.usage.pricing == {"demo-model": {"input": 1.5}}
     finally:
         dialog.deleteLater()
         QTest.qWait(20)

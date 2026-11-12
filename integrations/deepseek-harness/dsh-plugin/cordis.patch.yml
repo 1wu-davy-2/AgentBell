@@ -1,0 +1,9 @@
+- insert:
+    - id: agentbell-notify
+      name: '@agentbell/dsh-notify'
+      config:
+        endpoint: 'http://127.0.0.1:8765/notify'
+        source: 'DeepSeek Harness'
+        tokenEnv: 'AGENTBELL_TOKEN'
+        tokenFile: ''
+        includeSummary: false

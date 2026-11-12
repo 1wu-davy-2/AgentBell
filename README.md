@@ -36,20 +36,28 @@ AgentBell 是一个只做提醒的 Windows / macOS / Linux 桌面工具。AI Age
 - 等待输入提醒：Agent 卡在权限确认、提问、限流或上下文超限时，卡片标出原因；支持显式上报与 Claude Code / Qoder / Codex / Gemini / Grok 的本地只读推断，并在「进行中」下提供「待输入」子筛选。
 - 一键接入提醒：在「运行环境」页把 Claude Code、Gemini CLI、Grok 的等待与结束 Hook 写进各自用户配置；Codex 支持每轮结束提醒。写入前预览并备份，可随时撤销。
 - 运行时间线：同一 `run_id` 的开始、等待、继续、完成会串成一条只追加的事件线；卡片可直接打开时间线弹窗，统计页按运行查看成功率、P50/P90 耗时与累计等待时长。
+- 通知元信息：`metadata` 可携带模型、轮次、工具调用数、文件数、上下文占用、压缩与授权状态，卡片按顺序展示最多 4 个信息胶囊；上下文压缩可用 `phase=compaction` 记入时间线。
 - 四套皮肤、三种弹窗模式，以及可拖拽定位、多显示器逐屏呈现的全屏遮挡；可让副屏只保留背景。
 - 规则分流：可按等待原因、`needs_input`、运行时长和项目 glob 匹配，分别覆盖优先级、是否静音、确认、自动关闭、弹窗与额外通道；后匹配规则覆盖标量字段，设置保存后立即生效。规则区提供「试运行」，用一条样例通知查看命中的规则与最终字段。
 - 免打扰、全屏 / 会议抑制、锁屏保留、聚合摘要与未读升级；托盘「勿扰模式」可快速暂停 30 分钟、1 小时或到明早。
 - 待确认、5/15/30 分钟稍后提醒，以及回到终端、查看记录、打开时间线、打开链接、复制、重试等动作；查看记录与时间线只读，不包含审批或自动继续。
-- 通知中心搜索支持 `status:` / `source:` / `priority:` / `session:` / `run:` / `ack:` 字段过滤；支持状态与 Agent 来源筛选、进行中自动汇入近期活跃会话、7 / 30 / 90 天统计区间与 CSV 导出、批量归档和按日期 / 来源分组。
+- 通知中心搜索支持 `status:` / `source:` / `priority:` / `session:` / `run:` / `ack:` 字段过滤；支持状态与 Agent 来源筛选、进行中自动汇入近期活跃会话与外部心跳会话、7 / 30 / 90 天统计区间与 CSV 导出、批量归档和按日期 / 来源分组。
 - 托盘未读数字角标；点击弹窗卡片的标题、摘要或空白区域可直达通知中心；通知中心任意页面按 `Ctrl+F` 回到列表并聚焦搜索。
 - 历史数据库支持条数上限与按天保留（`history.retention_days`），设置页可直接调整，保存后立即清理过期记录。
 - Agent 会话：只读扫描 Claude Code、Qoder、Codex、Gemini、Grok 的会话文件与 OpenCode 的数据库，可在软件内阅读完整记录、搜索、复制或导出 Markdown。
 - 内置 11 种 Agent 的检测与启动，默认使用安装目录下的 `chat/` 工作区。
 - 便携运行环境：一键把 Node LTS 和 7 个官方 Agent CLI（Claude Code、Codex、Gemini CLI、OpenCode、OpenClaw、Hermes、Pi）装进安装目录的 `runtime/`，免管理员权限、不改系统 PATH；同时自动识别系统 Node 与 npm 全局安装的 CLI；cc-switch 等外部工具直接跳转官方下载页；DeepSeek 作为供应商预设直接注入 Claude Code。
 - 基于 GitHub Releases 的自身更新；Windows 与 macOS 支持原地替换，Linux tar.gz 支持包内更新。
+- 本地语音播报：通知到达时用系统 TTS 朗读标题与状态，可选摘要、语速与最低优先级；只在本机合成，不联网。
+- MCP Server：`POST /mcp` 提供 `notify`、`search_history`、`get_status`、`report_usage`、`report_session` 五个工具，支持 JSON-RPC 2.0 与 Bearer / `X-Token` 鉴权，可直接接入 Claude Code 等 MCP 客户端。
+- 外部数据接入：外部 Agent 可通过 `/usage/report` 幂等上报 Token / 成本，通过 `/sessions/report` 以心跳把活跃会话显示在「进行中」；两者也提供同名 MCP 工具，仍只连本机。
+- Token 与成本守卫：只读增量统计 Claude Code / Qoder / Codex 今日 Token，并累加外部上报用量；按自定义单价估算成本，达到每日预算阈值时推送去重提醒。
+- DeepSeek Harness 接入：提供 `agentbell-notify` 技能与官方 bundle 插件，可按需或每轮自动上报。
 
 ### 最近更新
 
+- **v2.23.0**：补齐外部 Agent 数据面。通知新增 `metadata`，可携带模型、轮次、工具、文件与上下文占用，卡片展示信息胶囊；`phase=compaction` 可记录上下文压缩。新增 `POST /usage/report` 与 `POST /sessions/report`，外部 Agent 可幂等上报 Token / 成本，并以心跳把活跃会话显示在「进行中」；MCP 工具扩展为 `notify`、`search_history`、`get_status`、`report_usage`、`report_session` 五个。外部数据仍只写本机，会话心跳 10 分钟无更新自动过期。
+- **v2.22.0**：新增本地语音播报、MCP Server 与 Token / 成本守卫。语音使用系统 TTS，只在本机合成；`POST /mcp` 提供 `notify`、`search_history`、`get_status` 三个工具，复用通知管线并支持 Bearer 鉴权；用量守卫只读增量扫描 Claude Code / Qoder / Codex 会话，按每日 Token / 成本预算推送去重提醒，统计页新增「今日 Token 与成本」卡片。另提供 DeepSeek Harness 的 `agentbell-notify` 技能与 dsh bundle 插件，每轮结束可自动上报。
 - **v2.21.0**：托盘新增未读数字角标（超过 99 显示 `99+`），未读闪烁结束后自动回到角标；点击弹窗卡片的标题、摘要或空白区域可直接打开通知中心，卡片按钮行为不变；通知中心任意页面按 `Ctrl+F` 会回到通知记录并聚焦搜索框。历史数据库新增按天保留（`history.retention_days`），与条数上限同时生效，设置页可直接调整并立即清理过期记录。
 - **v2.20.0**：托盘图标支持点击打开通知中心。左键单击或双击托盘图标（包括 Windows 托盘溢出面板里的图标）会直接打开并置前通知中心，右键仍保留原菜单；托盘未读闪烁与勿扰状态不受影响。
 - **v2.19.1**：修复 Linux 托盘菜单生命周期问题。托盘上下文菜单此前只作为局部变量传入，且 PySide6 6.8 在回收子菜单的 `menuAction` 包装器时会连带删除子菜单，打开「勿扰模式」等子菜单会触发 `QMenu already deleted`；现在托盘同时持有上下文菜单与两个子菜单 action 的强引用。同时修正 macOS 上窗口聚焦测试的平台标志，让 Windows 路径用例在 macOS 上按预期执行。功能与 2.19.0 相同，2.19.0 标签因 Linux arm64 与 macOS 测试未通过而没有发布。
@@ -278,7 +286,7 @@ Agent 停下来等你处理时，可以让它显式上报一条 `status="running
 }
 ```
 
-`phase` 可选 `started` / `progress` / `waiting_input` / `resumed` / `finished` / `note`；显式传入时按原样追加一条事件，不再自动推断。同一运行、同一阶段 5 秒内重复上报会合并为一条，避免进度刷屏。通知卡片右侧出现「时间线」按钮后，可查看阶段、相对耗时、状态和来源；会话详情页会显示最近一次运行的摘要，统计页可看运行级指标。完整字段见 [system-architecture.md](system-architecture.md)。
+`phase` 可选 `started` / `progress` / `waiting_input` / `resumed` / `finished` / `note` / `compaction`；显式传入时按原样追加一条事件，不再自动推断。同一运行、同一阶段 5 秒内重复上报会合并为一条，避免进度刷屏。通知卡片右侧出现「时间线」按钮后，可查看阶段、相对耗时、状态和来源；会话详情页会显示最近一次运行的摘要，统计页可看运行级指标。完整字段见 [system-architecture.md](system-architecture.md)。
 
 如果希望弹窗和通知中心直接出现「查看记录」「时间线」按钮，让 Agent 在 `actions` 里声明只读动作：
 
@@ -339,12 +347,71 @@ Agent 停下来等你处理时，可以让它显式上报一条 `status="running
 
 在偏好设置里可以调整弹窗皮肤、弹窗模式、全屏背景与卡片位置，配置免打扰时段、全屏 / 会议抑制、锁屏保留、聚合摘要、待确认和稍后提醒。设置页底部的「测试」按钮会按当前配置弹出一条预览，不写入历史。
 
-#### 11. 构建与发布
+#### 11. 接入 MCP 客户端（可选）
+
+AgentBell 在同一个本机服务上提供 `POST /mcp`，实现 JSON-RPC 2.0（协议版本 `2024-11-05`），支持 Streamable HTTP 的 MCP 客户端可以直接连接：
+
+| 工具 | 作用 |
+| --- | --- |
+| `notify` | 发送一条通知，字段与 `/notify` 一致（含 `metadata`），复用去重、规则、历史与弹窗策略。 |
+| `search_history` | 按关键词或 `status:` / `source:` 等语法搜索本地历史，`limit` 上限 100，结果含等待原因与元信息。 |
+| `get_status` | 返回版本、端口、鉴权状态、用量账本 / 会话注册表状态与近 7 天统计。 |
+| `report_usage` | 幂等上报一次模型调用的 Token 与成本，计入今日用量与预算守卫。 |
+| `report_session` | 上报外部 Agent 活跃会话心跳，`status=ended` 时结束会话。 |
+
+鉴权与 `/notify` 相同，可用 `X-Token`，也可用 `Authorization: Bearer <token>`。以 Claude Code 为例：
+
+```bash
+claude mcp add --transport http agentbell http://127.0.0.1:8765/mcp \
+  --header "Authorization: Bearer your-token"
+```
+
+手动验证：
+
+```bash
+curl -s http://127.0.0.1:8765/mcp \
+  -H "Authorization: Bearer your-token" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"notify","arguments":{"title":"MCP 测试","status":"succeeded"}}}'
+```
+
+MCP 不新增监听地址，也没有无鉴权路由；`notify` 不能批准权限、继续任务或执行命令。完整协议与错误码见 [system-architecture.md](system-architecture.md)。
+
+#### 12. 本地语音播报（可选）
+
+在「偏好设置 → 模板与声音 → 本地语音播报」勾选后，弹出提醒时会用系统语音朗读，例如「生成竞品分析报告，已完成」。可设置最低优先级、语速（-10 到 10）、是否追加摘要与最长朗读字数；静音通知以及没有等待输入的「进行中」通知默认不朗读。
+
+Windows 使用 System.Speech，macOS 使用 `say`，Linux 依次尝试 `spd-say`、`espeak-ng`、`espeak`。文本由 AgentBell 写入本机临时 UTF-8 文件后交给 TTS，不联网、不经过 shell，也不会朗读会话正文；系统没有可用语音引擎时只记录日志，不影响通知本身。
+
+#### 13. Token 与成本守卫（可选）
+
+AgentBell 会按间隔只读增量扫描本机 Claude Code、Qoder 与 Codex 的会话记录，统计今日输入、输出与缓存 Token，并在「数据统计」页显示「今日 Token 与成本」卡片。
+
+在「偏好设置 → Agent 会话 → Token 与成本守卫」可以：
+
+- 设置每日 Token 预算与每日成本预算，`0` 表示不提醒；
+- 设置预警百分比（默认 80%），达到时推送「Token 用量预警」，超过预算推送「Token 预算超限」；
+- 为模型配置每百万 Token 的 `input` / `output` / `cache_read` / `cache_write` 单价，按模型名前缀匹配；未配置单价的模型只统计 Token。
+
+扫描只读取 `usage` / `token_count` 计数字段，不解析正文，也不写入会话文件；同一天同一级别的提醒只发一次，并进入现有免打扰、规则与历史链路。
+
+外部 Agent 也可以用 `POST /usage/report` 或 MCP `report_usage` 上报用量，按 `report_id` 幂等写入本机 `usage.sqlite3`，同样计入今日汇总与预算守卫；统计卡片的提示会显示外部上报条数。活跃会话可通过 `POST /sessions/report` 或 MCP `report_session` 发送心跳，`status=ended` 结束会话，默认 10 分钟无心跳自动从「进行中」移除。完整字段见 [system-architecture.md](system-architecture.md)。
+
+#### 14. DeepSeek Harness 接入（可选）
+
+`integrations/deepseek-harness/` 提供两种方式：
+
+- `agentbell-notify/`：Agent Skill（`SKILL.md`）+ 单文件 CLI，适合按需上报；复制到 `~/.agents/skills/` 或 `~/.dsh/skills/` 即可。
+- `dsh-plugin/`：dsh 官方 bundle 格式插件，每轮 `turn/end` 自动上报；要求 dsh `>= 0.2.2-rc.1 < 0.3.0`。
+
+安装、token 查找顺序、`error` / `aborted` 状态映射与安全边界见 [integrations/deepseek-harness/README.md](integrations/deepseek-harness/README.md)。插件只向本机地址发请求，token 只放在 `X-Token` 请求头，不读取会话正文，也不能批准权限或继续任务。
+
+#### 15. 构建与发布
 
 ```powershell
 pip install -r requirements-dev.txt
-python -m PyInstaller --noconfirm --clean AgentBell35.spec
-# 产物：dist\AgentBell-35.exe
+python -m PyInstaller --noconfirm --clean AgentBell37.spec
+# 产物：dist\AgentBell-37.exe
 ```
 
 Windows 配置 Authenticode 证书后，可对产物签名并验证：
@@ -352,7 +419,7 @@ Windows 配置 Authenticode 证书后，可对产物签名并验证：
 ```powershell
 $env:WINDOWS_CERT_PFX_BASE64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes("cert.pfx"))
 $env:WINDOWS_CERT_PASSWORD = "pfx-password"
-python scripts/sign_windows.py --target dist/AgentBell-35.exe
+python scripts/sign_windows.py --target dist/AgentBell-37.exe
 ```
 
 Linux 原生构建（不跨架构编译）：
@@ -361,9 +428,9 @@ Linux 原生构建（不跨架构编译）：
 pip install -r requirements-dev.txt
 python -m PyInstaller --noconfirm AgentBell-linux.spec
 # 仅 tar.gz + deb + rpm（不传 AppImage 工具）
-python scripts/build_linux_packages.py --binary dist/AgentBell --version 2.21.0 --arch x64
+python scripts/build_linux_packages.py --binary dist/AgentBell --version 2.23.0 --arch x64
 # 生成全部四种格式
-python scripts/build_linux_packages.py --binary dist/AgentBell --version 2.21.0 --arch x64 \
+python scripts/build_linux_packages.py --binary dist/AgentBell --version 2.23.0 --arch x64 \
   --appimagetool ./appimagetool --appimage-runtime ./runtime-x86_64
 ```
 
@@ -375,10 +442,10 @@ python scripts/make_macos_icon.py
 python -m PyInstaller --noconfirm AgentBell-macos.spec
 # ad-hoc 签名
 python scripts/build_macos_packages.py \
-  --app dist/AgentBell.app --version 2.21.0 --arch arm64
+  --app dist/AgentBell.app --version 2.23.0 --arch arm64
 # Developer ID 签名 + 公证（凭据也可用环境变量提供）
 python scripts/build_macos_packages.py \
-  --app dist/AgentBell.app --version 2.21.0 --arch arm64 \
+  --app dist/AgentBell.app --version 2.23.0 --arch arm64 \
   --identity "Developer ID Application: Example (TEAMID)" \
   --entitlements assets/macos_entitlements.plist \
   --notarize \
@@ -388,7 +455,7 @@ python scripts/build_macos_packages.py \
 推送到 `develop` 会触发 Windows（x64 / arm64）、Linux（x64 / arm64）与 macOS（x64 / arm64）测试和打包；推送 `v*` 标签会校验标签与 `agentbell/__init__.py` 的 `__version__` 一致，然后自动发布 Release。Windows 工作流会选用编号最大的 `AgentBell<N>.spec`，x64 产物复制为 `AgentBell.exe`，ARM64 命名 `AgentBell-arm64.exe`；Linux 按架构生成 `AgentBell-linux-<arch>.tar.gz`、`.AppImage`、`.deb` 与 `.rpm`；macOS 生成 `AgentBell-macos-<arch>.dmg` 与 `.zip`。每个平台与架构附一份校验文件，最后合并一份 `SHA256SUMS.txt`。配置 GitHub Secrets 后，Windows 产物会用 signtool 签名，macOS 会做 Developer ID 签名、公证与 staple。
 
 ```bash
-git tag v2.21.0
+git tag v2.23.0
 git push origin develop --tags
 ```
 

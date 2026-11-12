@@ -810,3 +810,42 @@ def test_qoder_scan_prefers_jsonl_and_reads_titles(tmp_path):
     transcript = parse_session_transcript(session)
     assert len(transcript.turns) == 2
     assert Path(session.folder) == project
+
+
+def test_session_report_registry_tracks_heartbeats():
+    from agentbell.agent_sessions import SessionReport, SessionReportRegistry
+
+    registry = SessionReportRegistry(logging.getLogger("agentbell.tests.sessions"))
+    assert registry.report(
+        SessionReport(
+            session_id="dsh-1",
+            title="外部任务",
+            project="demo",
+            status="running",
+        )
+    ) is True
+    assert registry.count == 1
+    sessions = registry.to_agent_sessions()
+    assert sessions[0].external is True
+    assert sessions[0].path == ""
+    assert sessions[0].title == "外部任务"
+
+    assert registry.report(
+        SessionReport(session_id="dsh-1", status="ended")
+    ) is False
+    assert registry.count == 0
+
+
+def test_session_report_registry_drops_stale_heartbeats():
+    from datetime import timedelta
+
+    from agentbell.agent_sessions import SessionReport, SessionReportRegistry
+
+    registry = SessionReportRegistry(
+        logging.getLogger("agentbell.tests.sessions"), ttl_seconds=60
+    )
+    old = datetime.now().astimezone() - timedelta(minutes=30)
+    registry.report(SessionReport(session_id="stale", updated_at=old))
+    assert registry.count == 1
+    assert registry.snapshot(ttl_seconds=60) == []
+    assert registry.count == 0

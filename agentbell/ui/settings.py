@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
+    QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
     QFrame,
@@ -1012,6 +1013,53 @@ class SettingsDialog(QDialog):
             self._sound_edits[key] = edit
         layout.addWidget(sounds)
 
+        voice = QGroupBox("本地语音播报（可选，仅本机合成）", page)
+        voice_form = QFormLayout(voice)
+        voice_form.setContentsMargins(12, 14, 12, 10)
+        voice_form.setSpacing(9)
+
+        self._voice_enabled_check = QCheckBox(
+            "弹出提醒时用系统语音朗读标题与结论", voice
+        )
+        self._voice_enabled_check.setChecked(self.config.voice.enabled)
+        voice_form.addRow("", self._voice_enabled_check)
+
+        self._voice_priority_combo = QComboBox(voice)
+        for key in PRIORITIES:
+            self._voice_priority_combo.addItem(PRIORITY_LABELS[key], key)
+        index = self._voice_priority_combo.findData(
+            self.config.voice.min_priority
+        )
+        self._voice_priority_combo.setCurrentIndex(max(0, index))
+        voice_form.addRow("最低优先级", self._voice_priority_combo)
+
+        self._voice_rate_spin = QSpinBox(voice)
+        self._voice_rate_spin.setRange(-10, 10)
+        self._voice_rate_spin.setValue(self.config.voice.rate)
+        self._voice_rate_spin.setToolTip("0 为正常语速，负数更慢，正数更快")
+        voice_form.addRow("语速", self._voice_rate_spin)
+
+        self._voice_summary_check = QCheckBox("朗读时追加通知摘要", voice)
+        self._voice_summary_check.setChecked(self.config.voice.include_summary)
+        voice_form.addRow("", self._voice_summary_check)
+
+        self._voice_chars_spin = QSpinBox(voice)
+        self._voice_chars_spin.setRange(20, 500)
+        self._voice_chars_spin.setSuffix(" 字")
+        self._voice_chars_spin.setValue(self.config.voice.max_chars)
+        voice_form.addRow("最长朗读", self._voice_chars_spin)
+
+        voice_hint = QLabel(
+            "Windows 使用 System.Speech，macOS 使用 say，Linux 使用 "
+            "spd-say / espeak；文本只写入本机临时文件，不联网、不上传。"
+            "进行中且未等待输入的通知不会朗读。",
+            voice,
+        )
+        voice_hint.setObjectName("editorHint")
+        voice_hint.setWordWrap(True)
+        voice_form.addRow("", voice_hint)
+        layout.addWidget(voice)
+
         layout.addStretch(1)
         return page
 
@@ -1131,8 +1179,75 @@ class SettingsDialog(QDialog):
         self._sync_attention_controls(self._attention_enabled_check.isChecked())
         layout.addWidget(attention)
 
+        usage = QGroupBox("Token 与成本守卫", page)
+        usage_form = QFormLayout(usage)
+        usage_form.setContentsMargins(12, 14, 12, 10)
+        usage_form.setSpacing(9)
+
+        self._usage_enabled_check = QCheckBox(
+            "统计本机 Claude Code / Qoder / Codex 的每日 Token 用量", usage
+        )
+        self._usage_enabled_check.setChecked(self.config.usage.enabled)
+        usage_form.addRow("", self._usage_enabled_check)
+
+        self._usage_interval_spin = QSpinBox(usage)
+        self._usage_interval_spin.setRange(60, 3600)
+        self._usage_interval_spin.setSuffix(" 秒")
+        self._usage_interval_spin.setValue(
+            self.config.usage.scan_interval_seconds
+        )
+        usage_form.addRow("扫描间隔", self._usage_interval_spin)
+
+        self._usage_token_spin = QSpinBox(usage)
+        self._usage_token_spin.setRange(0, 1_000_000_000)
+        self._usage_token_spin.setSingleStep(100_000)
+        self._usage_token_spin.setSuffix(" Token")
+        self._usage_token_spin.setSpecialValueText("不限制")
+        self._usage_token_spin.setValue(
+            self.config.usage.daily_token_budget
+        )
+        usage_form.addRow("每日 Token 预算", self._usage_token_spin)
+
+        self._usage_cost_spin = QDoubleSpinBox(usage)
+        self._usage_cost_spin.setRange(0.0, 100_000.0)
+        self._usage_cost_spin.setDecimals(2)
+        self._usage_cost_spin.setSingleStep(1.0)
+        self._usage_cost_spin.setPrefix("$ ")
+        self._usage_cost_spin.setSpecialValueText("不限制")
+        self._usage_cost_spin.setValue(self.config.usage.daily_cost_budget)
+        usage_form.addRow("每日成本预算", self._usage_cost_spin)
+
+        self._usage_alert_spin = QSpinBox(usage)
+        self._usage_alert_spin.setRange(1, 100)
+        self._usage_alert_spin.setSuffix(" %")
+        self._usage_alert_spin.setValue(self.config.usage.alert_percent)
+        usage_form.addRow("预警阈值", self._usage_alert_spin)
+
+        usage_hint = QLabel(
+            "只读取本地会话 JSONL 的 usage 字段，不读取对话正文；"
+            "成本按 config.json 的 usage.pricing 估算（美元 / 百万 Token），"
+            "未配置单价的模型只统计 Token。预算为 0 表示不提醒。",
+            usage,
+        )
+        usage_hint.setObjectName("editorHint")
+        usage_hint.setWordWrap(True)
+        usage_form.addRow("", usage_hint)
+
+        self._usage_enabled_check.toggled.connect(self._sync_usage_controls)
+        self._sync_usage_controls(self._usage_enabled_check.isChecked())
+        layout.addWidget(usage)
+
         layout.addStretch(1)
         return page
+
+    def _sync_usage_controls(self, enabled: bool) -> None:
+        for widget in (
+            self._usage_interval_spin,
+            self._usage_token_spin,
+            self._usage_cost_spin,
+            self._usage_alert_spin,
+        ):
+            widget.setEnabled(enabled)
 
     def _sync_attention_controls(self, enabled: bool) -> None:
         widgets = [
@@ -1403,6 +1518,22 @@ class SettingsDialog(QDialog):
                     key: edit.text().strip()
                     for key, edit in self._sound_edits.items()
                 },
+                "voice": {
+                    **data["voice"],
+                    "enabled": self._voice_enabled_check.isChecked(),
+                    "min_priority": self._voice_priority_combo.currentData(),
+                    "rate": self._voice_rate_spin.value(),
+                    "include_summary": self._voice_summary_check.isChecked(),
+                    "max_chars": self._voice_chars_spin.value(),
+                },
+                "usage": {
+                    **data["usage"],
+                    "enabled": self._usage_enabled_check.isChecked(),
+                    "scan_interval_seconds": self._usage_interval_spin.value(),
+                    "daily_token_budget": self._usage_token_spin.value(),
+                    "daily_cost_budget": self._usage_cost_spin.value(),
+                    "alert_percent": self._usage_alert_spin.value(),
+                },
                 "rules": self._read_list(self._rules_editor, "规则"),
                 "channels": self._read_list(self._channels_editor, "渠道"),
             }
@@ -1430,9 +1561,14 @@ class SettingsDialog(QDialog):
         self.logger.warning("偏好设置校验失败：%s", message)
         if "规则" in message or "渠道" in message:
             self._tabs.setCurrentIndex(5)
-        elif "模板" in message or "提示音" in message or "sounds" in message:
+        elif (
+            "模板" in message
+            or "提示音" in message
+            or "sounds" in message
+            or "voice" in message
+        ):
             self._tabs.setCurrentIndex(3)
-        elif "agent_sessions" in message or "attention" in message:
+        elif "agent_sessions" in message or "attention" in message or "usage" in message:
             self._tabs.setCurrentIndex(4)
         elif "overlay_image" in message:
             self._tabs.setCurrentIndex(1)

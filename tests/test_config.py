@@ -7,6 +7,7 @@ import pytest
 from agentbell.config import (
     AgentLauncherConfig,
     ConfigError,
+    config_to_dict,
     load_config,
     save_config,
 )
@@ -462,5 +463,90 @@ def test_rule_routing_fields_round_trip(tmp_path):
 def test_invalid_rule_routing_fields(tmp_path, rule, message):
     path = tmp_path / "config.json"
     path.write_text(json.dumps({"rules": [rule]}), encoding="utf-8")
+    with pytest.raises(ConfigError, match=message):
+        load_config(path)
+
+
+def test_voice_and_usage_defaults(tmp_path):
+    path = tmp_path / "config.json"
+    config, created = load_config(path)
+    assert created is True
+    assert config.voice.enabled is False
+    assert config.voice.min_priority == "normal"
+    assert config.voice.rate == 0
+    assert config.voice.max_chars == 120
+    assert config.usage.enabled is True
+    assert config.usage.scan_interval_seconds == 300
+    assert config.usage.daily_token_budget == 0
+    assert config.usage.daily_cost_budget == 0.0
+    assert config.usage.alert_percent == 80
+    assert config.usage.pricing == {}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["voice"]["template"] == "{title}，{status_label}"
+    assert data["usage"]["pricing"] == {}
+
+
+def test_voice_and_usage_values_are_parsed(tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps(
+            {
+                "voice": {
+                    "enabled": True,
+                    "min_priority": "high",
+                    "rate": -4,
+                    "include_summary": False,
+                    "max_chars": 200,
+                    "template": "{title} {status_label} {duration}",
+                },
+                "usage": {
+                    "enabled": False,
+                    "scan_interval_seconds": 120,
+                    "daily_token_budget": 2000000,
+                    "daily_cost_budget": "5.5",
+                    "alert_percent": 70,
+                    "pricing": {
+                        "claude-sonnet": {
+                            "input": 3,
+                            "output": 15.5,
+                            "cache_read": 0.3,
+                        }
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    config, _ = load_config(path)
+    assert config.voice.enabled is True
+    assert config.voice.min_priority == "high"
+    assert config.voice.rate == -4
+    assert config.voice.include_summary is False
+    assert config.voice.max_chars == 200
+    assert config.usage.enabled is False
+    assert config.usage.daily_cost_budget == 5.5
+    assert config.usage.pricing["claude-sonnet"]["output"] == 15.5
+    saved = json.loads(json.dumps(config_to_dict(config), ensure_ascii=False))
+    assert saved["voice"]["rate"] == -4
+    assert saved["usage"]["pricing"]["claude-sonnet"]["cache_read"] == 0.3
+
+
+@pytest.mark.parametrize(
+    "section,message",
+    [
+        ({"voice": {"rate": 20}}, "voice.rate"),
+        ({"voice": {"min_priority": "urgent"}}, "min_priority"),
+        ({"voice": {"template": "{unknown}"}}, "voice.template"),
+        ({"usage": {"daily_token_budget": -1}}, "daily_token_budget"),
+        ({"usage": {"daily_cost_budget": -0.1}}, "daily_cost_budget"),
+        ({"usage": {"alert_percent": 0}}, "alert_percent"),
+        ({"usage": {"scan_interval_seconds": 10}}, "scan_interval_seconds"),
+        ({"usage": {"pricing": {"demo": {"input": -1}}}}, "usage.pricing.demo.input"),
+        ({"usage": {"pricing": []}}, "usage.pricing"),
+    ],
+)
+def test_invalid_voice_and_usage_values(tmp_path, section, message):
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(section), encoding="utf-8")
     with pytest.raises(ConfigError, match=message):
         load_config(path)

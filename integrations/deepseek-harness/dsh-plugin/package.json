@@ -1,0 +1,38 @@
+{
+  "name": "@agentbell/dsh-notify",
+  "version": "1.0.0",
+  "description": "DeepSeek Harness bundle plugin that reports turn completion to the local AgentBell desktop app.",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js"
+  },
+  "files": [
+    "lib/",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/1wu-davy-2/AgentBell.git",
+    "directory": "agentbell/integrations/deepseek-harness/dsh-plugin"
+  },
+  "engines": {
+    "dsh": ">=0.2.2-rc.1 <0.3.0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "test": "node --test test/plugin.test.mjs"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "agentbell",
+    "notifications"
+  ]
+}

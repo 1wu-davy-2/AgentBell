@@ -37,6 +37,8 @@ MAX_AUTO_CLOSE_SECONDS = 3600
 DEFAULT_HISTORY_LIMIT = 1000
 MAX_RULE_DURATION_SECONDS = 7 * 24 * 3600
 DEFAULT_UPDATE_REPO = "1wu-davy-2/AgentBell"
+DEFAULT_VOICE_TEMPLATE = "{title}，{status_label}"
+DEFAULT_USAGE_PRICE_KEYS = ("input", "output", "cache_read", "cache_write")
 DEFAULT_MEETING_PROCESSES = (
     "zoom.exe",
     "zoom",
@@ -127,6 +129,26 @@ class UpdateConfig:
     enabled: bool = True
     repo: str = DEFAULT_UPDATE_REPO
     check_on_start: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class VoiceConfig:
+    enabled: bool = False
+    min_priority: Priority = "normal"
+    rate: int = 0
+    include_summary: bool = True
+    max_chars: int = 120
+    template: str = DEFAULT_VOICE_TEMPLATE
+
+
+@dataclass(frozen=True, slots=True)
+class UsageConfig:
+    enabled: bool = True
+    scan_interval_seconds: int = 300
+    daily_token_budget: int = 0
+    daily_cost_budget: float = 0.0
+    alert_percent: int = 80
+    pricing: dict[str, dict[str, float]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -224,6 +246,8 @@ class AppConfig:
     )
     toolchain: ToolchainConfig = field(default_factory=ToolchainConfig)
     update: UpdateConfig = field(default_factory=UpdateConfig)
+    voice: VoiceConfig = field(default_factory=VoiceConfig)
+    usage: UsageConfig = field(default_factory=UsageConfig)
 
     @property
     def auth_enabled(self) -> bool:
@@ -237,19 +261,27 @@ class ConfigRef:
     current: AppConfig
 
 
-def _read_int(data: dict[str, Any], key: str, default: int, minimum: int, maximum: int) -> int:
+def _read_int(
+    data: dict[str, Any],
+    key: str,
+    default: int,
+    minimum: int,
+    maximum: int,
+    label: str = "",
+) -> int:
+    name = label or key
     raw = data.get(key, default)
     if isinstance(raw, bool):
-        raise ConfigError(f'"{key}" 必须是整数，不能是布尔值')
+        raise ConfigError(f'"{name}" 必须是整数，不能是布尔值')
     if isinstance(raw, str):
         try:
             raw = int(raw.strip())
         except ValueError as exc:
-            raise ConfigError(f'"{key}" 必须是整数') from exc
+            raise ConfigError(f'"{name}" 必须是整数') from exc
     if not isinstance(raw, int):
-        raise ConfigError(f'"{key}" 必须是整数')
+        raise ConfigError(f'"{name}" 必须是整数')
     if not minimum <= raw <= maximum:
-        raise ConfigError(f'"{key}" 必须在 {minimum} 到 {maximum} 之间')
+        raise ConfigError(f'"{name}" 必须在 {minimum} 到 {maximum} 之间')
     return raw
 
 
@@ -268,6 +300,31 @@ def _read_bool(data: dict[str, Any], key: str, default: bool) -> bool:
     if isinstance(raw, str) and raw.strip().lower() in {"true", "false"}:
         return raw.strip().lower() == "true"
     raise ConfigError(f'"{key}" 必须是 true 或 false')
+
+
+def _read_float(
+    data: dict[str, Any],
+    key: str,
+    default: float,
+    minimum: float,
+    maximum: float,
+    label: str = "",
+) -> float:
+    name = label or key
+    raw = data.get(key, default)
+    if isinstance(raw, bool):
+        raise ConfigError(f'"{name}" 必须是数字')
+    if isinstance(raw, str):
+        try:
+            raw = float(raw.strip())
+        except ValueError as exc:
+            raise ConfigError(f'"{name}" 必须是数字') from exc
+    if not isinstance(raw, (int, float)):
+        raise ConfigError(f'"{name}" 必须是数字')
+    value = float(raw)
+    if not minimum <= value <= maximum:
+        raise ConfigError(f'"{name}" 必须在 {minimum} 到 {maximum} 之间')
+    return value
 
 
 def _read_optional_bool(data: dict[str, Any], key: str) -> bool | None:
@@ -548,6 +605,82 @@ def _read_update(data: dict[str, Any]) -> UpdateConfig:
         enabled=_read_bool(section, "enabled", True),
         repo=repo,
         check_on_start=_read_bool(section, "check_on_start", True),
+    )
+
+
+def _read_voice(data: dict[str, Any]) -> VoiceConfig:
+    section = _section(data, "voice")
+    template = _read_str(section, "template", DEFAULT_VOICE_TEMPLATE, 200)
+    try:
+        template.format(
+            title="示例",
+            status_label="已完成",
+            summary="摘要",
+            source="来源",
+            duration="8m30s",
+        )
+    except (KeyError, IndexError, ValueError) as exc:
+        raise ConfigError(f'"voice.template" 格式无效：{exc}') from exc
+    return VoiceConfig(
+        enabled=_read_bool(section, "enabled", False),
+        min_priority=_read_priority(section, "min_priority", "normal"),
+        rate=_read_int(section, "rate", 0, -10, 10, label="voice.rate"),
+        include_summary=_read_bool(section, "include_summary", True),
+        max_chars=_read_int(
+            section, "max_chars", 120, 20, 500, label="voice.max_chars"
+        ),
+        template=template,
+    )
+
+
+def _read_usage_pricing(section: dict[str, Any]) -> dict[str, dict[str, float]]:
+    raw = section.get("pricing", {})
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ConfigError('"usage.pricing" 必须是 JSON 对象')
+    if len(raw) > 50:
+        raise ConfigError('"usage.pricing" 最多包含 50 个模型')
+    pricing: dict[str, dict[str, float]] = {}
+    for model, rates in raw.items():
+        model_name = model.strip() if isinstance(model, str) else ""
+        if not model_name or len(model_name) > 80:
+            raise ConfigError('"usage.pricing" 的模型名必须是 1 到 80 个字符')
+        if not isinstance(rates, dict):
+            raise ConfigError(
+                f'"usage.pricing.{model_name}" 必须是 JSON 对象'
+            )
+        values: dict[str, float] = {}
+        for key in DEFAULT_USAGE_PRICE_KEYS:
+            if rates.get(key) is None:
+                continue
+            values[key] = _read_float(
+                rates,
+                key,
+                0.0,
+                0.0,
+                10000.0,
+                label=f"usage.pricing.{model_name}.{key}",
+            )
+        pricing[model_name] = values
+    return pricing
+
+
+def _read_usage(data: dict[str, Any]) -> UsageConfig:
+    section = _section(data, "usage")
+    return UsageConfig(
+        enabled=_read_bool(section, "enabled", True),
+        scan_interval_seconds=_read_int(
+            section, "scan_interval_seconds", 300, 60, 3600
+        ),
+        daily_token_budget=_read_int(
+            section, "daily_token_budget", 0, 0, 10_000_000_000
+        ),
+        daily_cost_budget=_read_float(
+            section, "daily_cost_budget", 0.0, 0.0, 1_000_000.0
+        ),
+        alert_percent=_read_int(section, "alert_percent", 80, 1, 100),
+        pricing=_read_usage_pricing(section),
     )
 
 
@@ -842,6 +975,8 @@ def _parse_config(data: dict[str, Any]) -> AppConfig:
         agent_launcher=_read_agent_launcher(data),
         toolchain=_read_toolchain(data),
         update=_read_update(data),
+        voice=_read_voice(data),
+        usage=_read_usage(data),
     )
 
 

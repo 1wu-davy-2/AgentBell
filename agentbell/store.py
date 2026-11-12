@@ -334,6 +334,7 @@ class NotificationStore:
             expires_at=incoming.expires_at or existing.expires_at,
             rule_name=incoming.rule_name or existing.rule_name,
             channel_types=incoming.channel_types or existing.channel_types,
+            metadata={**existing.metadata, **incoming.metadata},
             popup_mode=incoming.popup_mode or existing.popup_mode,
             popup_skin=incoming.popup_skin or existing.popup_skin,
             acknowledged=False,

@@ -38,10 +38,16 @@ AgentBell does one thing well: **tell you the moment a round ends, and let you g
 - **Read session records**: read-only scanning covers Claude Code, Qoder, Codex, Gemini, Grok session files and OpenCode's database, with a full reader, in-session search, copy, and Markdown export.
 - **Stay quiet**: quiet hours, fullscreen/meeting suppression, lock-screen holding, digest, success-only-in-center, and tray **Do Not Disturb** for 30 minutes, 1 hour, or until tomorrow are all configurable.
 - **Local first**: loopback-only HTTP, on-device SQLite history, read-only session parsing, no cloud.
+- **Hear the result**: optional local TTS reads the title and status aloud, with summary, rate, and minimum-priority controls; synthesis stays on-device.
+- **Talk MCP**: `POST /mcp` exposes `notify`, `search_history`, `get_status`, `report_usage`, and `report_session` over JSON-RPC 2.0 with Bearer or `X-Token` auth, ready for Claude Code and other MCP clients.
+- **Accept external data**: notifications can carry `metadata` (model, turn, tools, files, context), while external agents can idempotently report tokens and cost through `/usage/report` and show heartbeating sessions under Running through `/sessions/report`.
+- **Guard the budget**: read-only incremental scans total today's Claude Code / Qoder / Codex tokens plus external reports, estimate cost from your own per-model pricing, and send a deduplicated alert at the daily budget.
 - **Stay small**: no agent orchestration, no workflow changes, no web UI. It waits in the tray and rings when it should.
 
 ## Recent updates
 
+- **v2.23.0**: External agent data support. Notifications gain a flat `metadata` map for model, turn, tool, file, and context chips, and `phase=compaction` records context compaction. New `POST /usage/report` and `POST /sessions/report` endpoints let external agents idempotently report tokens and cost and show heartbeating sessions under Running; the MCP tool list grows to `notify`, `search_history`, `get_status`, `report_usage`, and `report_session`. External data stays local, and session heartbeats expire after 10 minutes without an update.
+- **v2.22.0**: Local voice announcements, an MCP server, and a Token/cost guard. Voice uses the platform TTS engine and never leaves the machine. `POST /mcp` serves `notify`, `search_history`, and `get_status` over JSON-RPC 2.0, reusing the existing notification pipeline and accepting Bearer auth. The guard incrementally scans Claude Code / Qoder / Codex sessions read-only, tracks daily token and cost budgets, sends one deduplicated alert per level, and adds a "Today's tokens and cost" card to statistics. A DeepSeek Harness `agentbell-notify` skill and dsh bundle plugin are included for per-turn reporting.
 - **v2.21.0**: The tray now shows a numeric unread badge (`99+` above 99) and returns to it after the unread flash ends. Clicking a toast card's title, summary, or empty area opens the notification center while all card buttons keep their behavior. `Ctrl+F` jumps to the list and focuses search from any page. SQLite history gains age-based retention (`history.retention_days`) alongside the row cap, adjustable in settings with immediate cleanup.
 - **v2.20.0**: Clicking the tray icon now opens the notification center. A left single-click or double-click — including from the Windows tray overflow panel — shows and raises the center, while right-click keeps the existing menu. Unread flashing and Do Not Disturb state are unchanged.
 - **v2.19.1**: Fixes the Linux tray menu lifetime. The context menu was only passed as a local variable, and PySide6 6.8 also deletes a submenu when its `menuAction` wrapper is collected, so opening submenus such as Do Not Disturb raised `QMenu already deleted`; the tray now keeps strong references to the context menu and both submenu actions. The macOS window-focus tests also reset the platform flags so the mocked Windows paths run as intended. Behavior matches 2.19.0, which was never published because its Linux arm64 and macOS tests failed.
@@ -221,7 +227,7 @@ Events sharing one `run_id` form one run. AgentBell derives the id in this order
 }
 ```
 
-`phase` accepts `started` / `progress` / `waiting_input` / `resumed` / `finished` / `note`. An explicit phase appends exactly one event without inference. Repeating the same phase for the same run within five seconds is merged, so progress updates do not flood the timeline. A **Timeline** button appears on cards when a run exists; session detail shows the latest run summary, and statistics expose run-level metrics. See [system-architecture.md](system-architecture.md) for all fields.
+`phase` accepts `started` / `progress` / `waiting_input` / `resumed` / `finished` / `note` / `compaction`, where `compaction` marks context compaction. An explicit phase appends exactly one event without inference. Repeating the same phase for the same run within five seconds is merged, so progress updates do not flood the timeline. A **Timeline** button appears on cards when a run exists; session detail shows the latest run summary, and statistics expose run-level metrics. See [system-architecture.md](system-architecture.md) for all fields.
 
 To put **View record** and **Timeline** buttons on the popup and in the notification center, ask the agent to declare read-only actions:
 
@@ -277,12 +283,71 @@ The card gets a **回到终端** button that brings the host terminal or editor 
 
 Preferences cover skins, popup modes, fullscreen background and card placement, quiet hours, fullscreen/meeting suppression, lock-screen holding, digest, acknowledgements, and snooze. The **测试** button previews the current configuration without writing history.
 
-### 11. Build and release
+### 11. Connect an MCP client (optional)
+
+AgentBell serves `POST /mcp` on the same loopback API, speaking JSON-RPC 2.0 (protocol version `2024-11-05`). MCP clients that support Streamable HTTP can connect directly:
+
+| Tool | Purpose |
+| --- | --- |
+| `notify` | Send a notification with the same fields as `/notify` (including `metadata`), reusing dedupe, rules, history, and popup policy. |
+| `search_history` | Search local history by keyword or `status:` / `source:` syntax; `limit` is capped at 100, and results include wait reason and metadata. |
+| `get_status` | Return version, port, auth state, usage ledger / session registry state, and 7-day statistics. |
+| `report_usage` | Idempotently report one model call's tokens and cost into today's totals and budget guard. |
+| `report_session` | Report an external agent's active-session heartbeat; `status=ended` ends the session. |
+
+Authentication matches `/notify`: `X-Token` or `Authorization: Bearer <token>`. For Claude Code:
+
+```bash
+claude mcp add --transport http agentbell http://127.0.0.1:8765/mcp \
+  --header "Authorization: Bearer your-token"
+```
+
+Manual check:
+
+```bash
+curl -s http://127.0.0.1:8765/mcp \
+  -H "Authorization: Bearer your-token" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"notify","arguments":{"title":"MCP test","status":"succeeded"}}}'
+```
+
+MCP adds no listening address and no unauthenticated route; `notify` cannot approve permissions, resume work, or execute commands. See [system-architecture.md](system-architecture.md) for protocol and error details.
+
+### 12. Local voice announcements (optional)
+
+Enable **Local voice** under Preferences → Templates and sounds to read each popup aloud, for example "Build finished, succeeded". Configure the minimum priority, rate (-10 to 10), whether to append the summary, and the maximum spoken length. Silent notifications and "running" notifications that are not waiting for input are skipped.
+
+Windows uses System.Speech, macOS uses `say`, and Linux tries `spd-say`, `espeak-ng`, then `espeak`. AgentBell writes the text to a local UTF-8 temp file and passes the path to the TTS command — no network, no shell, and never the session transcript. A missing engine only logs a warning and never blocks the notification.
+
+### 13. Token and cost guard (optional)
+
+AgentBell incrementally scans local Claude Code, Qoder, and Codex session records read-only, totals today's input, output, and cache tokens, and shows a **Today's tokens and cost** card on the statistics page.
+
+Under Preferences → Agent sessions → Token and cost guard you can:
+
+- set a daily token budget and a daily cost budget; `0` disables alerts;
+- set the warning percentage (default 80%); crossing it sends a **Token usage warning**, exceeding the budget sends a **Token budget exceeded** alert;
+- configure per-million-token `input` / `output` / `cache_read` / `cache_write` prices per model, matched by model-name prefix. Models without pricing still count tokens.
+
+Scanning reads only the `usage` / `token_count` fields, never message text, and never writes to session files. Each alert level fires once per day and flows through the existing quiet-hours, rules, and history pipeline.
+
+External agents can also report usage through `POST /usage/report` or the MCP `report_usage` tool. Reports are idempotent by `report_id`, stored in the local `usage.sqlite3` ledger, and count toward today's totals and budget guard; the statistics hint shows how many external reports were included. Active sessions can send heartbeats through `POST /sessions/report` or MCP `report_session`; `status=ended` ends a session and heartbeats expire after 10 minutes without an update. See [system-architecture.md](system-architecture.md) for all fields.
+
+### 14. DeepSeek Harness integration (optional)
+
+`integrations/deepseek-harness/` provides two entry points:
+
+- `agentbell-notify/`: an Agent Skill (`SKILL.md`) plus a single-file CLI for on-demand reports; copy it to `~/.agents/skills/` or `~/.dsh/skills/`.
+- `dsh-plugin/`: an official dsh bundle plugin that reports on every `turn/end`; requires dsh `>= 0.2.2-rc.1 < 0.3.0`.
+
+Installation, token lookup order, `error` / `aborted` status mapping, and security boundaries are documented in [integrations/deepseek-harness/README.md](integrations/deepseek-harness/README.md). The plugin only posts to a loopback endpoint, keeps the token in the `X-Token` header, never reads conversation text, and cannot approve permissions or resume work.
+
+### 15. Build and release
 
 ```powershell
 pip install -r requirements-dev.txt
-python -m PyInstaller --noconfirm --clean AgentBell35.spec
-# Output: dist\AgentBell-35.exe
+python -m PyInstaller --noconfirm --clean AgentBell37.spec
+# Output: dist\AgentBell-37.exe
 ```
 
 To Authenticode-sign the frozen executable locally, provide the PFX as base64 and its password through environment variables (never on the command line):
@@ -290,7 +355,7 @@ To Authenticode-sign the frozen executable locally, provide the PFX as base64 an
 ```powershell
 $env:WINDOWS_CERT_PFX_BASE64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes("cert.pfx"))
 $env:WINDOWS_CERT_PASSWORD = "pfx-password"
-python scripts/sign_windows.py --target dist\AgentBell-35.exe
+python scripts/sign_windows.py --target dist\AgentBell-37.exe
 ```
 
 Signing uses SHA-256 digests and an RFC 3161 timestamp (`http://timestamp.digicert.com` by default) and verifies with `signtool verify /pa /all`. `--pfx` and `--thumbprint` are also supported, and the password is only read from `WINDOWS_CERT_PASSWORD`; command output masks it.
@@ -301,9 +366,9 @@ Linux builds must run natively per architecture:
 pip install -r requirements-dev.txt
 python -m PyInstaller --noconfirm AgentBell-linux.spec
 # tar.gz + deb + rpm only
-python scripts/build_linux_packages.py --binary dist/AgentBell --version 2.21.0 --arch x64
+python scripts/build_linux_packages.py --binary dist/AgentBell --version 2.23.0 --arch x64
 # all four formats
-python scripts/build_linux_packages.py --binary dist/AgentBell --version 2.21.0 --arch x64 \
+python scripts/build_linux_packages.py --binary dist/AgentBell --version 2.23.0 --arch x64 \
   --appimagetool ./appimagetool --appimage-runtime ./runtime-x86_64
 ```
 
@@ -315,10 +380,10 @@ python scripts/make_macos_icon.py
 python -m PyInstaller --noconfirm AgentBell-macos.spec
 # ad-hoc signing
 python scripts/build_macos_packages.py \
-  --app dist/AgentBell.app --version 2.21.0 --arch arm64
+  --app dist/AgentBell.app --version 2.23.0 --arch arm64
 # Developer ID + Hardened Runtime + notarization
 python scripts/build_macos_packages.py \
-  --app dist/AgentBell.app --version 2.21.0 --arch arm64 \
+  --app dist/AgentBell.app --version 2.23.0 --arch arm64 \
   --identity "Developer ID Application: Example (TEAMID)" \
   --entitlements assets/macos_entitlements.plist --notarize \
   --notary-key AuthKey.p8 --notary-key-id KEYID --notary-issuer ISSUER-UUID
@@ -327,7 +392,7 @@ python scripts/build_macos_packages.py \
 Pushing to `develop` runs tests and packaging on Windows (x64 / arm64), Linux (x64 / arm64), and macOS (x64 / arm64). Pushing a `v*` tag verifies that the tag matches `__version__` in `agentbell/__init__.py`, then publishes a GitHub Release automatically. The Windows workflow picks the highest-numbered `AgentBell<N>.spec`, copies the x64 output to `AgentBell.exe`, and names the arm64 build `AgentBell-arm64.exe`; if `WINDOWS_CERT_PFX_BASE64` is configured, the exe is Authenticode-signed before copying. Linux produces `AgentBell-linux-<arch>.tar.gz`, `.AppImage`, `.deb`, and `.rpm`; macOS produces `AgentBell-macos-<arch>.dmg` and `.zip`, signed with Developer ID and notarized when `MACOS_CERT_P12_BASE64` and the App Store Connect API key secrets are configured, otherwise signed ad-hoc. Each platform and architecture writes its own checksum file, and the release job merges a single `SHA256SUMS.txt`.
 
 ```bash
-git tag v2.21.0
+git tag v2.23.0
 git push origin develop --tags
 ```
 

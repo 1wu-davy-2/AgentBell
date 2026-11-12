@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field, replace
 from datetime import datetime
-from typing import Literal, Mapping
+from typing import Any, Literal, Mapping
 from urllib.parse import urlsplit
 
 Status = Literal["succeeded", "failed", "canceled", "running"]
@@ -11,7 +12,7 @@ Priority = Literal["low", "normal", "high", "critical"]
 WaitReason = Literal["permission", "question", "rate_limit", "context_limit", "other"]
 WaitSource = Literal["explicit", "inferred"]
 RunEventKind = Literal[
-    "started", "progress", "waiting_input", "resumed", "finished", "note"
+    "started", "progress", "waiting_input", "resumed", "finished", "note", "compaction"
 ]
 ActionKind = Literal[
     "open", "copy", "retry", "path", "center", "focus", "session", "timeline"
@@ -170,6 +171,7 @@ RUN_EVENT_KINDS: tuple[RunEventKind, ...] = (
     "resumed",
     "finished",
     "note",
+    "compaction",
 )
 RUN_EVENT_LABELS: dict[str, str] = {
     "started": "开始",
@@ -178,6 +180,28 @@ RUN_EVENT_LABELS: dict[str, str] = {
     "resumed": "已继续",
     "finished": "完成",
     "note": "备注",
+    "compaction": "上下文压缩",
+}
+
+METADATA_MAX_KEYS = 32
+METADATA_MAX_KEY_CHARS = 64
+METADATA_MAX_VALUE_CHARS = 512
+METADATA_MAX_BYTES = 4096
+
+METADATA_LABELS: dict[str, str] = {
+    "model": "模型",
+    "turn": "轮次",
+    "turn_index": "轮次",
+    "tools": "工具",
+    "tool_calls": "工具",
+    "files": "文件",
+    "context_tokens": "上下文",
+    "context_limit": "上限",
+    "context_percent": "上下文",
+    "compaction": "压缩",
+    "approval": "授权",
+    "agent": "Agent",
+    "task": "任务",
 }
 
 PRIORITY_LABELS: dict[str, str] = {
@@ -290,6 +314,48 @@ def duration_to_seconds(value: str) -> float | None:
     return total if total > 0 else None
 
 
+def _metadata_scalar(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, str):
+        return " ".join(value.replace("\x00", " ").split())
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return str(len(value))
+    return ""
+
+
+def sanitize_metadata(value: Any) -> dict[str, str]:
+    """Keep a flat, display-safe metadata map within the storage limits."""
+    if not isinstance(value, Mapping):
+        return {}
+    result: dict[str, str] = {}
+    for key, raw in value.items():
+        if len(result) >= METADATA_MAX_KEYS:
+            break
+        if not isinstance(key, str):
+            continue
+        clean_key = " ".join(key.replace("\x00", " ").split())[
+            :METADATA_MAX_KEY_CHARS
+        ]
+        if not clean_key or clean_key in result:
+            continue
+        text = _metadata_scalar(raw)
+        if not text:
+            continue
+        result[clean_key] = text[:METADATA_MAX_VALUE_CHARS]
+    while result and len(
+        json.dumps(result, ensure_ascii=False).encode("utf-8")
+    ) > METADATA_MAX_BYTES:
+        result.popitem()
+    return result
+
+
+def metadata_label(key: str) -> str:
+    return METADATA_LABELS.get(key, key.replace("_", " "))
+
+
 def default_priority(status: str) -> Priority:
     if status == "failed":
         return "high"
@@ -340,6 +406,7 @@ class Notification:
     popup_skin: PopupSkin | None = None
     archived: bool = False
     archived_at: datetime | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
     def effective_updated_at(self) -> datetime:

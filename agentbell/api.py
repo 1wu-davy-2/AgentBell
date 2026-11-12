@@ -9,7 +9,7 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Any, Callable
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import (
     BaseModel,
@@ -21,7 +21,13 @@ from pydantic import (
 )
 
 from . import __version__, window_focus
+from .agent_sessions import (
+    SESSION_REPORT_STATUSES,
+    SessionReport,
+    SessionReportRegistry,
+)
 from .config import AppConfig
+from .mcp import McpServer
 from .models import (
     ActionKind,
     Notification,
@@ -39,13 +45,17 @@ from .models import (
     safe_callback_url,
     safe_http_url,
     safe_local_path,
+    sanitize_metadata,
 )
 from .policy import apply_rules
 from .store import NotificationStore
+from .usage import UsageLedger, UsageReport, default_report_id
 
 QUEUE_MAX_SIZE = 200
 MAX_BODY_BYTES = 1024 * 1024
 MAX_ACTIONS = 4
+REPORT_TOKEN_MAX = 1_000_000_000_000
+REPORT_COST_MAX = 1_000_000.0
 
 _DEFAULT_WHEN_NULL = {
     "title": "未命名任务",
@@ -92,6 +102,110 @@ class OriginPayload(BaseModel):
         return " ".join(value.replace("\x00", " ").split())
 
 
+class UsageReportPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
+
+    report_id: str | None = Field(default=None, max_length=120)
+    source: str = Field(default="deepseek", max_length=100)
+    model: str = Field(min_length=1, max_length=80)
+    input_tokens: int = Field(default=0, ge=0, le=REPORT_TOKEN_MAX)
+    output_tokens: int = Field(default=0, ge=0, le=REPORT_TOKEN_MAX)
+    cache_read_tokens: int = Field(default=0, ge=0, le=REPORT_TOKEN_MAX)
+    cache_write_tokens: int = Field(default=0, ge=0, le=REPORT_TOKEN_MAX)
+    cost_usd: float | None = Field(default=None, ge=0, le=REPORT_COST_MAX)
+    occurred_at: datetime | None = None
+    session_id: str = Field(default="", max_length=120)
+    run_id: str = Field(default="", max_length=120)
+    project: str = Field(default="", max_length=200)
+
+    @field_validator("source", "model", mode="before")
+    @classmethod
+    def _compact_identity(cls, value: Any, info: Any) -> Any:
+        if value is None:
+            return "deepseek" if info.field_name == "source" else "unknown"
+        if isinstance(value, str):
+            text = " ".join(value.replace("\x00", " ").split())
+            return text or ("deepseek" if info.field_name == "source" else "unknown")
+        return value
+
+    @field_validator("report_id", "session_id", "run_id", "project", mode="before")
+    @classmethod
+    def _compact_report_text(cls, value: Any) -> Any:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return " ".join(value.replace("\x00", " ").split())
+        return value
+
+
+class SessionReportPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
+
+    session_id: str = Field(min_length=1, max_length=120)
+    agent: str = Field(default="deepseek", max_length=40)
+    title: str = Field(default="", max_length=200)
+    project: str = Field(default="", max_length=120)
+    project_path: str = Field(default="", max_length=1024)
+    status: str = Field(default="running", max_length=32)
+    detail: str = Field(default="", max_length=400)
+    turn: int = Field(default=0, ge=0, le=1_000_000)
+    updated_at: datetime | None = None
+    started_at: datetime | None = None
+    run_id: str = Field(default="", max_length=120)
+    needs_input: bool = False
+    wait_reason: WaitReason | None = None
+
+    @field_validator(
+        "session_id",
+        "title",
+        "project",
+        "project_path",
+        "detail",
+        "run_id",
+        mode="before",
+    )
+    @classmethod
+    def _compact_session_text(cls, value: Any) -> Any:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return " ".join(value.replace("\x00", " ").split())
+        return value
+
+    @field_validator("agent", "status", "wait_reason", mode="before")
+    @classmethod
+    def _lower_session_enum(cls, value: Any, info: Any) -> Any:
+        if value is None:
+            if info.field_name == "wait_reason":
+                return None
+            return "deepseek" if info.field_name == "agent" else "running"
+        if isinstance(value, str):
+            text = value.strip().lower()
+            if info.field_name == "wait_reason":
+                if not text:
+                    return None
+                return text if text in WAIT_REASONS else "other"
+            if text:
+                return text
+            return "deepseek" if info.field_name == "agent" else "running"
+        return value
+
+    @field_validator("status", mode="after")
+    @classmethod
+    def _validate_session_status(cls, value: str) -> str:
+        if value not in SESSION_REPORT_STATUSES:
+            raise ValueError(
+                f"必须是 {' / '.join(SESSION_REPORT_STATUSES)}"
+            )
+        return value
+
+    @model_validator(mode="after")
+    def _normalize_waiting(self) -> "SessionReportPayload":
+        if self.needs_input and self.wait_reason is None:
+            self.wait_reason = "other"
+        return self
+
+
 class NotifyPayload(BaseModel):
     model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
 
@@ -121,6 +235,7 @@ class NotifyPayload(BaseModel):
     channel_types: list[str] = Field(default_factory=list, max_length=10)
     popup_mode: PopupMode | None = None
     popup_skin: PopupSkin | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("title", "status", "summary", "duration", mode="before")
     @classmethod
@@ -195,6 +310,11 @@ class NotifyPayload(BaseModel):
             return value
         return value.strip() or None
 
+    @field_validator("metadata", mode="before")
+    @classmethod
+    def _sanitize_metadata(cls, value: Any) -> dict[str, str]:
+        return sanitize_metadata(value)
+
     @model_validator(mode="after")
     def _validate_waiting_input(self) -> "NotifyPayload":
         if not self.needs_input:
@@ -217,10 +337,10 @@ def _log_text(value: str, limit: int = 120) -> str:
     return value if len(value) <= limit else value[: limit - 1] + "…"
 
 
-async def _read_payload(
+async def _read_json_body(
     request: Request,
     logger: logging.Logger,
-) -> tuple[NotifyPayload | None, JSONResponse | None]:
+) -> tuple[Any | None, JSONResponse | None]:
     """Parse JSON from UTF-8, falling back to GB18030.
 
     Windows curl sends command-line literals in the active ANSI code page (often
@@ -261,7 +381,7 @@ async def _read_payload(
         )
 
     try:
-        data = json.loads(text)
+        return json.loads(text), None
     except json.JSONDecodeError as exc:
         logger.warning(
             "请求 JSON 解析失败 client=%s（第 %d 行第 %d 列：%s）",
@@ -273,6 +393,15 @@ async def _read_payload(
         return None, JSONResponse(
             status_code=400, content={"ok": False, "error": "invalid JSON body"}
         )
+
+
+async def _read_payload(
+    request: Request,
+    logger: logging.Logger,
+) -> tuple[NotifyPayload | None, JSONResponse | None]:
+    data, error_response = await _read_json_body(request, logger)
+    if error_response is not None:
+        return None, error_response
 
     try:
         return NotifyPayload.model_validate(data), None
@@ -468,8 +597,93 @@ def _build_notification(
         channel_types=tuple(payload.channel_types[:10]),
         popup_mode=payload.popup_mode,
         popup_skin=payload.popup_skin,
+        metadata=payload.metadata,
     )
     return apply_rules(notification, config.rules, project=project)
+
+
+def _validation_summary(exc: ValidationError) -> str:
+    details = []
+    for error in exc.errors():
+        location = ".".join(str(part) for part in error.get("loc", ())) or "payload"
+        message = str(error.get("msg") or error.get("type") or "invalid")
+        if message.startswith("Value error, "):
+            message = message[len("Value error, ") :]
+        details.append(f"{location}: {message}")
+    return "invalid arguments: " + ", ".join(details[:5])
+
+
+def _mcp_notification_item(item: Notification) -> dict[str, Any]:
+    return {
+        "id": item.id,
+        "title": item.title,
+        "status": item.status,
+        "summary": item.summary[:400],
+        "priority": item.priority,
+        "source": item.source,
+        "duration": item.duration,
+        "received_at": item.received_at.isoformat(timespec="seconds"),
+        "acknowledged": item.acknowledged,
+        "needs_input": item.needs_input,
+        "wait_reason": item.wait_reason,
+        "session_id": item.session_id,
+        "run_id": item.run_id,
+        "dedupe_key": item.dedupe_key,
+        "metadata": dict(item.metadata),
+    }
+
+
+def _local_time(value: datetime | None) -> datetime:
+    if value is None:
+        return datetime.now().astimezone()
+    return value.astimezone()
+
+
+def _usage_report_from_payload(payload: UsageReportPayload) -> UsageReport:
+    occurred = _local_time(payload.occurred_at)
+    report_id = (payload.report_id or "").strip() or default_report_id(
+        payload.source,
+        payload.model,
+        occurred,
+        payload.input_tokens,
+        payload.output_tokens,
+        payload.cache_read_tokens,
+        payload.cache_write_tokens,
+    )
+    return UsageReport(
+        report_id=report_id,
+        source=payload.source,
+        model=payload.model,
+        input_tokens=payload.input_tokens,
+        output_tokens=payload.output_tokens,
+        cache_read_tokens=payload.cache_read_tokens,
+        cache_write_tokens=payload.cache_write_tokens,
+        cost_usd=payload.cost_usd,
+        occurred_at=occurred,
+        session_id=payload.session_id,
+        run_id=payload.run_id,
+        project=payload.project,
+    )
+
+
+def _session_report_from_payload(payload: SessionReportPayload) -> SessionReport:
+    return SessionReport(
+        session_id=payload.session_id,
+        agent=payload.agent,
+        title=payload.title,
+        project=payload.project,
+        project_path=payload.project_path,
+        status=payload.status,
+        detail=payload.detail,
+        turn=payload.turn,
+        updated_at=_local_time(payload.updated_at),
+        started_at=(
+            _local_time(payload.started_at) if payload.started_at else None
+        ),
+        run_id=payload.run_id,
+        needs_input=payload.needs_input,
+        wait_reason=payload.wait_reason,
+    )
 
 
 def create_app(
@@ -477,6 +691,8 @@ def create_app(
     inbox: queue.Queue[Notification],
     logger: logging.Logger,
     store: NotificationStore | None = None,
+    ledger: UsageLedger | None = None,
+    sessions: SessionReportRegistry | None = None,
 ) -> FastAPI:
     def current_config() -> AppConfig:
         return config() if callable(config) else config
@@ -494,15 +710,33 @@ def create_app(
 
     @app.middleware("http")
     async def verify_token(request: Request, call_next):
-        if request.url.path == "/notify" and startup_config.token:
-            supplied = request.headers.get("x-token")
-            supplied_bytes = supplied.encode("utf-8") if supplied is not None else None
-            if supplied_bytes is None or not hmac.compare_digest(supplied_bytes, expected_token):
-                logger.warning("拒绝通知：X-Token 缺失或错误 client=%s", _client(request))
+        path = request.url.path
+        protected = {"/notify", "/mcp", "/usage/report", "/sessions/report"}
+        if path not in protected or not startup_config.token:
+            return await call_next(request)
+        supplied = request.headers.get("x-token")
+        if not supplied and path == "/mcp":
+            authorization = request.headers.get("authorization", "")
+            if authorization.lower().startswith("bearer "):
+                supplied = authorization[7:].strip()
+        supplied_bytes = supplied.encode("utf-8") if supplied is not None else None
+        if supplied_bytes is None or not hmac.compare_digest(
+            supplied_bytes, expected_token
+        ):
+            logger.warning("拒绝请求：令牌缺失或错误 path=%s client=%s", path, _client(request))
+            if path == "/mcp":
                 return JSONResponse(
                     status_code=401,
-                    content={"ok": False, "error": "invalid token"},
+                    content={
+                        "jsonrpc": "2.0",
+                        "id": None,
+                        "error": {"code": -32001, "message": "invalid token"},
+                    },
                 )
+            return JSONResponse(
+                status_code=401,
+                content={"ok": False, "error": "invalid token"},
+            )
         return await call_next(request)
 
     @app.get("/health")
@@ -515,18 +749,14 @@ def create_app(
             "history": len(history),
         }
 
-    @app.post("/notify", status_code=202)
-    async def notify(request: Request):
-        payload, error_response = await _read_payload(request, logger)
-        if error_response is not None:
-            return error_response
-        if payload is None:  # pragma: no cover - defensive
-            return JSONResponse(
-                status_code=400, content={"ok": False, "error": "invalid payload"}
-            )
-
+    def accept_notification(
+        payload: NotifyPayload,
+        *,
+        origin: OriginPayload | None,
+        fallback_source: str,
+        client: str,
+    ) -> dict[str, Any]:
         now = datetime.now().astimezone()
-        origin, auto_source = _detect_sender(request, payload.origin, logger)
         project = _project_name(origin)
         active_config = current_config()
         notification = _build_notification(
@@ -535,7 +765,7 @@ def create_app(
             logger,
             now,
             origin=origin,
-            source=payload.source or auto_source,
+            source=payload.source or fallback_source,
             project=project,
         )
         stored, updated = history.add(
@@ -572,24 +802,10 @@ def create_app(
             _log_text(stored.run_id or "", 60) or "-",
             payload.phase or "auto",
             updated,
-            _client(request),
+            client,
         )
 
-        try:
-            inbox.put_nowait(stored)
-        except queue.Full:
-            logger.error(
-                "通知队列已满，界面未更新 id=%s title=%s client=%s",
-                log_id,
-                _log_text(stored.title),
-                _client(request),
-            )
-            return JSONResponse(
-                status_code=503,
-                content={"ok": False, "error": "notification queue is full"},
-            )
-
-        return {
+        result: dict[str, Any] = {
             "ok": True,
             "id": log_id,
             "queued": True,
@@ -605,5 +821,264 @@ def create_app(
             "popup_mode": stored.popup_mode or active_config.popup_mode,
             "popup_skin": stored.popup_skin or active_config.popup_skin,
         }
+        try:
+            inbox.put_nowait(stored)
+        except queue.Full:
+            logger.error(
+                "通知队列已满，界面未更新 id=%s title=%s client=%s",
+                log_id,
+                _log_text(stored.title),
+                client,
+            )
+            result["ok"] = False
+            result["queued"] = False
+            result["error"] = "notification queue is full"
+        return result
+
+    def record_usage(payload: UsageReportPayload) -> dict[str, Any]:
+        if ledger is None:
+            raise ValueError("用量账本未启用")
+        inserted, stored = ledger.add(_usage_report_from_payload(payload))
+        return {
+            "ok": True,
+            "report_id": stored.report_id,
+            "duplicate": not inserted,
+            "source": stored.source,
+            "model": stored.model,
+            "total_tokens": stored.total_tokens,
+            "occurred_at": stored.occurred_at.isoformat(timespec="seconds"),
+            "version": ledger.version,
+        }
+
+    def record_session(payload: SessionReportPayload) -> dict[str, Any]:
+        if sessions is None:
+            raise ValueError("外部会话上报未启用")
+        report = _session_report_from_payload(payload)
+        stored = sessions.report(report)
+        return {
+            "ok": True,
+            "session_id": report.session_id,
+            "agent": report.agent,
+            "active": report.active,
+            "stored": stored,
+            "sessions": sessions.count,
+            "version": sessions.version,
+        }
+
+    @app.post("/notify", status_code=202)
+    async def notify(request: Request):
+        payload, error_response = await _read_payload(request, logger)
+        if error_response is not None:
+            return error_response
+        if payload is None:  # pragma: no cover - defensive
+            return JSONResponse(
+                status_code=400, content={"ok": False, "error": "invalid payload"}
+            )
+
+        origin, auto_source = _detect_sender(request, payload.origin, logger)
+        result = accept_notification(
+            payload,
+            origin=origin,
+            fallback_source=auto_source,
+            client=_client(request),
+        )
+        if not result.get("ok"):
+            return JSONResponse(status_code=503, content=result)
+        return result
+
+    @app.post("/usage/report", status_code=202)
+    async def usage_report(request: Request):
+        data, error_response = await _read_json_body(request, logger)
+        if error_response is not None:
+            return error_response
+        try:
+            payload = UsageReportPayload.model_validate(data)
+        except ValidationError as exc:
+            summary = _validation_summary(exc)
+            logger.warning(
+                "用量上报校验失败 client=%s details=%s",
+                _client(request),
+                summary,
+            )
+            return JSONResponse(
+                status_code=422, content={"ok": False, "error": summary}
+            )
+        try:
+            result = record_usage(payload)
+        except ValueError as exc:
+            return JSONResponse(
+                status_code=503, content={"ok": False, "error": str(exc)}
+            )
+        logger.info(
+            "收到用量上报 source=%s model=%s tokens=%d duplicate=%s client=%s",
+            result["source"],
+            _log_text(result["model"], 60),
+            result["total_tokens"],
+            result["duplicate"],
+            _client(request),
+        )
+        return result
+
+    @app.post("/sessions/report", status_code=202)
+    async def session_report(request: Request):
+        data, error_response = await _read_json_body(request, logger)
+        if error_response is not None:
+            return error_response
+        try:
+            payload = SessionReportPayload.model_validate(data)
+        except ValidationError as exc:
+            summary = _validation_summary(exc)
+            logger.warning(
+                "会话上报校验失败 client=%s details=%s",
+                _client(request),
+                summary,
+            )
+            return JSONResponse(
+                status_code=422, content={"ok": False, "error": summary}
+            )
+        try:
+            result = record_session(payload)
+        except ValueError as exc:
+            return JSONResponse(
+                status_code=503, content={"ok": False, "error": str(exc)}
+            )
+        logger.info(
+            "收到会话上报 agent=%s session=%s status=%s stored=%s client=%s",
+            result["agent"],
+            _log_text(result["session_id"], 24),
+            payload.status,
+            result["stored"],
+            _client(request),
+        )
+        return result
+
+    def mcp_notify(arguments: dict[str, Any]) -> dict[str, Any]:
+        try:
+            payload = NotifyPayload.model_validate(arguments)
+        except ValidationError as exc:
+            raise ValueError(_validation_summary(exc)) from exc
+        result = accept_notification(
+            payload, origin=None, fallback_source="MCP", client="mcp"
+        )
+        if not result.get("ok"):
+            raise ValueError(str(result.get("error", "通知入队失败")))
+        return result
+
+    def mcp_search(arguments: dict[str, Any]) -> dict[str, Any]:
+        query = arguments.get("query")
+        if query is None:
+            query = ""
+        if not isinstance(query, str):
+            raise ValueError("query 必须是字符串")
+        limit = arguments.get("limit", 20)
+        if (
+            isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 1 <= limit <= 100
+        ):
+            raise ValueError("limit 必须是 1 到 100 的整数")
+        items = history.search(query.strip(), limit=limit)
+        return {
+            "ok": True,
+            "count": len(items),
+            "notifications": [_mcp_notification_item(item) for item in items],
+        }
+
+    def mcp_status(_arguments: dict[str, Any]) -> dict[str, Any]:
+        active_config = current_config()
+        stats = history.stats(7)
+        return {
+            "ok": True,
+            "app": "AgentBell",
+            "version": __version__,
+            "port": active_config.port,
+            "auth": active_config.auth_enabled,
+            "history": len(history),
+            "usage_ledger": ledger is not None,
+            "session_registry": sessions is not None,
+            "external_sessions": sessions.count if sessions is not None else 0,
+            "stats_7d": {
+                "total": stats.get("total", 0),
+                "succeeded": stats.get("succeeded", 0),
+                "failed": stats.get("failed", 0),
+                "canceled": stats.get("canceled", 0),
+                "running": stats.get("running", 0),
+                "success_rate": stats.get("success_rate"),
+                "avg_duration_seconds": stats.get("avg_duration_seconds"),
+                "awaiting_ack": stats.get("awaiting_ack", 0),
+                "needs_input": stats.get("needs_input", 0),
+            },
+        }
+
+    def mcp_report_usage(arguments: dict[str, Any]) -> dict[str, Any]:
+        try:
+            payload = UsageReportPayload.model_validate(arguments)
+        except ValidationError as exc:
+            raise ValueError(_validation_summary(exc)) from exc
+        return record_usage(payload)
+
+    def mcp_report_session(arguments: dict[str, Any]) -> dict[str, Any]:
+        try:
+            payload = SessionReportPayload.model_validate(arguments)
+        except ValidationError as exc:
+            raise ValueError(_validation_summary(exc)) from exc
+        return record_session(payload)
+
+    mcp_server = McpServer(
+        version=__version__,
+        notify=mcp_notify,
+        search=mcp_search,
+        status=mcp_status,
+        usage=mcp_report_usage,
+        sessions=mcp_report_session,
+        logger=logger,
+    )
+
+    @app.post("/mcp")
+    async def mcp_endpoint(request: Request):
+        declared_length = request.headers.get("content-length", "")
+        if declared_length.isdigit() and int(declared_length) > MAX_BODY_BYTES:
+            return JSONResponse(
+                status_code=413,
+                content={
+                    "jsonrpc": "2.0",
+                    "id": None,
+                    "error": {"code": -32600, "message": "payload too large"},
+                },
+            )
+        body = await request.body()
+        if len(body) > MAX_BODY_BYTES:
+            return JSONResponse(
+                status_code=413,
+                content={
+                    "jsonrpc": "2.0",
+                    "id": None,
+                    "error": {"code": -32600, "message": "payload too large"},
+                },
+            )
+        try:
+            message = json.loads(body.decode("utf-8-sig") or "null")
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            logger.warning("MCP 请求解析失败 client=%s：%s", _client(request), exc)
+            return JSONResponse(
+                content={
+                    "jsonrpc": "2.0",
+                    "id": None,
+                    "error": {"code": -32700, "message": "Parse error"},
+                }
+            )
+        if isinstance(message, list):
+            responses = [
+                response
+                for response in (mcp_server.handle(item) for item in message)
+                if response is not None
+            ]
+            if not responses:
+                return Response(status_code=202)
+            return JSONResponse(content=responses)
+        response = mcp_server.handle(message)
+        if response is None:
+            return Response(status_code=202)
+        return JSONResponse(content=response)
 
     return app

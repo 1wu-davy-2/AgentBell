@@ -13,6 +13,7 @@ from .models import (
     NotificationAction,
     RunEvent,
     duration_to_seconds,
+    sanitize_metadata,
 )
 from .search_query import SearchQuery, parse_search
 
@@ -49,7 +50,8 @@ CREATE TABLE IF NOT EXISTS notifications (
     rule_name TEXT NOT NULL DEFAULT '',
     channel_types TEXT NOT NULL DEFAULT '[]',
     archived INTEGER NOT NULL DEFAULT 0,
-    archived_at TEXT
+    archived_at TEXT,
+    metadata TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS idx_notifications_received
     ON notifications(received_at DESC);
@@ -84,6 +86,7 @@ _EXTRA_COLUMNS = (
     ("run_id", "TEXT"),
     ("archived", "INTEGER NOT NULL DEFAULT 0"),
     ("archived_at", "TEXT"),
+    ("metadata", "TEXT NOT NULL DEFAULT '{}'"),
 )
 
 _EXTRA_INDEXES = """
@@ -101,12 +104,12 @@ _COLUMNS = (
     "wait_reason, wait_source, session_id, run_id, require_ack, "
     "silent, acknowledged, acknowledged_at, occurrence_count, progress, "
     "actions, bypass_quiet_hours, auto_close_seconds, expires_at, rule_name, "
-    "channel_types, archived, archived_at"
+    "channel_types, archived, archived_at, metadata"
 )
 
 _UPSERT = f"""
 INSERT INTO notifications ({_COLUMNS})
-VALUES ({", ".join("?" for _ in range(32))})
+VALUES ({", ".join("?" for _ in range(33))})
 ON CONFLICT(id) DO UPDATE SET
     title = excluded.title,
     status = excluded.status,
@@ -138,7 +141,8 @@ ON CONFLICT(id) DO UPDATE SET
     rule_name = excluded.rule_name,
     channel_types = excluded.channel_types,
     archived = excluded.archived,
-    archived_at = excluded.archived_at
+    archived_at = excluded.archived_at,
+    metadata = excluded.metadata
 """
 
 
@@ -225,6 +229,22 @@ def _channels_from_json(raw: str | None) -> tuple[str, ...]:
     return tuple(item for item in data if isinstance(item, str))[:20]
 
 
+def _metadata_to_json(metadata: object) -> str:
+    return json.dumps(
+        sanitize_metadata(metadata), ensure_ascii=False, sort_keys=True
+    )
+
+
+def _metadata_from_json(raw: str | None) -> dict[str, str]:
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return sanitize_metadata(data)
+
+
 def _row_values(notification: Notification) -> tuple[object, ...]:
     return (
         notification.id,
@@ -259,6 +279,7 @@ def _row_values(notification: Notification) -> tuple[object, ...]:
         json.dumps(list(notification.channel_types), ensure_ascii=False),
         int(notification.archived),
         _iso(notification.archived_at),
+        _metadata_to_json(notification.metadata),
     )
 
 
@@ -312,6 +333,7 @@ def _row_to_notification(row: sqlite3.Row) -> Notification:
         channel_types=_channels_from_json(row["channel_types"]),
         archived=bool(row["archived"]),
         archived_at=_parse_dt(row["archived_at"]),
+        metadata=_metadata_from_json(row["metadata"]),
     )
 
 

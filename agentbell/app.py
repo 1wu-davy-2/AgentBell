@@ -30,7 +30,11 @@ from PySide6.QtWidgets import (
 )
 
 from . import __version__
-from .agent_sessions import AgentSessionScanner
+from .agent_sessions import (
+    AgentSession,
+    AgentSessionScanner,
+    SessionReportRegistry,
+)
 from .attention import AttentionScanner, WaitDetection, WaitResolution
 from .channels import ChannelDispatcher
 from .config import AppConfig, ConfigError, ConfigRef, save_config
@@ -50,6 +54,8 @@ from .ui.icons import make_app_icon
 from .ui.toast import ToastManager
 from .ui.tray import TrayIcon
 from .ui.window import NotificationWindow
+from .usage import UsageLedger, UsageScanner, UsageSummary
+from .voice import VoicePlayer, VoiceSettings
 from .updater import (
     ReleaseInfo,
     UpdateCheck,
@@ -97,6 +103,8 @@ class AgentBellApp(QObject):
         listener: socket.socket,
         config_path: Path | None = None,
         config_ref: ConfigRef | None = None,
+        ledger: UsageLedger | None = None,
+        session_registry: SessionReportRegistry | None = None,
     ) -> None:
         super().__init__()
         self.qapp = qapp
@@ -107,8 +115,15 @@ class AgentBellApp(QObject):
         self.logger = logger
         self.inbox = inbox
         self.store = store
+        self.ledger = ledger
+        self.session_registry = session_registry
         self.config_path = config_path
         self._recent: deque[Notification] = deque(maxlen=RECENT_LIMIT)
+        self._local_sessions: list[AgentSession] = []
+        self._usage_ledger_version = ledger.version if ledger is not None else 0
+        self._session_registry_version = (
+            session_registry.version if session_registry is not None else 0
+        )
         self._shutting_down = False
         self._fatal_handled = False
         self._unread = 0
@@ -148,6 +163,11 @@ class AgentBellApp(QObject):
             config.agent_sessions, logger, self
         )
         self.attention_scanner = AttentionScanner(config.attention, logger, self)
+        self.usage_scanner = UsageScanner(
+            config.usage, logger, self, ledger=ledger
+        )
+        self.voice = VoicePlayer(self._voice_settings, logger)
+        self._usage_alert_key = ""
         self.server = UvicornServerThread(
             app=asgi_app,
             port=config.port,
@@ -179,12 +199,16 @@ class AgentBellApp(QObject):
         self.center.settings_saved.connect(self._apply_config)
         self.center.center_shown.connect(self._mark_read)
         self.center.onboarding_finished.connect(self._finish_onboarding)
-        self.center.session_refresh_requested.connect(self.session_scanner.refresh)
-        self.session_scanner.scanned.connect(self.center.update_sessions)
+        self.center.session_refresh_requested.connect(
+            self._refresh_session_sources
+        )
+        self.session_scanner.scanned.connect(self._on_sessions_scanned)
         self.session_scanner.failed.connect(self._on_session_scan_failed)
         self.attention_scanner.detected.connect(self._on_wait_detected)
         self.attention_scanner.resolved.connect(self._on_wait_resolved)
         self.attention_scanner.failed.connect(self._on_attention_failed)
+        self.usage_scanner.scanned.connect(self._on_usage_scanned)
+        self.usage_scanner.failed.connect(self._on_usage_failed)
         self.toasts.acknowledged.connect(self._acknowledge)
         self.toasts.snooze_requested.connect(self._snooze)
         self.toasts.action_requested.connect(self._run_action)
@@ -218,6 +242,7 @@ class AgentBellApp(QObject):
         self.presence_monitor.start()
         self.session_scanner.start()
         self.attention_scanner.start()
+        self.usage_scanner.start()
         self.hotkey.register()
         self._drain_timer.start()
         self.qapp.aboutToQuit.connect(self.shutdown)
@@ -235,6 +260,7 @@ class AgentBellApp(QObject):
     # ---------- inbox ----------
 
     def _drain_inbox(self) -> None:
+        self._sync_shared_sources()
         handled = 0
         while handled < MAX_INBOX_BATCH:
             try:
@@ -324,6 +350,80 @@ class AgentBellApp(QObject):
     def _on_attention_failed(self, message: str) -> None:
         self.logger.warning("等待输入推断失败：%s", message)
 
+    def _on_usage_scanned(self, summary: object) -> None:
+        if self._shutting_down or not isinstance(summary, UsageSummary):
+            return
+        if self.ledger is not None:
+            self._usage_ledger_version = self.ledger.version
+        self.center.update_usage(summary.to_dict())
+        key = summary.alert_key
+        if not key or key == self._usage_alert_key:
+            return
+        self._usage_alert_key = key
+        if self.store.find_by_dedupe(key) is not None:
+            return
+        now = datetime.now().astimezone()
+        exceeded = summary.alert_level == "exceeded"
+        notification = Notification(
+            id=uuid.uuid4().hex[:12],
+            title="Token 预算超限" if exceeded else "Token 用量预警",
+            status="failed" if exceeded else "succeeded",
+            summary=summary.alert_message,
+            received_at=now,
+            updated_at=now,
+            priority="high",
+            source="AgentBell 用量",
+            dedupe_key=key,
+            require_ack=exceeded,
+        )
+        stored, _updated = self.store.add(notification)
+        try:
+            self.inbox.put_nowait(stored)
+        except queue.Full:
+            self.logger.warning("通知队列已满，Token 预警仅保留在历史中")
+        self.logger.info(
+            "Token 用量预警：%s", summary.alert_message
+        )
+
+    def _on_usage_failed(self, message: str) -> None:
+        self.logger.warning("Token 用量扫描失败：%s", message)
+
+    def _on_sessions_scanned(self, sessions: object) -> None:
+        if self._shutting_down or not isinstance(sessions, list):
+            return
+        self._local_sessions = sessions
+        self._refresh_sessions()
+
+    def _refresh_sessions(self) -> None:
+        external: list[AgentSession] = []
+        if self.session_registry is not None:
+            external = self.session_registry.to_agent_sessions()
+            self._session_registry_version = self.session_registry.version
+        external_keys = {(item.agent, item.session_id) for item in external}
+        merged = [
+            item
+            for item in self._local_sessions
+            if (item.agent, item.session_id) not in external_keys
+        ] + external
+        merged.sort(key=lambda item: item.updated_at, reverse=True)
+        self.center.update_sessions(merged)
+
+    def _refresh_session_sources(self) -> None:
+        self.session_scanner.refresh()
+        self._refresh_sessions()
+
+    def _sync_shared_sources(self) -> None:
+        if self.ledger is not None:
+            version = self.ledger.version
+            if version != self._usage_ledger_version:
+                self._usage_ledger_version = version
+                self.usage_scanner.refresh()
+        if self.session_registry is not None:
+            version = self.session_registry.version
+            if version != self._session_registry_version:
+                self._session_registry_version = version
+                self._refresh_sessions()
+
     def _clear_inferred_waits(self) -> None:
         now = datetime.now().astimezone()
         cleared = 0
@@ -402,6 +502,7 @@ class AgentBellApp(QObject):
         self._last_popup_at = time.monotonic()
         self._popup_times.append(self._last_popup_at)
         self._play_sound(notification)
+        self.voice.speak(notification)
         self._schedule_escalation(notification)
 
     def _dispatch_channels(self, notification: Notification, decision: Decision) -> None:
@@ -883,7 +984,18 @@ class AgentBellApp(QObject):
         except (urllib.error.URLError, OSError, ValueError) as exc:
             self.logger.warning("重试回调失败 id=%s：%s", notification.id, exc)
 
-    # ---------- sound ----------
+    # ---------- sound / voice ----------
+
+    def _voice_settings(self) -> VoiceSettings:
+        settings = self.config.voice
+        return VoiceSettings(
+            enabled=settings.enabled,
+            min_priority=settings.min_priority,
+            rate=settings.rate,
+            include_summary=settings.include_summary,
+            max_chars=settings.max_chars,
+            template=settings.template,
+        )
 
     def _play_sound(self, notification: Notification, force: bool = False) -> None:
         sounds = self.config.sounds
@@ -974,6 +1086,7 @@ class AgentBellApp(QObject):
 
     def _on_session_scan_failed(self, message: str) -> None:
         self.logger.warning("Agent 会话扫描失败：%s", message)
+        self._refresh_sessions()
 
     # ---------- updates ----------
 
@@ -1225,6 +1338,9 @@ class AgentBellApp(QObject):
         self.presence_monitor.apply_config(config)
         self.session_scanner.apply_config(config.agent_sessions)
         self.attention_scanner.apply_config(config.attention)
+        self.usage_scanner.apply_config(config.usage)
+        if not config.voice.enabled:
+            self.voice.stop()
         if not (
             config.attention.enabled
             and config.attention.infer
@@ -1283,8 +1399,12 @@ class AgentBellApp(QObject):
         self.presence_monitor.stop()
         self.session_scanner.stop()
         self.attention_scanner.stop()
+        self.usage_scanner.stop()
+        if self.ledger is not None:
+            self.ledger.close()
         self.hotkey.unregister()
         self.channels.stop()
+        self.voice.stop()
         self.toasts.close_all()
         self.server.stop()
         self.center.shutdown()

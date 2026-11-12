@@ -7,7 +7,7 @@ import sqlite3
 import threading
 import urllib.parse
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
@@ -61,6 +61,9 @@ class AgentSession:
     message_count: int = 0
     size_bytes: int = 0
     title: str = ""
+    external: bool = False
+    detail: str = ""
+    wait_reason: str | None = None
 
     @property
     def agent_label(self) -> str:
@@ -71,6 +74,7 @@ class AgentSession:
             "gemini": "Gemini CLI",
             "grok": "Grok",
             "opencode": "OpenCode",
+            "deepseek": "DeepSeek",
         }.get(self.agent, self.agent)
 
     @property
@@ -123,6 +127,151 @@ class SessionTranscript:
     total_items: int = 0
     note: str = ""
     truncated: bool = False
+
+
+SESSION_REPORT_STATUSES: tuple[str, ...] = (
+    "running",
+    "ended",
+    "finished",
+    "stopped",
+    "canceled",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class SessionReport:
+    """A lightweight heartbeat pushed by an external agent such as dsh."""
+
+    session_id: str
+    agent: str = "deepseek"
+    title: str = ""
+    project: str = ""
+    project_path: str = ""
+    status: str = "running"
+    detail: str = ""
+    turn: int = 0
+    updated_at: datetime = field(default_factory=lambda: datetime.now().astimezone())
+    started_at: datetime | None = None
+    run_id: str = ""
+    needs_input: bool = False
+    wait_reason: str | None = None
+
+    @property
+    def active(self) -> bool:
+        return self.status not in SESSION_REPORT_STATUSES[1:]
+
+    def to_agent_session(self) -> AgentSession:
+        project = self.project
+        project_path = self.project_path
+        if not project and project_path:
+            project = Path(project_path).name
+        return AgentSession(
+            agent=self.agent,
+            session_id=self.session_id,
+            project=project or "外部会话",
+            project_path=project_path,
+            path="",
+            updated_at=self.updated_at,
+            created_at=self.started_at,
+            title=self.title or self.detail,
+            external=True,
+            detail=self.detail,
+            wait_reason=self.wait_reason if self.needs_input else None,
+        )
+
+
+class SessionReportRegistry:
+    """Thread-safe in-memory registry for external active-session heartbeats."""
+
+    def __init__(
+        self,
+        logger: logging.Logger | None = None,
+        *,
+        max_entries: int = 200,
+        ttl_seconds: int = 600,
+    ) -> None:
+        self._logger = logger or logging.getLogger("agentbell.sessions")
+        self._max_entries = max(1, int(max_entries))
+        self._ttl_seconds = max(30, int(ttl_seconds))
+        self._items: dict[tuple[str, str], SessionReport] = {}
+        self._lock = threading.RLock()
+        self._version = 0
+
+    @property
+    def version(self) -> int:
+        with self._lock:
+            return self._version
+
+    @property
+    def count(self) -> int:
+        with self._lock:
+            return len(self._items)
+
+    def report(self, report: SessionReport) -> bool:
+        key = (report.agent, report.session_id)
+        with self._lock:
+            if not report.active:
+                removed = self._items.pop(key, None) is not None
+                if removed:
+                    self._version += 1
+                return False
+            existing = self._items.get(key)
+            if existing is not None and existing.updated_at > report.updated_at:
+                return False
+            self._items[key] = report
+            if len(self._items) > self._max_entries:
+                oldest = min(
+                    self._items,
+                    key=lambda item: self._items[item].updated_at,
+                )
+                self._items.pop(oldest, None)
+            self._version += 1
+            return True
+
+    def remove(self, session_id: str, agent: str | None = None) -> bool:
+        with self._lock:
+            keys = [
+                key
+                for key in self._items
+                if key[1] == session_id and (agent is None or key[0] == agent)
+            ]
+            for key in keys:
+                self._items.pop(key, None)
+            if keys:
+                self._version += 1
+            return bool(keys)
+
+    def snapshot(
+        self,
+        ttl_seconds: int | None = None,
+        now: datetime | None = None,
+    ) -> list[SessionReport]:
+        current = (now or datetime.now().astimezone()).astimezone()
+        ttl = max(30, int(ttl_seconds or self._ttl_seconds))
+        cutoff = current - timedelta(seconds=ttl)
+        with self._lock:
+            expired = [
+                key
+                for key, report in self._items.items()
+                if not report.active or report.updated_at < cutoff
+            ]
+            for key in expired:
+                self._items.pop(key, None)
+            if expired:
+                self._version += 1
+            reports = list(self._items.values())
+        reports.sort(key=lambda item: item.updated_at, reverse=True)
+        return reports
+
+    def to_agent_sessions(
+        self,
+        ttl_seconds: int | None = None,
+        now: datetime | None = None,
+    ) -> list[AgentSession]:
+        return [
+            report.to_agent_session()
+            for report in self.snapshot(ttl_seconds=ttl_seconds, now=now)
+        ]
 
 
 @dataclass

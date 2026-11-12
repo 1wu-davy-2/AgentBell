@@ -92,10 +92,12 @@ from ..models import (
     WAIT_REASON_LABELS,
     Notification,
     RunEvent,
+    metadata_label,
     safe_http_url,
 )
 from ..paths import default_project_dir, runtime_dir
 from ..store import NotificationStore
+from ..usage import format_tokens
 from ..window_focus import FocusRequest
 from .icons import make_app_icon
 from .motion import motion_enabled
@@ -128,6 +130,56 @@ _STATUS_TILE_COLORS = {
 }
 
 _PRIORITY_CHIP_LABELS = {"high": "高优先级", "critical": "紧急"}
+
+_METADATA_CHIP_ORDER = (
+    "model",
+    "turn",
+    "turn_index",
+    "tools",
+    "tool_calls",
+    "files",
+    "context_percent",
+    "context_tokens",
+    "context_limit",
+    "compaction",
+    "approval",
+)
+
+
+def _metadata_chip_items(notification: Notification) -> list[tuple[str, str]]:
+    metadata = notification.metadata
+    if not metadata:
+        return []
+    items: list[tuple[str, str]] = []
+    used_labels: set[str] = set()
+    for key in _METADATA_CHIP_ORDER:
+        value = metadata.get(key)
+        if not value:
+            continue
+        label = metadata_label(key)
+        if label in used_labels:
+            continue
+        used_labels.add(label)
+        display = value
+        if key in {"turn", "turn_index"}:
+            display = f"第 {value} 轮"
+        elif key in {"tools", "tool_calls"}:
+            display = f"{value} 次"
+        elif key == "files":
+            display = f"{value} 个"
+        elif key in {"context_tokens", "context_limit"}:
+            try:
+                display = format_tokens(int(float(value)))
+            except ValueError:
+                display = value
+        elif key == "context_percent":
+            display = f"{value}%"
+        elif key == "compaction" and value in {"1", "true"}:
+            display = "已压缩"
+        items.append((f"{label} {display}", f"{label}：{value}"))
+        if len(items) >= 4:
+            break
+    return items
 
 
 def _repolish(widget: QWidget) -> None:
@@ -829,6 +881,14 @@ class NotificationCard(QFrame):
             duration.setFixedHeight(20)
             meta_row.addWidget(duration, 0, Qt.AlignmentFlag.AlignVCenter)
 
+        for chip_text, chip_tooltip in _metadata_chip_items(notification):
+            meta_chip = QLabel(_clip(chip_text, 34), self)
+            meta_chip.setObjectName("metaChip")
+            meta_chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            meta_chip.setFixedHeight(20)
+            meta_chip.setToolTip(chip_tooltip[:300])
+            meta_row.addWidget(meta_chip, 0, Qt.AlignmentFlag.AlignVCenter)
+
         if notification.occurrence_count > 1:
             repeats = QLabel(f"更新 ×{notification.occurrence_count}", self)
             repeats.setObjectName("repeatChip")
@@ -1107,11 +1167,14 @@ class ActiveSessionCard(QFrame):
         dot.setObjectName("liveDot")
         dot.setProperty("waiting", "true" if wait_reason else "false")
         dot.setFixedSize(8, 8)
-        dot.setToolTip(
-            "等待输入"
-            if wait_reason
-            else "依据会话文件的最近写入自动推断"
-        )
+        if session.external:
+            dot.setToolTip("外部 Agent 上报的活跃会话")
+        else:
+            dot.setToolTip(
+                "等待输入"
+                if wait_reason
+                else "依据会话文件的最近写入自动推断"
+            )
         root.addWidget(dot, 0, Qt.AlignmentFlag.AlignVCenter)
 
         body = QVBoxLayout()
@@ -1155,10 +1218,15 @@ class ActiveSessionCard(QFrame):
         title_row.addWidget(updated, 0, Qt.AlignmentFlag.AlignVCenter)
         body.addLayout(title_row)
 
-        meta_parts = [session.project_path or session.folder]
+        meta_parts: list[str] = []
+        if session.external:
+            meta_parts.append("外部心跳")
+        meta_parts.append(session.project_path or session.folder or session.project)
+        if session.detail:
+            meta_parts.append(session.detail)
         if session.message_count > 0:
             meta_parts.append(f"{session.message_count} 条记录")
-        meta = ElidedLabel(" · ".join(meta_parts), self)
+        meta = ElidedLabel(" · ".join(part for part in meta_parts if part), self)
         meta.setObjectName("sessionMeta")
         body.addWidget(meta)
 
@@ -1187,6 +1255,8 @@ class ActiveSessionCard(QFrame):
             lambda: self.terminal_requested.emit(session)
         )
         root.addWidget(self.terminal_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        if session.external and not session.project_path:
+            self.terminal_button.hide()
 
 
 class AgentPickCard(QFrame):
@@ -2505,6 +2575,50 @@ class NotificationWindow(QMainWindow):
 
         layout.addSpacing(14)
 
+        usage_card = QFrame(page)
+        usage_card.setObjectName("statsCard")
+        usage_layout = QVBoxLayout(usage_card)
+        usage_layout.setContentsMargins(16, 14, 16, 14)
+        usage_layout.setSpacing(8)
+        usage_header = QHBoxLayout()
+        usage_header.setContentsMargins(0, 0, 0, 0)
+        usage_title = QLabel("今日 Token 与成本", usage_card)
+        usage_title.setObjectName("statsTitle")
+        usage_header.addWidget(usage_title)
+        usage_header.addStretch(1)
+        self._usage_hint = QLabel("等待首次扫描…", usage_card)
+        self._usage_hint.setObjectName("statsHint")
+        usage_header.addWidget(self._usage_hint)
+        usage_layout.addLayout(usage_header)
+
+        usage_values = QHBoxLayout()
+        usage_values.setContentsMargins(0, 0, 0, 0)
+        usage_values.setSpacing(26)
+        self._usage_values: dict[str, QLabel] = {}
+        for key, caption in (
+            ("tokens", "今日用量"),
+            ("cost", "估算成本"),
+            ("models", "模型数"),
+            ("budget", "预算占用"),
+        ):
+            cell = QWidget(usage_card)
+            cell_layout = QVBoxLayout(cell)
+            cell_layout.setContentsMargins(0, 0, 0, 0)
+            cell_layout.setSpacing(1)
+            value = QLabel("—", cell)
+            value.setObjectName("runStatValue")
+            caption_label = QLabel(caption, cell)
+            caption_label.setObjectName("runStatCaption")
+            cell_layout.addWidget(value)
+            cell_layout.addWidget(caption_label)
+            usage_values.addWidget(cell)
+            self._usage_values[key] = value
+        usage_values.addStretch(1)
+        usage_layout.addLayout(usage_values)
+        layout.addWidget(usage_card)
+
+        layout.addSpacing(14)
+
         status_card = QFrame(page)
         status_card.setObjectName("statsCard")
         status_layout = QVBoxLayout(status_card)
@@ -3541,15 +3655,20 @@ class NotificationWindow(QMainWindow):
         return max(120, interval * 2)
 
     def _live_sessions(self) -> list[AgentSession]:
-        if not self.config.agent_sessions.enabled:
-            return []
-        cutoff = datetime.now().astimezone() - timedelta(
+        now = datetime.now().astimezone()
+        local_cutoff = now - timedelta(
             seconds=self._live_session_window_seconds()
+        )
+        external_cutoff = now - timedelta(
+            seconds=max(self._live_session_window_seconds(), 300)
         )
         source = self._source_filter.strip().casefold()
         query = self._query.strip().casefold()
         items: list[AgentSession] = []
         for session in self._sessions:
+            if not session.external and not self.config.agent_sessions.enabled:
+                continue
+            cutoff = external_cutoff if session.external else local_cutoff
             if session.updated_at < cutoff:
                 continue
             if source:
@@ -3586,6 +3705,9 @@ class NotificationWindow(QMainWindow):
                 session.project_path,
                 session.message_count,
                 session.size_bytes,
+                session.external,
+                session.detail,
+                session.wait_reason,
             )
             for session in self._live_sessions()
         )
@@ -3706,9 +3828,11 @@ class NotificationWindow(QMainWindow):
         count.setAlignment(Qt.AlignmentFlag.AlignCenter)
         header_row.addWidget(count)
 
-        minutes = max(1, round(self._live_session_window_seconds() / 60))
+        minutes = max(
+            1, round(max(self._live_session_window_seconds(), 300) / 60)
+        )
         hint = QLabel(
-            f"最近 {minutes} 分钟内仍有写入，自动推断，可能包含刚结束的会话",
+            f"本机会话最近 {minutes} 分钟内有写入，外部 Agent 通过心跳上报",
             header,
         )
         hint.setObjectName("liveSectionHint")
@@ -3718,11 +3842,21 @@ class NotificationWindow(QMainWindow):
 
         for session in sessions[:MAX_LIVE_SESSIONS]:
             wait = self._session_wait(session, waits)
+            wait_reason = (
+                wait.wait_reason
+                if wait
+                else (session.wait_reason if session.external else None)
+            )
+            wait_source = (
+                (wait.wait_source or "")
+                if wait
+                else ("explicit" if wait_reason else "")
+            )
             card = ActiveSessionCard(
                 session,
                 self._list_host,
-                wait_reason=wait.wait_reason if wait else None,
-                wait_source=(wait.wait_source or "") if wait else "",
+                wait_reason=wait_reason,
+                wait_source=wait_source,
             )
             card.view_requested.connect(self._open_live_session)
             card.terminal_requested.connect(self._focus_session)
@@ -4004,6 +4138,50 @@ class NotificationWindow(QMainWindow):
         else:
             self._stats_hint.setText("历史记录已关闭，仅统计本次运行")
 
+    def update_usage(self, summary: dict[str, object]) -> None:
+        values = getattr(self, "_usage_values", None)
+        if not values:
+            return
+        total = int(summary.get("total_tokens") or 0)
+        cost = float(summary.get("cost_usd") or 0.0)
+        unpriced = int(summary.get("unpriced_tokens") or 0)
+        token_budget = int(summary.get("token_budget") or 0)
+        cost_budget = float(summary.get("cost_budget") or 0.0)
+        models = summary.get("models") or []
+        values["tokens"].setText(format_tokens(total))
+        if cost > 0:
+            values["cost"].setText(f"${cost:.2f}")
+        elif unpriced > 0:
+            values["cost"].setText("未配置单价")
+        else:
+            values["cost"].setText("$0.00")
+        values["models"].setText(str(len(models)))
+        percents: list[str] = []
+        token_percent = summary.get("token_percent")
+        cost_percent = summary.get("cost_percent")
+        if token_percent is not None:
+            percents.append(f"Token {float(token_percent):.0f}%")
+        if cost_percent is not None:
+            percents.append(f"成本 {float(cost_percent):.0f}%")
+        values["budget"].setText(" · ".join(percents) if percents else "未设置")
+        updated = str(summary.get("updated_at") or "")
+        scanned = int(summary.get("scanned_files") or 0)
+        hint = f"更新于 {updated[11:16]}" if len(updated) >= 16 else "已更新"
+        if scanned:
+            hint += f" · 已扫描 {scanned} 个文件"
+        external = int(summary.get("external_reports") or 0)
+        if external:
+            hint += f" · 外部上报 {external} 条"
+        if token_budget or cost_budget:
+            level = str(summary.get("alert_level") or "")
+            if level == "exceeded":
+                hint += " · 已超预算"
+            elif level == "warning":
+                hint += " · 接近预算"
+        if unpriced:
+            hint += f" · {format_tokens(unpriced)} Token 未定价"
+        self._usage_hint.setText(hint)
+
     def _export_stats(self) -> None:
         days = int(self._stats_range.currentData() or 7)
         items = self._store.export(days=days)
@@ -4219,11 +4397,17 @@ class NotificationWindow(QMainWindow):
 
     def _open_session_folder(self, session: AgentSession) -> None:
         target = self._session_target(session)
+        if not target:
+            self.logger.warning("外部会话没有本地路径，无法打开目录")
+            return
         QDesktopServices.openUrl(QUrl.fromLocalFile(target))
         self.logger.info("打开会话目录 %s", _clip(target, 200))
 
     def _copy_session_path(self, session: AgentSession) -> None:
         target = self._session_target(session)
+        if not target:
+            self.logger.warning("外部会话没有本地路径，无法复制")
+            return
         QGuiApplication.clipboard().setText(target)
         self.logger.info("复制会话路径 %s", _clip(target, 200))
 
@@ -4234,6 +4418,14 @@ class NotificationWindow(QMainWindow):
     def _open_session_view(self, session: AgentSession) -> None:
         key = f"{session.path}|{int(session.updated_at.timestamp())}"
         transcript = self._session_transcript_cache.get(key)
+        if transcript is None and session.external and not session.path:
+            transcript = SessionTranscript(
+                session=session,
+                note=(
+                    session.detail
+                    or "该会话由外部 Agent 通过心跳上报，没有本地记录文件。"
+                ),
+            )
         if transcript is None:
             QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
             try:
@@ -5110,7 +5302,7 @@ QLabel#inferredChip {
     font-size: 9px;
     padding: 1px 6px;
 }
-QLabel#durationChip, QLabel#sourceChip, QLabel#repeatChip, QLabel#ackChip {
+QLabel#durationChip, QLabel#sourceChip, QLabel#repeatChip, QLabel#ackChip, QLabel#metaChip {
     background-color: #F4F5F8;
     border-radius: 7px;
     color: #6B7280;

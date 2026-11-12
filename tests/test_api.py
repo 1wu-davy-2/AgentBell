@@ -9,11 +9,13 @@ from fastapi.testclient import TestClient
 
 import agentbell.api as api_module
 from agentbell import window_focus
+from agentbell.agent_sessions import SessionReportRegistry
 from agentbell.api import MAX_BODY_BYTES, create_app
 from agentbell.config import AppConfig, ConfigRef, RuleConfig
 from agentbell.models import Notification
 from agentbell.storage import NotificationStorage
 from agentbell.store import NotificationStore
+from agentbell.usage import UsageLedger
 
 TOKEN = "test-secret"
 
@@ -30,6 +32,8 @@ def build(
     store: NotificationStore | None = None,
     config: AppConfig | None = None,
     config_source=None,
+    ledger=None,
+    sessions=None,
 ):
     inbox: queue.Queue[Notification] = queue.Queue(maxsize=maxsize)
     source = config_source
@@ -42,6 +46,8 @@ def build(
         inbox,
         logging.getLogger("agentbell.tests"),
         store=store,
+        ledger=ledger,
+        sessions=sessions,
     )
     return TestClient(app), inbox
 
@@ -1029,3 +1035,207 @@ def test_rules_use_live_config_after_settings_save():
     notification = inbox.get_nowait()
     assert notification.rule_name == "权限等待高优"
     assert notification.silent is True
+
+
+def test_notify_sanitizes_metadata():
+    client, inbox = build()
+    response = client.post(
+        "/notify",
+        json={
+            "title": "带上下文的回合",
+            "status": "succeeded",
+            "metadata": {
+                "model": "DeepSeek-V3.2",
+                "turn": 3,
+                "tools": ["read_file", "grep"],
+                "files": ["a.py"],
+                "context_percent": 82.5,
+                "flag": True,
+                "nested": {"a": 1},
+                "blank": "   ",
+                "long": "x" * 800,
+            },
+        },
+        headers=auth_headers(),
+    )
+    assert response.status_code == 202
+    notification = inbox.get_nowait()
+    assert notification.metadata["model"] == "DeepSeek-V3.2"
+    assert notification.metadata["turn"] == "3"
+    assert notification.metadata["tools"] == "2"
+    assert notification.metadata["files"] == "1"
+    assert notification.metadata["context_percent"] == "82.5"
+    assert notification.metadata["flag"] == "true"
+    assert notification.metadata["long"] == "x" * 512
+    assert "nested" not in notification.metadata
+    assert "blank" not in notification.metadata
+
+
+def test_metadata_roundtrips_through_storage(tmp_path):
+    client, inbox, store = build_persistent(tmp_path)
+    try:
+        response = client.post(
+            "/notify",
+            json={
+                "title": "持久化上下文",
+                "status": "succeeded",
+                "dedupe_key": "meta-roundtrip",
+                "metadata": {"model": "deepseek-chat", "turn": 7},
+            },
+            headers=auth_headers(),
+        )
+        assert response.status_code == 202
+        inbox.get_nowait()
+        stored = store.find_by_dedupe("meta-roundtrip")
+        assert stored is not None
+        assert stored.metadata == {"model": "deepseek-chat", "turn": "7"}
+    finally:
+        store.close()
+
+
+def test_compaction_phase_records_run_event(tmp_path):
+    client, _inbox, store = build_persistent(tmp_path)
+    try:
+        response = client.post(
+            "/notify",
+            json={
+                "title": "上下文压缩",
+                "status": "running",
+                "session_id": "compact-1",
+                "phase": "compaction",
+            },
+            headers=auth_headers(),
+        )
+        assert response.status_code == 202
+        events = store.run_events("session:compact-1")
+        assert [event.kind for event in events] == ["compaction"]
+    finally:
+        store.close()
+
+
+def test_usage_report_endpoint_is_idempotent():
+    ledger = UsageLedger(None, logging.getLogger("agentbell.tests.usage"))
+    client, _inbox = build(ledger=ledger)
+    payload = {
+        "report_id": "r-1",
+        "source": "deepseek",
+        "model": "deepseek-chat",
+        "input_tokens": 100,
+        "output_tokens": 50,
+        "cost_usd": 0.0004,
+    }
+    first = client.post("/usage/report", json=payload, headers=auth_headers())
+    assert first.status_code == 202
+    body = first.json()
+    assert body["ok"] is True
+    assert body["duplicate"] is False
+    assert body["total_tokens"] == 150
+    assert body["version"] == 1
+
+    second = client.post("/usage/report", json=payload, headers=auth_headers())
+    assert second.status_code == 202
+    assert second.json()["duplicate"] is True
+    assert second.json()["version"] == 1
+    assert ledger.version == 1
+
+    auto = client.post(
+        "/usage/report",
+        json={k: v for k, v in payload.items() if k != "report_id"},
+        headers=auth_headers(),
+    )
+    assert auto.status_code == 202
+    assert auto.json()["report_id"].startswith("auto:")
+    assert auto.json()["duplicate"] is False
+
+
+def test_usage_report_requires_token_and_valid_payload():
+    ledger = UsageLedger(None, logging.getLogger("agentbell.tests.usage"))
+    client, _inbox = build(ledger=ledger)
+    unauthorized = client.post(
+        "/usage/report", json={"model": "m", "input_tokens": 1}
+    )
+    assert unauthorized.status_code == 401
+
+    invalid = client.post(
+        "/usage/report",
+        json={"model": "m", "input_tokens": -5},
+        headers=auth_headers(),
+    )
+    assert invalid.status_code == 422
+    assert invalid.json()["ok"] is False
+
+
+def test_usage_report_without_ledger_returns_503():
+    client, _inbox = build()
+    response = client.post(
+        "/usage/report", json={"model": "m", "input_tokens": 1}, headers=auth_headers()
+    )
+    assert response.status_code == 503
+
+
+def test_session_report_adds_and_ends_external_session(tmp_path):
+    registry = SessionReportRegistry(logging.getLogger("agentbell.tests.sessions"))
+    client, _inbox = build(sessions=registry)
+    started = client.post(
+        "/sessions/report",
+        json={
+            "session_id": "dsh-1",
+            "agent": "DeepSeek",
+            "title": "DeepSeek Harness 任务",
+            "project": "demo",
+            "project_path": str(tmp_path),
+            "status": "running",
+            "turn": 4,
+            "needs_input": True,
+            "wait_reason": "Permission",
+        },
+        headers=auth_headers(),
+    )
+    assert started.status_code == 202
+    body = started.json()
+    assert body["stored"] is True
+    assert body["active"] is True
+    assert body["sessions"] == 1
+
+    sessions = registry.to_agent_sessions()
+    assert len(sessions) == 1
+    assert sessions[0].external is True
+    assert sessions[0].agent == "deepseek"
+    assert sessions[0].wait_reason == "permission"
+    assert sessions[0].path == ""
+
+    ended = client.post(
+        "/sessions/report",
+        json={"session_id": "dsh-1", "agent": "deepseek", "status": "ended"},
+        headers=auth_headers(),
+    )
+    assert ended.status_code == 202
+    assert ended.json()["active"] is False
+    assert ended.json()["sessions"] == 0
+    assert registry.count == 0
+
+
+def test_session_report_validation_and_auth():
+    registry = SessionReportRegistry(logging.getLogger("agentbell.tests.sessions"))
+    client, _inbox = build(sessions=registry)
+    unauthorized = client.post("/sessions/report", json={"session_id": "x"})
+    assert unauthorized.status_code == 401
+
+    missing_id = client.post("/sessions/report", json={}, headers=auth_headers())
+    assert missing_id.status_code == 422
+    assert missing_id.json()["ok"] is False
+
+    bad_status = client.post(
+        "/sessions/report",
+        json={"session_id": "x", "status": "bogus"},
+        headers=auth_headers(),
+    )
+    assert bad_status.status_code == 422
+
+
+def test_session_report_without_registry_returns_503():
+    client, _inbox = build()
+    response = client.post(
+        "/sessions/report", json={"session_id": "x"}, headers=auth_headers()
+    )
+    assert response.status_code == 503

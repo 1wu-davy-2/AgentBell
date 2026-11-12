@@ -87,6 +87,29 @@
     "canceled": "上一轮【{title}】已取消",
     "running": "上一轮【{title}】进行中"
   },
+  "voice": {
+    "enabled": false,
+    "min_priority": "normal",
+    "rate": 0,
+    "include_summary": true,
+    "max_chars": 120,
+    "template": "{title}，{status_label}"
+  },
+  "usage": {
+    "enabled": true,
+    "scan_interval_seconds": 300,
+    "daily_token_budget": 0,
+    "daily_cost_budget": 0,
+    "alert_percent": 80,
+    "pricing": {
+      "claude-sonnet": {
+        "input": 3.0,
+        "output": 15.0,
+        "cache_read": 0.3,
+        "cache_write": 3.75
+      }
+    }
+  },
   "rules": [],
   "channels": [],
   "away_idle_seconds": 300,

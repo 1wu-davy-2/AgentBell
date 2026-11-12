@@ -14,13 +14,14 @@ from PySide6.QtGui import QFont, QFontDatabase, QGuiApplication
 from PySide6.QtWidgets import QApplication, QMessageBox, QSystemTrayIcon
 
 from . import __version__
+from .agent_sessions import SessionReportRegistry
 from .api import QUEUE_MAX_SIZE, create_app
 from .app import AgentBellApp
 from .autostart import configure_autostart
 from .config import ConfigError, ConfigRef, load_config
 from .log import install_exception_hooks, setup_logging
 from .models import Notification
-from .paths import config_file, ensure_chat_dir
+from .paths import config_file, ensure_chat_dir, usage_db
 from .server import ListenerError, bind_listener
 from .single_instance import SingleInstanceError, SingleInstanceGuard, default_server_name
 from .storage import NotificationStorage, StorageError
@@ -28,6 +29,7 @@ from .store import NotificationStore
 from .ui.icons import make_app_icon
 from .ui.splash import SplashWindow
 from .updater import normalize_repo
+from .usage import UsageLedger
 
 
 def _pick_ui_font() -> str:
@@ -226,8 +228,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     config_ref = ConfigRef(config)
+    ledger_path = usage_db(config_path)
+    ledger = UsageLedger(ledger_path, logger)
+    logger.info(
+        "外部用量账本：%s（%s）",
+        ledger_path,
+        "SQLite" if ledger.persistent else "内存",
+    )
+    session_registry = SessionReportRegistry(logger)
     asgi_app = create_app(
-        lambda: config_ref.current, inbox, logger, store=store
+        lambda: config_ref.current,
+        inbox,
+        logger,
+        store=store,
+        ledger=ledger,
+        sessions=session_registry,
     )
     controller: AgentBellApp | None = None
     splash: SplashWindow | None = None
@@ -245,6 +260,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             listener=listener,
             config_path=config_path,
             config_ref=config_ref,
+            ledger=ledger,
+            session_registry=session_registry,
         )
 
         def _on_splash_finished() -> None:
